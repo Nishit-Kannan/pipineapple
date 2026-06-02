@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}PiPineapple{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">⚡</span> PiPineapple</div>
+    <nav class="mainnav">
+      <a href="{{ url_for('dashboard.index') }}"
+         class="{% block nav_dashboard %}{% endblock %}">Dashboard</a>
+      <a href="#" class="disabled" title="Recon — Session 03">Recon</a>
+      <a href="#" class="disabled" title="Captures — Session 06">Captures</a>
+      <a href="#" class="disabled" title="Rogue AP — Session 09">Rogue AP</a>
+      <a href="#" class="disabled" title="MITM — Session 13">MITM</a>
+      <a href="#" class="disabled" title="Network Recon — Session 15">Network Recon</a>
+      <a href="#" class="disabled" title="Settings — Session 17">Settings</a>
+    </nav>
+  </header>
+
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="bottombar">
+    <span>PiPineapple v0.1.0</span>
+    <span class="muted">lab-only · authorized targets only</span>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — PiPineapple{% endblock %}
+{% block nav_dashboard %}active{% endblock %}
+
+{% block content %}
+  <h1>Dashboard</h1>
+  <p class="muted">
+    System status, network interfaces, and offensive radios at a glance.
+    Refresh the page for current values — live updates land in Session 02.
+  </p>
+
+  <div class="grid">
+    {# ---------- System block ---------- #}
+    <section class="card">
+      <h2>System</h2>
+      {% set sys = status.system %}
+      {% if sys %}
+        <dl class="kv">
+          <dt>Model</dt>
+          <dd>{{ sys.model or "—" }}</dd>
+
+          <dt>Kernel</dt>
+          <dd><code>{{ sys.kernel or "—" }}</code></dd>
+
+          <dt>CPU temperature</dt>
+          <dd>
+            {% if sys.cpu_temp_c is not none %}
+              {{ "%.1f"|format(sys.cpu_temp_c) }} °C
+              {% if sys.cpu_temp_c >= 75 %}
+                <span class="badge badge-danger">hot</span>
+              {% elif sys.cpu_temp_c >= 65 %}
+                <span class="badge badge-warn">warm</span>
+              {% else %}
+                <span class="badge badge-good">ok</span>
+              {% endif %}
+            {% else %}—{% endif %}
+          </dd>
+
+          <dt>Memory</dt>
+          <dd>
+            {% if sys.memory %}
+              {{ format_bytes(sys.memory.used_bytes) }} /
+              {{ format_bytes(sys.memory.total_bytes) }}
+              <span class="muted">({{ sys.memory.used_pct }}% used)</span>
+            {% else %}—{% endif %}
+          </dd>
+
+          <dt>Uptime</dt>
+          <dd>{{ format_uptime(sys.uptime_seconds) }}</dd>
+
+          <dt>Regulatory domain</dt>
+          <dd>
+            {{ status.reg_domain or "—" }}
+            {% if not status.reg_domain %}
+              <span class="muted">— run <code>sudo iw reg set US</code></span>
+            {% endif %}
+          </dd>
+        </dl>
+      {% else %}
+        <p class="muted">No system data available.</p>
+      {% endif %}
+    </section>
+
+    {# ---------- Network interfaces block ---------- #}
+    <section class="card">
+      <h2>Network interfaces</h2>
+      {% if status.interfaces %}
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>State</th>
+              <th>MAC</th>
+              <th>Addresses</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for iface in status.interfaces %}
+              <tr>
+                <td><code>{{ iface.name }}</code></td>
+                <td>
+                  {% if iface.state == "UP" %}
+                    <span class="badge badge-good">up</span>
+                  {% elif iface.state == "DOWN" %}
+                    <span class="badge badge-muted">down</span>
+                  {% else %}
+                    <span class="badge badge-muted">{{ iface.state|lower }}</span>
+                  {% endif %}
+                </td>
+                <td><code>{{ iface.mac or "—" }}</code></td>
+                <td>
+                  {% if iface.addresses %}
+                    {% for addr in iface.addresses %}
+                      <code>{{ addr }}</code>{% if not loop.last %}<br>{% endif %}
+                    {% endfor %}
+                  {% else %}<span class="muted">—</span>{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="muted">No network interfaces found.</p>
+      {% endif %}
+    </section>
+
+    {# ---------- Wireless radios block ---------- #}
+    <section class="card span-2">
+      <h2>Wireless radios</h2>
+      {% if status.wireless %}
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Mode</th>
+              <th>Channel</th>
+              <th>Width</th>
+              <th>SSID</th>
+              <th>Driver</th>
+              <th>Tx Power</th>
+              <th>Signal</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for w in status.wireless %}
+              <tr>
+                <td><code>{{ w.name }}</code></td>
+                <td>
+                  {% if w.mode == "monitor" %}
+                    <span class="badge badge-warn">monitor</span>
+                  {% elif w.mode == "AP" %}
+                    <span class="badge badge-warn">ap</span>
+                  {% elif w.mode == "managed" %}
+                    <span class="badge badge-muted">managed</span>
+                  {% else %}
+                    <span class="badge badge-muted">{{ w.mode or "—" }}</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if w.channel %}
+                    {{ w.channel }}
+                    <span class="muted">({{ w.frequency_mhz }} MHz)</span>
+                  {% else %}—{% endif %}
+                </td>
+                <td>{% if w.width_mhz %}{{ w.width_mhz }} MHz{% else %}—{% endif %}</td>
+                <td>{% if w.ssid %}<code>{{ w.ssid }}</code>{% else %}<span class="muted">—</span>{% endif %}</td>
+                <td><code>{{ w.driver or "—" }}</code></td>
+                <td>{% if w.txpower_dbm is not none %}{{ "%.1f"|format(w.txpower_dbm) }} dBm{% else %}—{% endif %}</td>
+                <td>
+                  {% if w.signal_dbm is not none %}
+                    {{ w.signal_dbm|int }} dBm
+                  {% else %}<span class="muted">—</span>{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p class="muted footnote">
+          Signal column populates when an adapter is in monitor mode and
+          actively receiving frames, or in managed mode while associated.
+          Mode toggling from the UI comes in Session 03.
+        </p>
+      {% else %}
+        <p class="muted">
+          No wireless interfaces detected. Check that adapters are
+          plugged in and that <code>iw</code> is installed.
+        </p>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}

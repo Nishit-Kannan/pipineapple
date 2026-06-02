@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.local
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Capture artifacts (never commit these)
+*.cap
+*.pcap
+*.pcapng
+*.hc22000
+*.kismet.*
+*.netxml
+captures/
+
+# Runtime / local state
+*.db
+*.sqlite
+*.log
+instance/
+
+# OS
+.DS_Store
+Thumbs.db

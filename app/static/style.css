@@ -1,0 +1,257 @@
+/* PiPineapple — base stylesheet
+ *
+ * Dark theme with a subtle amber accent. Aiming for a control-panel /
+ * terminal feel without going full-on hacker-green. CSS variables make
+ * future theming trivial.
+ */
+
+:root {
+  --bg:         #0a0e14;
+  --bg-elev:    #11161e;
+  --bg-elev-2:  #161c26;
+  --fg:         #c5cdd7;
+  --fg-muted:   #6b7480;
+  --accent:     #f0c674;   /* amber — restrained Pineapple hint */
+  --accent-dim: #a08850;
+  --border:     #1e2632;
+  --danger:     #d77;
+  --good:       #7d9;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+               sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+  padding-bottom: 36px; /* leave room for fixed footer */
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, pre {
+  font-family: "SF Mono", Menlo, Monaco, Consolas, "Courier New", monospace;
+  background: var(--bg-elev-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0 0 4px 0;
+}
+
+h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 12px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--fg-muted);
+}
+
+.muted { color: var(--fg-muted); }
+
+/* ---------- Top bar ---------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+  height: 48px;
+}
+
+.brand {
+  font-weight: 600;
+  font-size: 16px;
+  margin-right: 32px;
+  letter-spacing: 0.5px;
+}
+
+.brand .logo {
+  color: var(--accent);
+  margin-right: 6px;
+}
+
+.mainnav {
+  display: flex;
+  gap: 2px;
+}
+
+.mainnav a {
+  color: var(--fg);
+  padding: 0 14px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  font-size: 13px;
+}
+
+.mainnav a:hover {
+  background: var(--bg-elev-2);
+  text-decoration: none;
+}
+
+.mainnav a.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+
+.mainnav a.disabled {
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
+
+.mainnav a.disabled:hover {
+  background: transparent;
+  text-decoration: none;
+}
+
+/* ---------- Content ---------- */
+.content {
+  max-width: 1200px;
+  margin: 24px auto;
+  padding: 0 20px;
+}
+
+.placeholder {
+  background: var(--bg-elev);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 14px 18px;
+  color: var(--fg-muted);
+  margin-top: 16px;
+  font-size: 13px;
+}
+
+.placeholder strong { color: var(--accent); }
+.placeholder code { color: var(--accent); background: transparent; padding: 0; }
+
+/* ---------- Cards / grid ---------- */
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px 20px;
+}
+
+.card.span-2 { grid-column: span 2; }
+
+/* ---------- Status badges (used in later sessions) ---------- */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.badge-good   { background: rgba(119, 221, 153, 0.15); color: var(--good); }
+.badge-warn   { background: rgba(240, 198, 116, 0.15); color: var(--accent); }
+.badge-danger { background: rgba(221, 119, 119, 0.15); color: var(--danger); }
+.badge-muted  { background: var(--bg-elev-2); color: var(--fg-muted); }
+
+/* ---------- Bottom bar ---------- */
+.bottombar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--border);
+  padding: 8px 20px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  display: flex;
+  justify-content: space-between;
+  z-index: 10;
+}
+
+/* ---------- Tables (used in next task) ---------- */
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+table.data th, table.data td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+table.data th {
+  color: var(--fg-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+
+table.data tbody tr:hover { background: var(--bg-elev-2); }
+
+table.data td code,
+table.data th code {
+  background: transparent;
+  padding: 0;
+  color: var(--fg);
+}
+
+.footnote {
+  font-size: 12px;
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+
+/* ---------- Definition lists (key/value pairs in cards) ---------- */
+dl.kv {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 6px 12px;
+  margin: 0;
+}
+
+dl.kv dt {
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  align-self: center;
+}
+
+dl.kv dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+/* Responsive: collapse grid on narrow screens */
+@media (max-width: 720px) {
+  .grid { grid-template-columns: 1fr; }
+  .card.span-2 { grid-column: auto; }
+  .mainnav a { padding: 0 10px; font-size: 12px; }
+  .brand { margin-right: 16px; }
+}
