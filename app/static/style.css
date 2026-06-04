@@ -389,6 +389,10 @@ table.data th code {
   align-items: center;
   margin-bottom: 16px;
   padding: 12px 18px;
+  position: sticky;
+  top: var(--titlebar-h);
+  z-index: 5;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 }
 
 .learning-toc .toc-label {
