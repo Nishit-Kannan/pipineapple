@@ -30,16 +30,6 @@ use_reloader = (
     os.environ.get("PIPINEAPPLE_RELOADER", "0").lower() in ("1", "true", "yes")
 )
 
-# Background tasks (sysinfo broadcaster, networking restore) are guarded
-# in the factory against double-running in the reloader's parent process.
-# That guard uses WERKZEUG_RUN_MAIN as the "I am the serving process"
-# signal — set to "true" by werkzeug only in the reloader child. When the
-# reloader is OFF, no child exists; the main process IS the serving
-# process. We set the signal ourselves so the guard treats this as "yes,
-# run the tasks." Must happen BEFORE importing create_app.
-if not use_reloader and not os.environ.get("WERKZEUG_RUN_MAIN"):
-    os.environ["WERKZEUG_RUN_MAIN"] = "true"
-
 from app import create_app, socketio  # noqa: E402
 
 app = create_app()

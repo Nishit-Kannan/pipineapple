@@ -182,12 +182,20 @@ def _install_auth_middleware(app: Flask) -> None:
 
 
 def _start_background_tasks(app: Flask) -> None:
-    """Start daemon background workers (sysinfo broadcaster, etc.)."""
-    # Skip background tasks during Flask's reloader parent process.
-    # WERKZEUG_RUN_MAIN is set to "true" only in the child process that
-    # actually serves requests, so this prevents us starting two
-    # broadcaster threads when debug mode forks.
-    if app.debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+    """Start daemon background workers (sysinfo broadcaster, etc.).
+
+    Guard: skip in werkzeug's reloader PARENT process to avoid double-
+    starting. The guard only fires when the reloader is actually enabled
+    via ``PIPINEAPPLE_RELOADER=1`` (default off — see run.py). With the
+    reloader off, the main process IS the serving process and we always
+    run tasks here.
+    """
+    reloader_enabled = (
+        os.environ.get("PIPINEAPPLE_RELOADER", "0").lower()
+        in ("1", "true", "yes")
+    )
+    if reloader_enabled and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        # We're the reloader parent — child will run the tasks.
         return
 
     from app.services import sysinfo_broadcaster
