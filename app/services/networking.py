@@ -44,6 +44,19 @@ DEFAULT_MGMT_AP = {
     "gateway_ip": "10.42.0.1",
 }
 
+# Bootstrap credentials used on truly first boot, before the operator
+# completes the setup wizard. Documented in README so the operator knows
+# what to join. The setup wizard forces the operator to change both
+# fields, so these are only ever active during the gap between first
+# power-on and password setup.
+BOOTSTRAP_MGMT_AP = {
+    "ssid":       "PiPineapple-Setup",
+    "password":   "pineapple-setup",   # WPA2, ≥8 chars, documented
+    "channel":    6,
+    "subnet":     "10.42.0.0/24",
+    "gateway_ip": "10.42.0.1",
+}
+
 CONF_DIR = Path("/etc/pipineapple")
 
 
@@ -261,13 +274,37 @@ class NetworkingService:
         return messages
 
     # ---------- Startup restore ----------
-    def restore_on_startup(self) -> None:
+    def is_first_boot(self, auth_path: Path) -> bool:
+        """True if both auth.json and networking.json are absent.
+
+        Triggers the bootstrap management AP so the operator can reach
+        the setup wizard via Wi-Fi instead of needing Ethernet.
+        """
+        return not auth_path.is_file() and not self._state_path.is_file()
+
+    def restore_on_startup(self, auth_path: Path | None = None) -> None:
         """Re-apply the saved mode after Flask starts.
 
-        If the saved mode is 'ap', re-launch hostapd+dnsmasq. If 'client',
-        NM takes care of reconnecting automatically (saved profiles).
+        On true first boot (no auth.json + no networking.json), auto-
+        enable the bootstrap management AP so the operator can reach
+        the setup wizard over Wi-Fi. Otherwise restore the previously
+        saved mode (or stay idle if 'client' — NM takes care of
+        reconnecting automatically).
         """
         with self._lock:
+            # First-boot bootstrap path
+            if auth_path is not None and self.is_first_boot(auth_path):
+                log.info("first boot detected (no auth.json + no networking.json) — "
+                         "enabling bootstrap management AP")
+                state = {
+                    "wlan0_mode": "ap",
+                    "mgmt_ap":    dict(BOOTSTRAP_MGMT_AP),
+                    "bootstrap":  True,
+                }
+                self._enable_mgmt_ap_unlocked(state, state["mgmt_ap"])
+                self._save(state)
+                return
+
             state = self._load()
             mode = state.get("wlan0_mode", "idle")
             if mode == "ap":
@@ -280,6 +317,43 @@ class NetworkingService:
                     log.warning("saved mode is 'ap' but mgmt_ap config incomplete; staying idle")
                     state["wlan0_mode"] = "idle"
                     self._save(state)
+
+    # ---------- Bootstrap-to-permanent transition ----------
+    def is_running_bootstrap(self) -> bool:
+        """True if the currently active AP is the bootstrap one."""
+        with self._lock:
+            state = self._load()
+            return bool(state.get("bootstrap"))
+
+    def reconfigure_and_restart_ap(self, ssid: str, password: str, channel: int = 6) -> tuple[bool, list[str]]:
+        """Used by the setup wizard. Disable the current (bootstrap) AP,
+        save the operator's new credentials, re-enable with them.
+
+        Done as a single atomic operation so we never end up in a state
+        where the AP is down + no config saved.
+        """
+        messages: list[str] = []
+        with self._lock:
+            state = self._load()
+            # 1. Stop the bootstrap AP if it's running
+            if state.get("wlan0_mode") == "ap":
+                messages += self._disable_mgmt_ap_unlocked(state)
+
+            # 2. Save the operator's new config
+            state["mgmt_ap"] = {
+                **(state.get("mgmt_ap") or DEFAULT_MGMT_AP),
+                "ssid":     ssid,
+                "password": password,
+                "channel":  channel,
+            }
+            state.pop("bootstrap", None)  # no longer bootstrap once user has set their own credentials
+
+            # 3. Re-enable with the new config
+            ap = state["mgmt_ap"]
+            messages += self._enable_mgmt_ap_unlocked(state, ap)
+            self._save(state)
+        ok = state.get("wlan0_mode") == "ap"
+        return ok, messages
 
 
 def get_service() -> NetworkingService:

@@ -7,36 +7,114 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body class="auth-page">
-  <main class="auth-card">
+  <main class="auth-card auth-card-wide">
     <header class="auth-brand">
       <span class="logo">⚡</span>
       <span class="brand-name">PiPineapple</span>
     </header>
 
-    <h1 class="auth-title">Set up your password</h1>
-    <p class="auth-blurb">
-      First-time setup. Pick a password for the management UI. From now
-      on, every visit to PiPineapple needs this password. The password
-      is stored as a salted scrypt hash in
-      <code>$DATA_DIR/auth.json</code>; change it later from
-      <em>Settings → Security</em>.
-    </p>
+    {% if success_info %}
+      {# ---------- Post-submit success page ---------- #}
+      <h1 class="auth-title">Setup complete</h1>
+      <p class="auth-blurb">
+        Your platform password is saved. The management AP is restarting
+        with your new credentials in a few seconds.
+      </p>
 
-    {% if error %}
-      <div class="auth-error">{{ error }}</div>
+      <div class="auth-info-box">
+        <div class="info-label">Connect to the new management AP</div>
+        <dl class="kv">
+          <dt>SSID</dt>
+          <dd><code>{{ success_info.new_ssid }}</code></dd>
+          <dt>Gateway URL</dt>
+          <dd><code>http://{{ success_info.gateway_ip }}:5000</code></dd>
+        </dl>
+        <p class="muted" style="font-size:12px; margin-top:12px;">
+          {% if success_info.bootstrap %}
+            You're currently on the bootstrap AP (<code>PiPineapple-Setup</code>).
+            It will disappear in a moment. On your Mac:
+          {% else %}
+            You may still be reachable via Ethernet. Optionally:
+          {% endif %}
+          drop the current Wi-Fi connection, join
+          <code>{{ success_info.new_ssid }}</code> with the WPA2 password
+          you just set, then visit
+          <code>http://{{ success_info.gateway_ip }}:5000</code> and log
+          in. Your platform password is the one you set at the top of
+          this form.
+        </p>
+      </div>
+
+      <p class="auth-blurb" style="margin-top:16px;">
+        Already on Ethernet (or another path that doesn't go through the
+        management AP)? You're already logged in — just visit the
+        <a href="{{ url_for('dashboard.index') }}">dashboard</a>.
+      </p>
+
+    {% else %}
+      {# ---------- Setup form ---------- #}
+      <h1 class="auth-title">First-time setup</h1>
+      <p class="auth-blurb">
+        Configure the platform admin password <em>and</em> the operator-only
+        management AP credentials in one step. After saving, the Pi
+        broadcasts your management SSID anywhere it boots — no Ethernet
+        needed from then on.
+      </p>
+
+      {% if bootstrap_active %}
+        <div class="auth-info-box bootstrap-banner">
+          <strong>You're connected via the bootstrap AP.</strong>
+          <span class="muted">
+            (default SSID <code>{{ bootstrap.ssid }}</code>, default
+            password <code>{{ bootstrap.password }}</code>) — both of
+            which everyone reading the docs knows. The form below
+            replaces them with credentials only you know.
+          </span>
+        </div>
+      {% endif %}
+
+      {% if error %}
+        <div class="auth-error">{{ error }}</div>
+      {% endif %}
+
+      <form method="POST" class="auth-form">
+
+        <h2 class="setup-section-title">Platform admin password</h2>
+        <p class="muted setup-section-desc">
+          Used to log into the management UI. Stored as a salted scrypt
+          hash in <code>$DATA_DIR/auth.json</code>.
+        </p>
+        <label>
+          <span class="auth-label">Password</span>
+          <input type="password" name="password" required autofocus minlength="4">
+        </label>
+        <label>
+          <span class="auth-label">Confirm</span>
+          <input type="password" name="password_confirm" required minlength="4">
+        </label>
+
+        <h2 class="setup-section-title">Management AP (Wi-Fi)</h2>
+        <p class="muted setup-section-desc">
+          Operator-only Wi-Fi network the Pi broadcasts on
+          <code>wlan0</code>. Join this from your Mac to reach the
+          platform UI whenever you're not on Ethernet.
+        </p>
+        <label>
+          <span class="auth-label">SSID</span>
+          <input type="text" name="ap_ssid" value="{{ default_ssid }}" required maxlength="32">
+        </label>
+        <label>
+          <span class="auth-label">WPA2 password (min 8 chars)</span>
+          <input type="password" name="ap_password" required minlength="8">
+        </label>
+        <label>
+          <span class="auth-label">Confirm AP password</span>
+          <input type="password" name="ap_password_confirm" required minlength="8">
+        </label>
+
+        <button type="submit" class="bigbtn">Set passwords & continue</button>
+      </form>
     {% endif %}
-
-    <form method="POST" class="auth-form">
-      <label>
-        <span class="auth-label">New password</span>
-        <input type="password" name="password" required autofocus minlength="4">
-      </label>
-      <label>
-        <span class="auth-label">Confirm password</span>
-        <input type="password" name="password_confirm" required minlength="4">
-      </label>
-      <button type="submit" class="bigbtn">Set password & continue</button>
-    </form>
 
     <footer class="auth-footer muted">
       lab-only · authorized targets only
