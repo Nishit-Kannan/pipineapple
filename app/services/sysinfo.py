@@ -37,18 +37,25 @@ import logging
 from typing import Any
 
 from app.tools import ethtool, iproute, iw, proc, vcgencmd
+from app.tools._common import polling_context
 
 log = logging.getLogger(__name__)
 
 
 def get_system_status() -> dict[str, Any]:
-    """Build the full status dict for the dashboard."""
-    return {
-        "system":     _gather_system(),
-        "interfaces": iproute.list_interfaces(),
-        "wireless":   _gather_wireless(),
-        "reg_domain": iw.get_reg_domain(),
-    }
+    """Build the full status dict for the dashboard.
+
+    Wrapped in ``polling_context()`` so the routine subprocess reads
+    (iw dev, ip -j addr show, vcgencmd, ethtool, iw reg get) don't
+    spam the read-only command stream every 2 seconds.
+    """
+    with polling_context():
+        return {
+            "system":     _gather_system(),
+            "interfaces": iproute.list_interfaces(),
+            "wireless":   _gather_wireless(),
+            "reg_domain": iw.get_reg_domain(),
+        }
 
 
 def _gather_system() -> dict[str, Any]:

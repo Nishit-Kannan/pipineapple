@@ -424,6 +424,132 @@ table.data th code {
   color: var(--fg-strong);
 }
 
+/* ---------- Command stream (terminal) drawer ---------- */
+.term-drawer {
+  position: fixed;
+  bottom: 0;
+  left: var(--sidebar-w);
+  right: 0;
+  height: 32vh;
+  min-height: 200px;
+  background: #050709;
+  border-top: 1px solid var(--border-2);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.55);
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.term-drawer[hidden] { display: none; }
+
+.term-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+}
+
+.term-title {
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+}
+
+.term-prompt {
+  color: var(--accent);
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+  margin-right: 4px;
+}
+
+.term-sub {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  margin-left: 8px;
+  font-size: 11px;
+}
+
+.term-actions { display: flex; gap: 12px; }
+
+.term-body {
+  flex: 1;
+  overflow-y: auto;
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  padding: 8px 14px;
+  scroll-behavior: smooth;
+}
+
+.term-empty {
+  padding: 12px 0;
+}
+
+.term-line {
+  display: grid;
+  grid-template-columns: 80px 60px 1fr auto;
+  gap: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  white-space: nowrap;
+}
+
+.term-line:last-child { border-bottom: 0; }
+
+.term-ts {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.term-source {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+}
+
+.term-source-tool { color: var(--accent); }
+.term-source-job  { color: var(--info); }
+.term-source-system { color: var(--good); }
+
+.term-cmd {
+  color: var(--fg);
+  overflow-x: hidden;
+  text-overflow: ellipsis;
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+
+.term-rc {
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.term-rc-ok    { color: var(--good); }
+.term-rc-fail  { color: var(--danger); }
+.term-rc-pending { color: var(--info); }
+
+.term-note {
+  grid-column: 1 / -1;
+  color: var(--fg-muted);
+  padding-left: 152px;
+  font-size: 11px;
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 760px) {
+  .term-drawer { left: 0; }
+  .term-line { grid-template-columns: 60px 50px 1fr auto; }
+  .term-note { padding-left: 122px; }
+}
+
 /* ---------- Notifications drawer ---------- */
 .notif-drawer {
   position: fixed;

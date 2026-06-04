@@ -14,20 +14,33 @@ For Mac-side UI iteration with stubbed tools::
 
 from __future__ import annotations
 
+import os
+
 from app import create_app, socketio
 
 app = create_app()
 
 
 if __name__ == "__main__":
+    # Werkzeug's debug-mode reloader re-execs sys.argv on file change. Under
+    # sudo (run-as-root.sh wraps us in `sudo -E python run.py`), that re-exec
+    # creates a nested-sudo process tree which corrupts the WSGI environ
+    # simple-websocket needs for the WebSocket upgrade handshake. Result:
+    # 500s on /socket.io/?...transport=websocket and the live indicator
+    # stays grey. Disabling the reloader fixes it.
+    #
+    # Trade-off: code edits no longer auto-reload. Restart manually. Set
+    # PIPINEAPPLE_RELOADER=1 to opt back in (useful when running as a
+    # non-root user during pure UI work).
+    use_reloader = (
+        os.environ.get("PIPINEAPPLE_RELOADER", "0").lower() in ("1", "true", "yes")
+    )
+
     socketio.run(
         app,
         host="0.0.0.0",
         port=5000,
         debug=bool(app.config.get("DEBUG", False)),
-        # SocketIO needs allow_unsafe_werkzeug=True when using debug=True
-        # in newer Werkzeug versions because the dev server is technically
-        # not allowed in production but Flask-SocketIO refuses to run it
-        # without an explicit opt-in. Fine for our dev/lab use.
+        use_reloader=use_reloader,
         allow_unsafe_werkzeug=True,
     )

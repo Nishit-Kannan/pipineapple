@@ -39,7 +39,7 @@
           <line x1="12" y1="8" x2="12.01" y2="8"/>
         </svg>
       </button>
-      <button class="iconbtn" title="Web Terminal" aria-label="Web Terminal">
+      <button id="term-btn" class="iconbtn" title="Command stream — read-only" aria-label="Command stream">
         {# terminal #}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round" class="iconbtn-svg">
@@ -57,6 +57,25 @@
       </button>
     </div>
   </header>
+
+  {# ---------- Command stream drawer (bottom panel) ---------- #}
+  <aside id="term-drawer" class="term-drawer" hidden>
+    <div class="term-head">
+      <span class="term-title">
+        <span class="term-prompt">$</span> Command stream
+        <span class="muted term-sub">read-only · polling suppressed</span>
+      </span>
+      <div class="term-actions">
+        <button id="term-clear" class="linkbtn">Clear</button>
+        <button id="term-close" class="linkbtn" title="Close">close</button>
+      </div>
+    </div>
+    <div id="term-body" class="term-body">
+      <div class="term-empty muted">
+        No commands captured yet. Open the dashboard or trigger an action to see commands flow.
+      </div>
+    </div>
+  </aside>
 
   {# ---------- Notifications drawer ---------- #}
   <div id="notif-drawer" class="notif-drawer" hidden>

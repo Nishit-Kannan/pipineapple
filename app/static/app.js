@@ -173,6 +173,102 @@
     </tr>`;
   }
 
+  // ---------- Command stream drawer ----------
+  const termState = {
+    list: [],
+    open: false,
+    autoScroll: true,
+  };
+
+  function fmtClockTime(ts) {
+    const d = new Date(ts * 1000);
+    return `${String(d.getHours()).padStart(2, "0")}:`
+         + `${String(d.getMinutes()).padStart(2, "0")}:`
+         + `${String(d.getSeconds()).padStart(2, "0")}`;
+  }
+
+  function rcClass(rc) {
+    if (rc == null)  return "term-rc-pending";
+    if (rc === 0)    return "term-rc-ok";
+    return "term-rc-fail";
+  }
+
+  function rcLabel(rc, durationMs) {
+    if (rc == null)  return "running";
+    const dur = durationMs != null ? ` (${durationMs.toFixed(0)}ms)` : "";
+    return `rc=${rc}${dur}`;
+  }
+
+  function renderTermLine(entry) {
+    const sourceCls = `term-source-${entry.source || "tool"}`;
+    const noteHtml = entry.note
+      ? `<div class="term-note">↳ ${escapeHtml(entry.note)}</div>`
+      : "";
+    return `<div class="term-line">
+      <span class="term-ts">${fmtClockTime(entry.ts)}</span>
+      <span class="term-source ${sourceCls}">${escapeHtml(entry.source || "tool")}</span>
+      <span class="term-cmd">${escapeHtml(entry.cmd_str || (entry.cmd || []).join(" "))}</span>
+      <span class="term-rc ${rcClass(entry.rc)}">${escapeHtml(rcLabel(entry.rc, entry.duration_ms))}</span>
+      ${noteHtml}
+    </div>`;
+  }
+
+  function renderTermBody() {
+    const body = $("#term-body");
+    if (!body) return;
+    if (termState.list.length === 0) {
+      body.innerHTML = `<div class="term-empty muted">
+        No commands captured yet. Open the dashboard or trigger an action to see commands flow.
+      </div>`;
+      return;
+    }
+    // Render oldest-first so newest lands at the bottom (terminal-style).
+    const oldestFirst = termState.list.slice().reverse();
+    body.innerHTML = oldestFirst.map(renderTermLine).join("");
+    if (termState.autoScroll) {
+      body.scrollTop = body.scrollHeight;
+    }
+  }
+
+  function appendTermLine(entry) {
+    termState.list.unshift(entry);
+    // Cap at 200 to match server-side
+    termState.list = termState.list.slice(0, 200);
+    if (!termState.open) return;
+    const body = $("#term-body");
+    if (!body) return;
+    // If the empty placeholder is showing, replace it
+    const empty = body.querySelector(".term-empty");
+    if (empty) {
+      body.innerHTML = "";
+    }
+    body.insertAdjacentHTML("beforeend", renderTermLine(entry));
+    if (termState.autoScroll) {
+      body.scrollTop = body.scrollHeight;
+    }
+  }
+
+  function toggleTermDrawer(force) {
+    const drawer = $("#term-drawer");
+    if (!drawer) return;
+    const willOpen = force != null ? force : drawer.hidden;
+    drawer.hidden = !willOpen;
+    termState.open = willOpen;
+    if (willOpen) {
+      renderTermBody();
+      // Ask the server for recent history in case we missed events
+      // before the drawer was opened.
+      if (window.pipineapple && window.pipineapple.socket) {
+        window.pipineapple.socket.emit("terminal:request_history");
+      }
+    }
+  }
+
+  function clearTerm() {
+    termState.list = [];
+    renderTermBody();
+  }
+
   // ---------- Notifications drawer ----------
   const notifState = {
     list: [],
@@ -247,9 +343,26 @@
 
   // ---------- Boot ----------
   function init() {
-    // Drawer button wiring
+    // Notification drawer button wiring
     const btn = $("#notif-btn");
     if (btn) btn.addEventListener("click", () => toggleDrawer());
+
+    // Terminal drawer button wiring
+    const termBtn = $("#term-btn");
+    if (termBtn) termBtn.addEventListener("click", () => toggleTermDrawer());
+    const termClose = $("#term-close");
+    if (termClose) termClose.addEventListener("click", () => toggleTermDrawer(false));
+    const termClear = $("#term-clear");
+    if (termClear) termClear.addEventListener("click", () => clearTerm());
+
+    // Pause autoscroll if the user scrolls up within the term body
+    const termBody = $("#term-body");
+    if (termBody) {
+      termBody.addEventListener("scroll", () => {
+        const atBottom = termBody.scrollHeight - termBody.scrollTop - termBody.clientHeight < 16;
+        termState.autoScroll = atBottom;
+      });
+    }
 
     const markBtn = $("#notif-mark-read");
     if (markBtn) markBtn.addEventListener("click", () => {
@@ -303,8 +416,29 @@
       clearAll();
     });
 
+    // Terminal stream — non-polling commands run by the platform
+    socket.on("terminal:cmd", (entry) => {
+      appendTermLine(entry);
+    });
+
+    socket.on("terminal:history", (history) => {
+      // Replace local state with the server's authoritative ring buffer
+      termState.list = Array.isArray(history) ? history : [];
+      if (termState.open) renderTermBody();
+    });
+
+    socket.on("terminal:clear", () => {
+      clearTerm();
+    });
+
+    // Ask for recent history on every connect so the drawer is seeded
+    // even if the user opens it later in the session.
+    socket.on("connect", () => {
+      socket.emit("terminal:request_history");
+    });
+
     // Expose for debugging from the browser console
-    window.pipineapple = { socket, notifState };
+    window.pipineapple = { socket, notifState, termState };
   }
 
   if (document.readyState === "loading") {

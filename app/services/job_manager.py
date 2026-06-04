@@ -162,6 +162,21 @@ class JobManager:
         )
         if self._socketio is not None:
             self._socketio.emit("job:started", job.to_dict(), namespace="/")
+
+        # Broadcast to the read-only command stream so the user sees the
+        # full command of every long-running tool the platform launches.
+        try:
+            from app.services.terminal import terminal
+            terminal.broadcast(
+                cmd_list,
+                source="job",
+                rc=None,           # still running, no exit code yet
+                duration_ms=None,
+                note=f"started as job {job_id} (pid {job.pid})",
+            )
+        except Exception:
+            log.exception("terminal broadcast for job start failed")
+
         return job
 
     def _reader_loop(self, job: Job) -> None:

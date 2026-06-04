@@ -81,9 +81,27 @@ def _attach_services() -> None:
     """Wire the singleton services to the SocketIO instance."""
     from app.services.job_manager import job_manager
     from app.services.notifications import notifications
+    from app.services.terminal import terminal
+    from app.tools._common import register_command_listener
 
     notifications.attach_socketio(socketio)
     job_manager.attach_socketio(socketio)
+    terminal.attach_socketio(socketio)
+
+    # Hook the terminal service into every non-polling subprocess.run.
+    # The factory is the single place that bridges tools → services for
+    # the command stream, preserving the dependency direction (tools
+    # don't import services directly).
+    def _on_command(cmd, source, rc, duration_ms):
+        terminal.broadcast(cmd, source=source, rc=rc, duration_ms=duration_ms)
+    register_command_listener(_on_command)
+
+    # When a fresh client connects, send it the recent command history
+    # so the drawer isn't empty until the next action.
+    @socketio.on("terminal:request_history")
+    def _send_history():
+        from flask_socketio import emit
+        emit("terminal:history", terminal.list())
 
 
 def _register_blueprints(app: Flask) -> None:
