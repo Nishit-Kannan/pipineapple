@@ -101,12 +101,20 @@ class JobManager:
         cmd: str | list[str],
         name: str | None = None,
         tags: list[str] | None = None,
+        stdout_path: str | None = None,
     ) -> Job:
         """Start a subprocess and register it as a job.
 
         ``cmd`` is either a list of argv tokens or a shell-quoted string.
         The function returns immediately with a Job whose status is
         RUNNING (or FAILED if the process couldn't be launched at all).
+
+        If ``stdout_path`` is provided, the process's stdout/stderr is
+        redirected to that file rather than captured via pipe. Used for
+        long-running daemons (hostapd, dnsmasq) where the pipe-+-reader
+        approach can interact badly with how the daemon manages its own
+        IO — and where having a persistent on-disk log is more useful
+        for post-mortem debugging than a deque in memory.
         """
         if isinstance(cmd, str):
             cmd_list = shlex.split(cmd)
@@ -124,13 +132,29 @@ class JobManager:
             self._jobs[job_id] = job
 
         try:
-            proc = subprocess.Popen(
-                cmd_list,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=1,
-                text=True,
-            )
+            if stdout_path:
+                log.info("job %s -> stdout redirected to %s", job_id, stdout_path)
+                # Open the file with line buffering so writes appear
+                # promptly when we tail it.
+                stdout_target = open(stdout_path, "w", buffering=1)
+                proc = subprocess.Popen(
+                    cmd_list,
+                    stdout=stdout_target,
+                    stderr=subprocess.STDOUT,
+                    bufsize=1,
+                    text=True,
+                )
+                # Stash the file so we close it in the wait-loop thread
+                job._stdout_file = stdout_target  # type: ignore[attr-defined]
+                job._stdout_path = stdout_path    # type: ignore[attr-defined]
+            else:
+                proc = subprocess.Popen(
+                    cmd_list,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    bufsize=1,
+                    text=True,
+                )
         except (FileNotFoundError, OSError) as e:
             job.status = JobStatus.FAILED
             job.end_time = time.time()
@@ -146,13 +170,24 @@ class JobManager:
         job.status = JobStatus.RUNNING
         job.start_time = time.time()
 
-        # Spawn a reader thread to drain stdout
-        t = threading.Thread(
-            target=self._reader_loop,
-            args=(job,),
-            daemon=True,
-            name=f"job-reader-{job_id[:6]}",
-        )
+        # Spawn the appropriate watcher thread.
+        # - File-redirected jobs: just wait for exit (no stdout to drain).
+        # - Pipe-captured jobs: drain stdout line-by-line into the buffer
+        #   and SocketIO room.
+        if stdout_path:
+            t = threading.Thread(
+                target=self._wait_loop,
+                args=(job,),
+                daemon=True,
+                name=f"job-wait-{job_id[:6]}",
+            )
+        else:
+            t = threading.Thread(
+                target=self._reader_loop,
+                args=(job,),
+                daemon=True,
+                name=f"job-reader-{job_id[:6]}",
+            )
         job._reader_thread = t
         t.start()
 
@@ -178,6 +213,48 @@ class JobManager:
             log.exception("terminal broadcast for job start failed")
 
         return job
+
+    def _wait_loop(self, job: Job) -> None:
+        """Watcher for file-redirected jobs.
+
+        Doesn't drain stdout (it's going to a file). Just waits for the
+        process to exit, then closes the file and records final status.
+        On exit, tails the last 200 lines of the log file into the job's
+        in-memory buffer so the UI can still surface recent output.
+        """
+        proc = job._proc
+        assert proc is not None
+        rc = proc.wait()
+        job.end_time = time.time()
+        job.exit_code = rc
+
+        # Close the redirected stdout file
+        stdout_file = getattr(job, "_stdout_file", None)
+        if stdout_file is not None:
+            try:
+                stdout_file.close()
+            except Exception:
+                pass
+
+        # Pull the tail of the log file into the job's buffer for UI
+        stdout_path = getattr(job, "_stdout_path", None)
+        if stdout_path:
+            try:
+                with open(stdout_path, "r") as f:
+                    tail = f.readlines()[-200:]
+                for line in tail:
+                    job._stdout_buf.append(line.rstrip("\n"))
+            except Exception:
+                pass
+
+        if job.status == JobStatus.RUNNING:
+            job.status = JobStatus.COMPLETED if rc == 0 else JobStatus.FAILED
+        log.info(
+            "job %s exited rc=%d status=%s (stdout: %s)",
+            job.id, rc, job.status.value, stdout_path or "<deque>",
+        )
+        if self._socketio is not None:
+            self._socketio.emit("job:exited", job.to_dict(), namespace="/")
 
     def _reader_loop(self, job: Job) -> None:
         """Drain the subprocess stdout, line by line, until EOF then collect exit."""

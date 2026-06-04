@@ -233,11 +233,15 @@ class NetworkingService:
         if not ok:
             return messages
 
-        # 4. Start dnsmasq then hostapd via JobManager
+        # 4. Start dnsmasq then hostapd via JobManager. Redirect their
+        #    stdout to log files because (a) long-running daemons don't
+        #    interact well with our pipe+reader model and (b) when they
+        #    crash we need post-mortem logs.
         dn_job = job_manager.start_job(
             ["dnsmasq", "-C", str(dnsmasq_path), "-k", "--log-facility=-"],
             name="mgmt-ap-dnsmasq",
             tags=["networking", "mgmt-ap"],
+            stdout_path="/tmp/pipineapple-mgmt-ap-dnsmasq.log",
         )
         self._mgmt_dnsmasq_job_id = dn_job.id
         messages.append(f"started dnsmasq (job {dn_job.id})")
@@ -246,6 +250,7 @@ class NetworkingService:
             ["hostapd", str(hostapd_path)],
             name="mgmt-ap-hostapd",
             tags=["networking", "mgmt-ap"],
+            stdout_path="/tmp/pipineapple-mgmt-ap-hostapd.log",
         )
         self._mgmt_hostapd_job_id = ha_job.id
         messages.append(f"started hostapd (job {ha_job.id})")
