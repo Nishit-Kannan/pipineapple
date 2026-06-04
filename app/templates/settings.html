@@ -220,7 +220,36 @@
           </tbody>
         </table>
 
-        <h3 class="subhead" style="margin-top:18px;">Scan + add network</h3>
+        <h3 class="subhead" style="margin-top:18px;">Add network manually</h3>
+        <p class="muted" style="font-size:12px; margin:0 0 8px 0;">
+          Save a Wi-Fi profile without scanning. Useful while
+          <code>wlan0</code> is busy hosting the management AP — credentials
+          get stashed in NetworkManager and auto-connect once
+          <code>wlan0</code> is freed (i.e. when you disable the management AP).
+        </p>
+        <form id="wifi-manual-add" class="auth-form-inline">
+          <div class="form-row">
+            <label>
+              <span class="auth-label">SSID</span>
+              <input type="text" name="ssid" required maxlength="32">
+            </label>
+            <label>
+              <span class="auth-label">WPA2 password (or blank for open)</span>
+              <input type="password" name="password">
+            </label>
+            <label style="align-self:end;">
+              <button type="submit" class="actbtn">Save profile</button>
+            </label>
+          </div>
+        </form>
+
+        <h3 class="subhead" style="margin-top:18px;">Scan + add (wlan0 must be in client mode)</h3>
+        <p class="muted" style="font-size:12px; margin:0 0 8px 0;">
+          Scanning requires <code>wlan0</code> to be in managed/station
+          mode, which is incompatible with hosting the management AP on
+          the same radio. Disable the management AP first if you want to
+          scan.
+        </p>
         <div class="form-row">
           <button id="wifi-scan-btn" class="actbtn">Scan for networks</button>
           <button id="wifi-disconnect-btn" class="actbtn actbtn-muted">Disconnect wlan0</button>

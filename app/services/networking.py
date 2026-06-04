@@ -120,6 +120,14 @@ class NetworkingService:
             self._save(state)
         return True, msg
 
+    def save_wifi(self, ssid: str, password: str | None) -> tuple[bool, str]:
+        """Save a Wi-Fi profile without trying to connect now.
+
+        Used when wlan0 is busy hosting the management AP and can't act
+        as a client. NM will use the saved profile once wlan0 is freed.
+        """
+        return nm.wifi_save_profile(ssid, password, iface="wlan0")
+
     def disconnect_wifi(self) -> tuple[bool, str]:
         with self._lock:
             state = self._load()

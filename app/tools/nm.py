@@ -185,6 +185,46 @@ def wifi_connect(ssid: str, password: str | None, iface: str = "wlan0") -> tuple
     return True, f"connected {iface} to {ssid}"
 
 
+def wifi_save_profile(
+    ssid: str,
+    password: str | None,
+    iface: str = "wlan0",
+) -> tuple[bool, str]:
+    """Save a Wi-Fi connection profile WITHOUT trying to connect now.
+
+    Useful when the target interface is busy doing something else (e.g.
+    hosting the management AP) but you want to pre-stage credentials
+    so NetworkManager auto-connects later when the interface is freed.
+    """
+    if stub_mode():
+        return True, f"(stub) save profile {ssid} for {iface}"
+    args = [
+        "nmcli", "connection", "add", "type", "wifi",
+        "ifname", iface,
+        "con-name", ssid,
+        "ssid", ssid,
+    ]
+    if password:
+        args += [
+            "wifi-sec.key-mgmt", "wpa-psk",
+            "wifi-sec.psk", password,
+        ]
+    args += ["connection.autoconnect", "yes"]
+    r = run(args, timeout=8.0)
+    if r.returncode == 0:
+        return True, f"saved profile for {ssid}"
+    # nmcli returns non-zero if profile already exists — try modify instead
+    if "already exists" in (r.stderr or "").lower() or "in use by" in (r.stderr or "").lower():
+        if password:
+            r2 = run(["nmcli", "connection", "modify", ssid,
+                      "wifi-sec.psk", password,
+                      "connection.autoconnect", "yes"], timeout=5.0)
+            if r2.returncode == 0:
+                return True, f"updated profile for {ssid}"
+            return False, f"nmcli modify failed: {r2.stderr.strip()}"
+    return False, f"nmcli add failed: {r.stderr.strip() or r.stdout.strip()}"
+
+
 def wifi_disconnect(iface: str = "wlan0") -> tuple[bool, str]:
     if stub_mode():
         return True, f"(stub) nmcli disconnect {iface}"

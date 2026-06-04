@@ -56,6 +56,24 @@ def wifi_connect():
     return jsonify({"ok": ok, "msg": msg, "state": get_networking().get_state()})
 
 
+@bp.route("/networking/wifi/save", methods=["POST"])
+def wifi_save():
+    """Save a Wi-Fi profile without trying to connect right now.
+
+    Used when wlan0 is busy hosting the management AP — we can stash the
+    credentials so NetworkManager auto-connects once wlan0 is freed.
+    """
+    data = request.get_json(silent=True) or {}
+    ssid = (data.get("ssid") or "").strip()
+    pw = data.get("password") or ""
+    if not ssid:
+        return jsonify({"ok": False, "msg": "missing ssid"}), 400
+    ok, msg = get_networking().save_wifi(ssid, pw if pw else None)
+    notif = notifications.success if ok else notifications.warning
+    notif(f"wifi save: {msg}", source="networking")
+    return jsonify({"ok": ok, "msg": msg, "state": get_networking().get_state()})
+
+
 @bp.route("/networking/wifi/disconnect", methods=["POST"])
 def wifi_disconnect():
     ok, msg = get_networking().disconnect_wifi()

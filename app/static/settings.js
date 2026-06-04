@@ -305,6 +305,28 @@
       });
     }
 
+    // Manual-add Wi-Fi profile (works while wlan0 is busy hosting AP)
+    const manualAdd = $("#wifi-manual-add");
+    if (manualAdd) {
+      manualAdd.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = new FormData(manualAdd);
+        const body = {
+          ssid: (f.get("ssid") || "").trim(),
+          password: f.get("password") || "",
+        };
+        if (!body.ssid) {
+          showStatus("missing SSID", "fail");
+          return;
+        }
+        showStatus(`saving profile for ${body.ssid}…`);
+        const res = await postJSON("/settings/networking/wifi/save", body);
+        showStatus(res.msg, res.ok ? "ok" : "fail");
+        if (res.ok) manualAdd.reset();
+        if (res.state) renderNetworkingState(res.state);
+      });
+    }
+
     // Wi-Fi scan
     const scanBtn = $("#wifi-scan-btn");
     if (scanBtn) {
