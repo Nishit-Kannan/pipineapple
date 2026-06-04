@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from flask import Blueprint, jsonify, render_template, request
 
+from app.services.access_control import access_control
 from app.services.adapters import get_service
 from app.services.notifications import notifications
 
@@ -24,7 +25,29 @@ def index():
         "settings.html",
         adapters=svc.list_adapters(),
         roles_assigned=svc.get_roles(),
+        deny_cidrs=access_control.list_cidrs(),
     )
+
+
+# ---------- Security tab ----------
+@bp.route("/access/deny", methods=["POST"])
+def add_deny_cidr():
+    data = request.get_json(silent=True) or {}
+    cidr = (data.get("cidr") or "").strip()
+    ok, msg = access_control.add_cidr(cidr)
+    notif = notifications.success if ok else notifications.warning
+    notif(f"access deny add: {msg}", source="security")
+    return jsonify({"ok": ok, "msg": msg, "deny_cidrs": access_control.list_cidrs()})
+
+
+@bp.route("/access/deny/remove", methods=["POST"])
+def remove_deny_cidr():
+    data = request.get_json(silent=True) or {}
+    cidr = (data.get("cidr") or "").strip()
+    ok, msg = access_control.remove_cidr(cidr)
+    notif = notifications.success if ok else notifications.warning
+    notif(f"access deny remove: {msg}", source="security")
+    return jsonify({"ok": ok, "msg": msg, "deny_cidrs": access_control.list_cidrs()})
 
 
 # ---------- JSON API used by the page's JS ----------

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login — PiPineapple</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <header class="auth-brand">
+      <span class="logo">⚡</span>
+      <span class="brand-name">PiPineapple</span>
+    </header>
+
+    <h1 class="auth-title">Sign in</h1>
+    <p class="auth-blurb">Enter your password to access the management UI.</p>
+
+    {% if error %}
+      <div class="auth-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST" class="auth-form">
+      <label>
+        <span class="auth-label">Password</span>
+        <input type="password" name="password" required autofocus>
+      </label>
+      <button type="submit" class="bigbtn">Sign in</button>
+    </form>
+
+    <footer class="auth-footer muted">
+      lab-only · authorized targets only
+    </footer>
+  </main>
+</body>
+</html>

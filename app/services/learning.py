@@ -694,6 +694,111 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 04.5 — Auth & access control
+    # ------------------------------------------------------------------
+    {
+        "id": "auth-access",
+        "title": "Auth & access control",
+        "added_in_session": 4.5,
+        "intro": (
+            "Inspecting and recovering the authentication + access "
+            "control state. The auth password is stored as a salted "
+            "scrypt hash in $DATA_DIR/auth.json — file presence acts "
+            "as the 'platform initialised' signal. The deny-list CIDRs "
+            "live in $DATA_DIR/access_control.json. Both are JSON, "
+            "owner-readable only."
+        ),
+        "ui_reference": (
+            "Settings → Security (change password, deny-list manager). "
+            "Login page at /login, first-run setup at /setup."
+        ),
+        "wrapper_modules": [
+            "app/services/auth.py",
+            "app/services/access_control.py",
+        ],
+        "commands": [
+            {
+                "command": "cat $PIPINEAPPLE_DATA_DIR/auth.json",
+                "description": (
+                    "Inspect the stored hash. The hash format is "
+                    "'scrypt:<work-factor>:<salt>:<hash>'. Cannot be "
+                    "reversed — werkzeug salts and runs scrypt with a "
+                    "deliberately slow work factor."
+                ),
+                "example_output": (
+                    "{\"password_hash\": \"scrypt:32768:8:1$abc...$def...\", "
+                    "\"set_at\": 1780600000.123}"
+                ),
+            },
+            {
+                "command": "rm $PIPINEAPPLE_DATA_DIR/auth.json",
+                "description": (
+                    "Emergency password reset. Removes the password "
+                    "file; the next page load redirects to /setup. "
+                    "Requires shell access to the Pi (so you must "
+                    "already control the machine to use this)."
+                ),
+                "notes": (
+                    "There's no 'forgot password' email flow — this is "
+                    "single-user, single-machine. Shell access IS the "
+                    "recovery path."
+                ),
+            },
+            {
+                "command": "cat $PIPINEAPPLE_DATA_DIR/access_control.json",
+                "description": "Inspect the configured deny-list CIDRs.",
+                "example_output": (
+                    "{\n"
+                    "  \"deny_cidrs\": [\n"
+                    "    \"10.0.0.0/24\"\n"
+                    "  ]\n"
+                    "}"
+                ),
+            },
+            {
+                "command": "python3 -c \"from werkzeug.security import generate_password_hash; print(generate_password_hash('your-pw'))\"",
+                "description": (
+                    "Manually generate a hash. Useful if you want to "
+                    "set the password via shell rather than the UI — "
+                    "drop the hash into auth.json by hand."
+                ),
+            },
+            {
+                "command": "python3 -c \"from werkzeug.security import check_password_hash; print(check_password_hash('STORED_HASH', 'guess'))\"",
+                "description": "Verify a guess against a stored hash. Useful for forensics or debugging.",
+            },
+            {
+                "command": "ip a | grep 'inet '",
+                "description": (
+                    "Find your own IP addresses before configuring the "
+                    "deny-list. Make sure you don't deny-list a subnet "
+                    "that contains the Mac you browse from — you'll "
+                    "lock yourself out."
+                ),
+                "notes": (
+                    "Localhost (127.0.0.0/8) is always allowed "
+                    "regardless of deny-list, so a Pi-shell `curl` is "
+                    "always your fallback path even if you mis-configure."
+                ),
+            },
+            {
+                "command": "curl -i http://pi-lab.local:5000/ --interface <local-iface>",
+                "description": (
+                    "Test access from a specific local interface. With "
+                    "the rogue AP up on wlan-ap, you can curl from "
+                    "--interface wlan-ap to simulate a victim client "
+                    "and confirm the deny-list returns 403."
+                ),
+                "notes": (
+                    "Output: HTTP/1.1 403 FORBIDDEN if the source IP "
+                    "is in a deny CIDR; otherwise the normal HTML "
+                    "response (or 302 to /login if not authenticated)."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 01 — Driver detection
     # ------------------------------------------------------------------
     {

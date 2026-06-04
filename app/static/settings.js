@@ -90,6 +90,21 @@
     if (monField) monField.textContent = String(monitorCount);
   }
 
+  function renderDenyTable(cidrs) {
+    const tbody = document.querySelector("#deny-table tbody");
+    if (!tbody) return;
+    if (!cidrs || cidrs.length === 0) {
+      tbody.innerHTML = '<tr class="deny-empty"><td colspan="2" class="muted">No deny CIDRs configured. UI is reachable from any source.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = cidrs.map(c => `
+      <tr data-cidr="${escapeHtml(c)}">
+        <td><code>${escapeHtml(c)}</code></td>
+        <td><button class="actbtn deny-remove" data-cidr="${escapeHtml(c)}">Remove</button></td>
+      </tr>
+    `).join("");
+  }
+
   function escapeHtml(s) {
     if (s == null) return "";
     return String(s)
@@ -99,8 +114,86 @@
   }
 
   // ---------- Event handlers ----------
+  // ---------- Tab switching ----------
+  function activateTab(name) {
+    document.querySelectorAll(".tab").forEach(b => {
+      if (b.dataset.tab === name) b.classList.add("active");
+      else b.classList.remove("active");
+    });
+    document.querySelectorAll(".tab-panel").forEach(p => {
+      p.hidden = !p.id.endsWith(`-${name}`);
+    });
+  }
+
   function init() {
     if (!document.querySelector("#adapter-table")) return; // not on settings page
+
+    // Tab buttons
+    document.querySelectorAll(".tab").forEach(btn => {
+      if (btn.disabled) return;
+      btn.addEventListener("click", () => {
+        const name = btn.dataset.tab;
+        if (name) activateTab(name);
+      });
+    });
+
+    // Password change form (Security tab)
+    const pwForm = $("#change-password-form");
+    if (pwForm) {
+      pwForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = new FormData(pwForm);
+        const body = {
+          old: f.get("old"),
+          new: f.get("new"),
+          new_confirm: f.get("new_confirm"),
+        };
+        showStatus("changing password…");
+        const res = await postJSON("/auth/change-password", body);
+        showStatus(res.msg || (res.ok ? "password changed" : "failed"), res.ok ? "ok" : "fail");
+        if (res.ok) pwForm.reset();
+      });
+    }
+
+    // Deny CIDR add/remove
+    const denyAdd = $("#deny-cidr-add");
+    if (denyAdd) {
+      denyAdd.addEventListener("click", async () => {
+        const input = $("#deny-cidr-input");
+        const cidr = (input.value || "").trim();
+        if (!cidr) return;
+        denyAdd.disabled = true;
+        showStatus(`adding ${cidr} to deny list…`);
+        try {
+          const res = await postJSON("/settings/access/deny", { cidr });
+          showStatus(res.msg, res.ok ? "ok" : "fail");
+          if (res.ok) input.value = "";
+          renderDenyTable(res.deny_cidrs || []);
+        } finally {
+          denyAdd.disabled = false;
+        }
+      });
+    }
+
+    // Deny-table remove buttons (delegated)
+    const denyTable = $("#deny-table");
+    if (denyTable) {
+      denyTable.addEventListener("click", async (e) => {
+        const btn = e.target.closest(".deny-remove");
+        if (!btn) return;
+        const cidr = btn.dataset.cidr;
+        if (!confirm(`Remove ${cidr} from the management access deny list?`)) return;
+        btn.disabled = true;
+        showStatus(`removing ${cidr}…`);
+        try {
+          const res = await postJSON("/settings/access/deny/remove", { cidr });
+          showStatus(res.msg, res.ok ? "ok" : "fail");
+          renderDenyTable(res.deny_cidrs || []);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    }
 
     // Role select changes
     document.body.addEventListener("change", async (e) => {

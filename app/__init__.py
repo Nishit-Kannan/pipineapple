@@ -60,8 +60,9 @@ def create_app(config: type[BaseConfig] | str | None = None) -> Flask:
 
     _configure_logging(app)
     socketio.init_app(app)
-    _attach_services()
+    _attach_services(app)
     _register_blueprints(app)
+    _install_auth_middleware(app)
     _start_background_tasks(app)
 
     app.logger.info(
@@ -85,8 +86,13 @@ def _configure_logging(app: Flask) -> None:
     app.logger.setLevel(logging.DEBUG if app.config["DEBUG"] else logging.INFO)
 
 
-def _attach_services() -> None:
-    """Wire the singleton services to the SocketIO instance."""
+def _attach_services(app: Flask | None = None) -> None:
+    """Wire the singleton services to the SocketIO instance.
+
+    Also attaches the access_control service to the data dir so the
+    deny-list survives across requests.
+    """
+    from app.services.access_control import access_control
     from app.services.job_manager import job_manager
     from app.services.notifications import notifications
     from app.services.terminal import terminal
@@ -95,6 +101,8 @@ def _attach_services() -> None:
     notifications.attach_socketio(socketio)
     job_manager.attach_socketio(socketio)
     terminal.attach_socketio(socketio)
+    if app is not None:
+        access_control.attach(app.config["DATA_DIR"])
 
     # Hook the terminal service into every non-polling subprocess.run.
     # The factory is the single place that bridges tools → services for
@@ -113,10 +121,12 @@ def _attach_services() -> None:
 
 
 def _register_blueprints(app: Flask) -> None:
+    from app.routes.auth import bp as auth_bp
     from app.routes.dashboard import bp as dashboard_bp
     from app.routes.learning import bp as learning_bp
     from app.routes.settings import bp as settings_bp
 
+    app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(learning_bp)
     app.register_blueprint(settings_bp)
@@ -126,6 +136,49 @@ def _register_blueprints(app: Flask) -> None:
         from app.routes.debug import bp as debug_bp
         app.register_blueprint(debug_bp)
         app.logger.info("debug routes enabled at /debug/*")
+
+
+def _install_auth_middleware(app: Flask) -> None:
+    """Install before_request hooks for auth + access control.
+
+    Two filters run on every request, in order:
+
+    1. **Access control deny-list** — if the source IP matches any
+       configured deny CIDR (e.g. the rogue AP subnet), 403 outright.
+       Localhost is always allowed.
+    2. **Authentication** — if the platform isn't initialised, redirect
+       to /setup. If it is but the session isn't logged in, redirect to
+       /login. Whitelisted paths (auth endpoints, static, the bare
+       favicon) bypass.
+    """
+    from flask import redirect, request, session, url_for
+
+    # Routes that don't require an authenticated session
+    AUTH_EXEMPT_ENDPOINTS = {
+        "auth.setup", "auth.login", "auth.logout",
+        "static",
+    }
+
+    @app.before_request
+    def _filter_request():
+        # ---------- Access-control deny-list ----------
+        from app.services.access_control import access_control
+        remote = request.remote_addr or ""
+        if access_control.is_denied(remote):
+            return ("Forbidden", 403)
+
+        # ---------- Auth ----------
+        endpoint = request.endpoint or ""
+        if endpoint in AUTH_EXEMPT_ENDPOINTS:
+            return None
+
+        from app.services.auth import get_service
+        svc = get_service()
+        if not svc.is_configured():
+            return redirect(url_for("auth.setup"))
+        if not svc.is_logged_in(session):
+            return redirect(url_for("auth.login"))
+        return None
 
 
 def _start_background_tasks(app: Flask) -> None:

@@ -14,6 +14,7 @@
   {# ---------- Tab bar ---------- #}
   <div class="tabs">
     <button class="tab active" data-tab="adapters">Adapter Management</button>
+    <button class="tab" data-tab="security">Security</button>
     <button class="tab disabled" disabled title="Session 18">Networking</button>
     <button class="tab disabled" disabled title="Session 18">WiFi</button>
     <button class="tab disabled" disabled title="Session 18">Advanced</button>
@@ -159,5 +160,74 @@
     </div>
 
     <div id="settings-status" class="settings-status muted" hidden></div>
+  </section>
+
+  {# ---------- Security tab ---------- #}
+  <section id="tab-security" class="tab-panel" hidden>
+    <div class="dash-grid">
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Change password</h2>
+          <span class="muted">verifies current before setting new</span>
+        </div>
+        <form id="change-password-form" class="auth-form-inline">
+          <div class="form-row">
+            <label>
+              <span class="auth-label">Current password</span>
+              <input type="password" name="old" required>
+            </label>
+            <label>
+              <span class="auth-label">New password</span>
+              <input type="password" name="new" required minlength="4">
+            </label>
+            <label>
+              <span class="auth-label">Confirm new</span>
+              <input type="password" name="new_confirm" required minlength="4">
+            </label>
+          </div>
+          <button type="submit" class="bigbtn">Update password</button>
+        </form>
+      </section>
+
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Management access deny-list</h2>
+          <span class="muted">block source subnets from reaching the UI</span>
+        </div>
+        <p class="muted" style="font-size:13px;">
+          Block subnets at the WSGI layer before any auth check. Use this
+          once the rogue AP is live to prevent victim clients on
+          <code>10.0.0.0/24</code> (or whatever DHCP range) from seeing
+          the management UI. Localhost (<code>127.0.0.0/8</code>) is
+          always allowed regardless of what's listed below.
+        </p>
+
+        <div class="deny-list-row">
+          <input id="deny-cidr-input" type="text" placeholder="10.0.0.0/24 or 192.168.4.0/24" class="cidr-input">
+          <button id="deny-cidr-add" class="bigbtn">Add to deny list</button>
+        </div>
+
+        <table class="data deny-table" id="deny-table">
+          <thead>
+            <tr>
+              <th>Denied subnet</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% if deny_cidrs %}
+              {% for c in deny_cidrs %}
+                <tr data-cidr="{{ c }}">
+                  <td><code>{{ c }}</code></td>
+                  <td><button class="actbtn deny-remove" data-cidr="{{ c }}">Remove</button></td>
+                </tr>
+              {% endfor %}
+            {% else %}
+              <tr class="deny-empty"><td colspan="2" class="muted">No deny CIDRs configured. UI is reachable from any source.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </section>
+    </div>
   </section>
 {% endblock %}

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Setup — PiPineapple</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <header class="auth-brand">
+      <span class="logo">⚡</span>
+      <span class="brand-name">PiPineapple</span>
+    </header>
+
+    <h1 class="auth-title">Set up your password</h1>
+    <p class="auth-blurb">
+      First-time setup. Pick a password for the management UI. From now
+      on, every visit to PiPineapple needs this password. The password
+      is stored as a salted scrypt hash in
+      <code>$DATA_DIR/auth.json</code>; change it later from
+      <em>Settings → Security</em>.
+    </p>
+
+    {% if error %}
+      <div class="auth-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST" class="auth-form">
+      <label>
+        <span class="auth-label">New password</span>
+        <input type="password" name="password" required autofocus minlength="4">
+      </label>
+      <label>
+        <span class="auth-label">Confirm password</span>
+        <input type="password" name="password_confirm" required minlength="4">
+      </label>
+      <button type="submit" class="bigbtn">Set password & continue</button>
+    </form>
+
+    <footer class="auth-footer muted">
+      lab-only · authorized targets only
+    </footer>
+  </main>
+</body>
+</html>
