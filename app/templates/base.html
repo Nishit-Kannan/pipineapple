@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='settings.js') }}" defer></script>
 </head>
 <body>
   {# ---------- Title bar ---------- #}
@@ -193,8 +194,9 @@
           <span class="sidenav-label">Learning</span>
         </a>
 
-        <a href="#" class="sidenav-item disabled"
-           title="Settings — Phase G (Session 18)">
+        <a href="{{ url_for('settings.index') }}"
+           class="sidenav-item {% block nav_settings %}{% endblock %}"
+           title="Settings — Adapter Management">
           <span class="sidenav-icon">
             {# gear (simplified) #}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"

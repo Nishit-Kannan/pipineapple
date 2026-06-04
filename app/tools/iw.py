@@ -143,6 +143,36 @@ def list_wireless_devices() -> list[dict[str, Any]]:
     return out
 
 
+def set_type(iface: str, mode: str) -> tuple[bool, str]:
+    """Set the wireless interface type (monitor / managed / __ap).
+
+    The interface must be down before the type change; we do *not*
+    handle that here (the orchestrating service runs ``ip link set
+    <iface> down`` first). Returns ``(ok, message)``.
+    """
+    if stub_mode():
+        return True, f"(stub) set {iface} -> {mode}"
+    if mode not in ("monitor", "managed", "ibss", "__ap"):
+        return False, f"refusing unknown mode {mode!r}"
+    result = run(["iw", "dev", iface, "set", "type", mode], timeout=4.0)
+    if result.returncode == 0:
+        return True, f"set {iface} to type {mode}"
+    return False, f"iw set type failed: {result.stderr.strip() or result.stdout.strip()}"
+
+
+def set_reg_domain(country_code: str) -> tuple[bool, str]:
+    """Set the regulatory domain. Two-letter ISO 3166 country code."""
+    if stub_mode():
+        return True, f"(stub) set reg domain {country_code}"
+    cc = country_code.strip().upper()
+    if not (len(cc) == 2 and cc.isalpha()):
+        return False, f"invalid country code {country_code!r}"
+    result = run(["iw", "reg", "set", cc], timeout=3.0)
+    if result.returncode == 0:
+        return True, f"set regulatory domain to {cc}"
+    return False, f"iw reg set failed: {result.stderr.strip()}"
+
+
 def get_reg_domain() -> str | None:
     """Return the current regulatory domain (country code), e.g. ``"US"``.
 

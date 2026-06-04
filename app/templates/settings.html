@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Settings — PiPineapple{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Settings</h1>
+    <p class="muted">
+      Adapter management, networking, and platform configuration.
+      Most subtabs unlock in later sessions; Adapter Management is live.
+    </p>
+  </div>
+
+  {# ---------- Tab bar ---------- #}
+  <div class="tabs">
+    <button class="tab active" data-tab="adapters">Adapter Management</button>
+    <button class="tab disabled" disabled title="Session 18">Networking</button>
+    <button class="tab disabled" disabled title="Session 18">WiFi</button>
+    <button class="tab disabled" disabled title="Session 18">Advanced</button>
+    <button class="tab disabled" disabled title="Session 18">Help</button>
+  </div>
+
+  {# ---------- Adapter Management tab ---------- #}
+  <section id="tab-adapters" class="tab-panel">
+
+    {# Status row #}
+    {% set total = adapters|length %}
+    {% set assigned = adapters|selectattr("is_offensive")|list|length %}
+    {% set monitors = adapters|selectattr("mode", "equalto", "monitor")|list|length %}
+    <div class="statcards">
+      <div class="statcard">
+        <div class="statcard-label">Wireless interfaces</div>
+        <div class="statcard-value">{{ total }}</div>
+        <div class="statcard-sub muted">all radios kernel sees</div>
+      </div>
+      <div class="statcard">
+        <div class="statcard-label">Roles assigned</div>
+        <div class="statcard-value" data-field="roles_count">{{ assigned }} / 3</div>
+        <div class="statcard-sub muted">
+          {% if assigned < 3 %}assign the rest below{% else %}all three offensive radios mapped{% endif %}
+        </div>
+      </div>
+      <div class="statcard">
+        <div class="statcard-label">Monitor mode</div>
+        <div class="statcard-value" data-field="monitor_count">{{ monitors }}</div>
+        <div class="statcard-sub muted">adapters actively listening</div>
+      </div>
+    </div>
+
+    {# Adapter table #}
+    <section class="card span-2">
+      <div class="card-head">
+        <h2>Detected adapters</h2>
+        <span class="muted">role + mode per interface</span>
+      </div>
+
+      {% if adapters %}
+        <table class="data adapter-table" id="adapter-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>MAC</th>
+              <th>Driver</th>
+              <th>Mode</th>
+              <th>Channel</th>
+              <th>Role</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in adapters %}
+              <tr data-mac="{{ a.mac }}" data-iface="{{ a.name }}">
+                <td><code>{{ a.name }}</code></td>
+                <td><code>{{ a.mac or "—" }}</code></td>
+                <td><code>{{ a.driver or "—" }}</code></td>
+                <td>
+                  {% if a.mode == "monitor" %}
+                    <span class="badge badge-warn">monitor</span>
+                  {% elif a.mode == "AP" %}
+                    <span class="badge badge-warn">ap</span>
+                  {% elif a.mode == "managed" %}
+                    <span class="badge badge-muted">managed</span>
+                  {% else %}
+                    <span class="badge badge-muted">{{ a.mode or "—" }}</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if a.channel %}
+                    {{ a.channel }}
+                    <span class="muted">({{ a.frequency_mhz }} MHz)</span>
+                  {% else %}—{% endif %}
+                </td>
+                <td>
+                  <select class="role-select" data-mac="{{ a.mac }}">
+                    <option value="none" {% if a.role == "none" %}selected{% endif %}>— none —</option>
+                    <option value="wlan-mon-2g" {% if a.role == "wlan-mon-2g" %}selected{% endif %}>wlan-mon-2g</option>
+                    <option value="wlan-mon-5g" {% if a.role == "wlan-mon-5g" %}selected{% endif %}>wlan-mon-5g</option>
+                    <option value="wlan-ap"     {% if a.role == "wlan-ap"     %}selected{% endif %}>wlan-ap</option>
+                  </select>
+                </td>
+                <td class="action-cell">
+                  <button class="actbtn" data-action="monitor" data-iface="{{ a.name }}">Monitor</button>
+                  <button class="actbtn" data-action="managed" data-iface="{{ a.name }}">Managed</button>
+                  <button class="actbtn actbtn-muted" data-action="down" data-iface="{{ a.name }}">Down</button>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="placeholder-inline">
+          No wireless interfaces detected. Check the adapters are plugged in
+          and that <code>iw</code> is installed (<code>sudo apt install -y iw</code>).
+        </div>
+      {% endif %}
+    </section>
+
+    {# Apply / Manager actions #}
+    <div class="dash-grid">
+      <section class="card">
+        <div class="card-head">
+          <h2>Apply udev sticky names</h2>
+          <span class="muted">/etc/udev/rules.d/99-pipineapple-adapters.rules</span>
+        </div>
+        <p class="muted" style="font-size:13px;">
+          Writes a udev rules file from the role assignments above and triggers
+          a udev reload. The new names take effect on next interface add —
+          either unplug+replug each Alfa, or reboot the Pi.
+        </p>
+        <button id="apply-udev" class="bigbtn">Generate & apply udev rules</button>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Apply NM unmanaging config</h2>
+          <span class="muted">/etc/NetworkManager/conf.d/99-pipineapple-unmanaged.conf</span>
+        </div>
+        <p class="muted" style="font-size:13px;">
+          Tells NetworkManager to leave <code>wlan-mon-*</code> and
+          <code>wlan-ap</code> alone (matches the sticky names above) while
+          continuing to manage <code>wlan0</code> for upstream Wi-Fi.
+        </p>
+        <button id="apply-nm" class="bigbtn">Generate & apply NM config</button>
+      </section>
+
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Stop NetworkManager + wpa_supplicant</h2>
+          <span class="muted">one-time sledgehammer — equivalent of <code>airmon-ng check kill</code></span>
+        </div>
+        <p class="muted" style="font-size:13px;">
+          Kills both services until next boot. Will disconnect <code>wlan0</code>
+          from your home Wi-Fi (ensure you're on Ethernet for the management
+          plane). Prefer the NM unmanaging config above for everyday use —
+          this is the "everything off" option for legacy attacks that need it.
+        </p>
+        <button id="stop-managers" class="bigbtn bigbtn-danger">Stop NM + wpa_supplicant</button>
+      </section>
+    </div>
+
+    <div id="settings-status" class="settings-status muted" hidden></div>
+  </section>
+{% endblock %}

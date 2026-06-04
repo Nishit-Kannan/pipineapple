@@ -775,6 +775,105 @@ table.data th code {
   line-height: 1.55;
 }
 
+/* ---------- Tabs (Settings page) ---------- */
+.tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+
+.tab {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-weight: 500;
+}
+
+.tab:hover { background: var(--bg-elev-2); }
+
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab.disabled, .tab[disabled] {
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
+
+.tab.disabled:hover { background: transparent; }
+
+.tab-panel { margin-top: 16px; }
+
+/* ---------- Settings — adapter table ---------- */
+.adapter-table .role-select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border-2);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-family: "SF Mono", Menlo, Monaco, monospace;
+  font-size: 12px;
+}
+
+.adapter-table .action-cell {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.actbtn {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border-2);
+  color: var(--fg);
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.actbtn:hover { background: var(--bg-elev-3); border-color: var(--accent-dim); }
+.actbtn.actbtn-muted { color: var(--fg-muted); }
+.actbtn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.bigbtn {
+  background: var(--accent);
+  color: #0a0e14;
+  border: 0;
+  padding: 10px 18px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 12px;
+}
+
+.bigbtn:hover { background: #f7d28e; }
+.bigbtn:disabled { opacity: 0.5; cursor: not-allowed; }
+.bigbtn.bigbtn-danger { background: var(--danger); color: #0a0e14; }
+.bigbtn.bigbtn-danger:hover { background: #e58a8a; }
+
+.settings-status {
+  margin-top: 20px;
+  padding: 10px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: "SF Mono", Menlo, Monaco, monospace;
+}
+
+.settings-status.ok    { border-color: var(--good); color: var(--good); }
+.settings-status.fail  { border-color: var(--danger); color: var(--danger); }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1200px) {
   .statcards { grid-template-columns: repeat(3, 1fr); }

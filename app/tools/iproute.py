@@ -66,6 +66,21 @@ _STUB_INTERFACES = [
 ]
 
 
+def set_link_state(iface: str, state: str) -> tuple[bool, str]:
+    """Bring an interface up or down via ``ip link set <iface> up|down``.
+
+    Required before/after `iw dev set type` on most drivers.
+    """
+    if stub_mode():
+        return True, f"(stub) ip link set {iface} {state}"
+    if state not in ("up", "down"):
+        return False, f"refusing unknown link state {state!r}"
+    result = run(["ip", "link", "set", iface, state], timeout=3.0)
+    if result.returncode == 0:
+        return True, f"set {iface} {state}"
+    return False, f"ip link set failed: {result.stderr.strip() or result.stdout.strip()}"
+
+
 def list_interfaces() -> list[dict[str, Any]]:
     """Return one dict per network interface.
 

@@ -107,9 +107,11 @@ def _attach_services() -> None:
 def _register_blueprints(app: Flask) -> None:
     from app.routes.dashboard import bp as dashboard_bp
     from app.routes.learning import bp as learning_bp
+    from app.routes.settings import bp as settings_bp
 
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(learning_bp)
+    app.register_blueprint(settings_bp)
 
     # Debug routes only in dev/mac configs
     if app.config.get("DEBUG", False):
