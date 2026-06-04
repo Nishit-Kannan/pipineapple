@@ -32,7 +32,7 @@ from threading import Lock
 from typing import Any
 
 from app.services.job_manager import job_manager
-from app.tools import dnsmasq, hostapd, iproute, nm
+from app.tools import dnsmasq, hostapd, iproute, nm, rfkill
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +164,19 @@ class NetworkingService:
     def _enable_mgmt_ap_unlocked(self, state: dict, ap: dict) -> list[str]:
         """Caller holds the lock. Mutates state in place; saves at the end."""
         messages: list[str] = []
+
+        # 0. Clear any rfkill soft-block. Pi 5 frequently boots with
+        #    wlan0 in a soft-blocked state — `ip link set up` then fails
+        #    with "Operation not possible due to RF-kill". Idempotent
+        #    no-op if already unblocked.
+        ok, msg = rfkill.unblock_wifi()
+        messages.append(msg)
+        if not ok:
+            # Soft-failure: log and continue. Most often the radio is
+            # already usable; rfkill may not be installed on minimal
+            # systems.
+            log.warning("rfkill unblock returned non-zero: %s", msg)
+
         # 1. Release wlan0 from NM
         ok, msg = nm.set_managed("wlan0", managed=False)
         messages.append(msg)
