@@ -16,26 +16,36 @@ from __future__ import annotations
 
 import os
 
-from app import create_app, socketio
+# Werkzeug's debug-mode reloader re-execs sys.argv on file change. Under
+# sudo (run-as-root.sh wraps us in `sudo -E python run.py`), that re-exec
+# creates a nested-sudo process tree which corrupts the WSGI environ
+# simple-websocket needs for the WebSocket upgrade handshake. Result:
+# 500s on /socket.io/?...transport=websocket and the live indicator
+# stays grey. Disabling the reloader fixes it.
+#
+# Trade-off: code edits no longer auto-reload. Restart manually. Set
+# PIPINEAPPLE_RELOADER=1 to opt back in (useful when running as a
+# non-root user during pure UI work).
+use_reloader = (
+    os.environ.get("PIPINEAPPLE_RELOADER", "0").lower() in ("1", "true", "yes")
+)
+
+# Background tasks (sysinfo broadcaster, networking restore) are guarded
+# in the factory against double-running in the reloader's parent process.
+# That guard uses WERKZEUG_RUN_MAIN as the "I am the serving process"
+# signal — set to "true" by werkzeug only in the reloader child. When the
+# reloader is OFF, no child exists; the main process IS the serving
+# process. We set the signal ourselves so the guard treats this as "yes,
+# run the tasks." Must happen BEFORE importing create_app.
+if not use_reloader and not os.environ.get("WERKZEUG_RUN_MAIN"):
+    os.environ["WERKZEUG_RUN_MAIN"] = "true"
+
+from app import create_app, socketio  # noqa: E402
 
 app = create_app()
 
 
 if __name__ == "__main__":
-    # Werkzeug's debug-mode reloader re-execs sys.argv on file change. Under
-    # sudo (run-as-root.sh wraps us in `sudo -E python run.py`), that re-exec
-    # creates a nested-sudo process tree which corrupts the WSGI environ
-    # simple-websocket needs for the WebSocket upgrade handshake. Result:
-    # 500s on /socket.io/?...transport=websocket and the live indicator
-    # stays grey. Disabling the reloader fixes it.
-    #
-    # Trade-off: code edits no longer auto-reload. Restart manually. Set
-    # PIPINEAPPLE_RELOADER=1 to opt back in (useful when running as a
-    # non-root user during pure UI work).
-    use_reloader = (
-        os.environ.get("PIPINEAPPLE_RELOADER", "0").lower() in ("1", "true", "yes")
-    )
-
     socketio.run(
         app,
         host="0.0.0.0",
