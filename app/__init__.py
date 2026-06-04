@@ -168,6 +168,15 @@ def _install_auth_middleware(app: Flask) -> None:
             return ("Forbidden", 403)
 
         # ---------- Auth ----------
+        # Socket.IO polling/upgrade requests go through Flask too. They
+        # carry the session cookie but the HTTP-level redirect-to-/login
+        # response we'd emit for unauthenticated users breaks the
+        # socket.io client (it doesn't follow 302s). Auth for the
+        # SocketIO layer is enforced in the connect handler below,
+        # which rejects unauthenticated sessions cleanly.
+        if request.path.startswith("/socket.io/"):
+            return None
+
         endpoint = request.endpoint or ""
         if endpoint in AUTH_EXEMPT_ENDPOINTS:
             return None
@@ -178,6 +187,17 @@ def _install_auth_middleware(app: Flask) -> None:
             return redirect(url_for("auth.setup"))
         if not svc.is_logged_in(session):
             return redirect(url_for("auth.login"))
+        return None
+
+    # SocketIO connect handler — rejects unauthenticated sessions so the
+    # live broadcasts don't leak to anonymous clients.
+    @socketio.on("connect")
+    def _socketio_auth_gate():
+        from app.services.auth import get_service
+        svc = get_service()
+        if not svc.is_configured() or not svc.is_logged_in(session):
+            app.logger.debug("socketio connect rejected: unauthenticated")
+            return False  # reject the socket connection
         return None
 
 
