@@ -1,21 +1,29 @@
 /* PiPineapple — base stylesheet
  *
- * Dark theme with a subtle amber accent. Aiming for a control-panel /
- * terminal feel without going full-on hacker-green. CSS variables make
- * future theming trivial.
+ * Modeled on the Hak5 WiFi Pineapple MK VII UI: dark theme with a subtle
+ * amber accent, top title bar + persistent left sidebar nav, dashboard
+ * built around a stat-cards row.
  */
 
 :root {
   --bg:         #0a0e14;
   --bg-elev:    #11161e;
   --bg-elev-2:  #161c26;
+  --bg-elev-3:  #1c2330;
   --fg:         #c5cdd7;
+  --fg-strong:  #e8edf3;
   --fg-muted:   #6b7480;
-  --accent:     #f0c674;   /* amber — restrained Pineapple hint */
+  --accent:     #f0c674;   /* amber — Pineapple hint */
   --accent-dim: #a08850;
   --border:     #1e2632;
+  --border-2:   #2a3340;
   --danger:     #d77;
   --good:       #7d9;
+  --info:       #8ab4f8;
+
+  --sidebar-w:  64px;
+  --sidebar-w-expanded: 180px;
+  --titlebar-h: 48px;
 }
 
 * { box-sizing: border-box; }
@@ -23,6 +31,7 @@
 html, body {
   margin: 0;
   padding: 0;
+  min-height: 100vh;
 }
 
 body {
@@ -32,8 +41,6 @@ body {
   color: var(--fg);
   font-size: 14px;
   line-height: 1.5;
-  min-height: 100vh;
-  padding-bottom: 36px; /* leave room for fixed footer */
 }
 
 a { color: var(--accent); text-decoration: none; }
@@ -45,162 +52,315 @@ code, pre {
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 13px;
+  color: var(--fg-strong);
 }
 
 h1 {
   font-size: 22px;
   font-weight: 600;
   margin: 0 0 4px 0;
+  color: var(--fg-strong);
 }
 
 h2 {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  margin: 0 0 12px 0;
+  margin: 0;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.7px;
   color: var(--fg-muted);
 }
 
 .muted { color: var(--fg-muted); }
 
-/* ---------- Top bar ---------- */
-.topbar {
-  display: flex;
-  align-items: center;
+/* ---------- Title bar (fixed top) ---------- */
+.titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-h);
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
-  padding: 0 20px;
-  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  z-index: 100;
 }
 
 .brand {
-  font-weight: 600;
-  font-size: 16px;
-  margin-right: 32px;
-  letter-spacing: 0.5px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .brand .logo {
   color: var(--accent);
-  margin-right: 6px;
+  font-size: 18px;
+  line-height: 1;
 }
 
-.mainnav {
+.brand-name {
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.5px;
+  color: var(--fg-strong);
+}
+
+.brand .version {
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-family: "SF Mono", Menlo, monospace;
+}
+
+.titlebar-actions {
   display: flex;
-  gap: 2px;
+  align-items: center;
+  gap: 4px;
 }
 
-.mainnav a {
+.iconbtn {
+  position: relative;
+  background: transparent;
+  border: 0;
   color: var(--fg);
-  padding: 0 14px;
-  height: 48px;
+  cursor: pointer;
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.iconbtn:hover { background: var(--bg-elev-2); }
+.iconbtn .icon { font-size: 14px; line-height: 1; }
+.iconbtn .badge-dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: none; /* shown when notifications pending */
+}
+
+/* ---------- Page layout (sidebar + content) ---------- */
+.page {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  min-height: calc(100vh - var(--titlebar-h));
+  margin-top: var(--titlebar-h);
+}
+
+/* ---------- Sidebar ---------- */
+.sidebar {
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: width 0.15s ease;
+  position: fixed;
+  top: var(--titlebar-h);
+  bottom: 0;
+  left: 0;
+  width: var(--sidebar-w);
+  overflow: hidden;
+  z-index: 50;
+}
+
+.sidebar:hover {
+  width: var(--sidebar-w-expanded);
+}
+
+.sidenav {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0;
+}
+
+.sidenav-item {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  padding: 0 20px;
+  color: var(--fg);
   text-decoration: none;
-  border-bottom: 2px solid transparent;
+  border-left: 3px solid transparent;
+  white-space: nowrap;
   font-size: 13px;
 }
 
-.mainnav a:hover {
+.sidenav-item:hover {
   background: var(--bg-elev-2);
   text-decoration: none;
 }
 
-.mainnav a.active {
-  border-bottom-color: var(--accent);
+.sidenav-item.active {
+  background: var(--bg-elev-2);
+  border-left-color: var(--accent);
   color: var(--accent);
 }
 
-.mainnav a.disabled {
+.sidenav-item.disabled {
   color: var(--fg-muted);
   cursor: not-allowed;
 }
 
-.mainnav a.disabled:hover {
+.sidenav-item.disabled:hover {
   background: transparent;
-  text-decoration: none;
 }
 
-/* ---------- Content ---------- */
+.sidenav-icon {
+  width: 24px;
+  text-align: center;
+  margin-right: 16px;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.sidenav-label {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.sidebar:hover .sidenav-label {
+  opacity: 1;
+}
+
+.sidenav-footer {
+  padding: 12px 20px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ---------- Main content ---------- */
 .content {
-  max-width: 1200px;
-  margin: 24px auto;
-  padding: 0 20px;
+  grid-column: 2;
+  padding: 24px 28px 48px 28px;
+  max-width: 1400px;
+  margin-left: var(--sidebar-w);
 }
 
-.placeholder {
+.page-header {
+  margin-bottom: 20px;
+}
+
+/* ---------- Stat cards row (Pineapple Dashboard pattern) ---------- */
+.statcards {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.statcard {
   background: var(--bg-elev);
-  border: 1px dashed var(--border);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 14px 18px;
-  color: var(--fg-muted);
-  margin-top: 16px;
-  font-size: 13px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 92px;
 }
 
-.placeholder strong { color: var(--accent); }
-.placeholder code { color: var(--accent); background: transparent; padding: 0; }
+.statcard-label {
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+}
 
-/* ---------- Cards / grid ---------- */
-.grid {
+.statcard-value {
+  color: var(--fg-strong);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.statcard-unit {
+  font-size: 14px;
+  color: var(--fg-muted);
+  margin-left: 2px;
+  font-weight: 400;
+}
+
+.statcard-sub {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* ---------- Dashboard grid (cards below stat row) ---------- */
+.dash-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  margin-top: 24px;
+  gap: 12px;
 }
 
 .card {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 16px 20px;
+  padding: 16px 18px;
 }
 
 .card.span-2 { grid-column: span 2; }
 
-/* ---------- Status badges (used in later sessions) ---------- */
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.card-head .muted { font-size: 11px; }
+
+.placeholder-inline {
+  color: var(--fg-muted);
+  font-size: 13px;
+  padding: 12px 0;
+}
+
+.placeholder-inline code { color: var(--accent); background: transparent; padding: 0; }
+
+/* ---------- Status badges ---------- */
 .badge {
   display: inline-block;
-  padding: 2px 8px;
+  padding: 2px 7px;
   border-radius: 3px;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 10px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.5px;
+  line-height: 1.4;
 }
 
 .badge-good   { background: rgba(119, 221, 153, 0.15); color: var(--good); }
 .badge-warn   { background: rgba(240, 198, 116, 0.15); color: var(--accent); }
 .badge-danger { background: rgba(221, 119, 119, 0.15); color: var(--danger); }
 .badge-muted  { background: var(--bg-elev-2); color: var(--fg-muted); }
+.badge-info   { background: rgba(138, 180, 248, 0.15); color: var(--info); }
 
-/* ---------- Bottom bar ---------- */
-.bottombar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: var(--bg-elev);
-  border-top: 1px solid var(--border);
-  padding: 8px 20px;
-  font-size: 12px;
-  color: var(--fg-muted);
-  display: flex;
-  justify-content: space-between;
-  z-index: 10;
-}
-
-/* ---------- Tables (used in next task) ---------- */
+/* ---------- Tables ---------- */
 table.data {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
 }
 
-table.data th, table.data td {
+table.data th,
+table.data td {
   text-align: left;
-  padding: 6px 10px;
+  padding: 7px 10px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -208,8 +368,8 @@ table.data th {
   color: var(--fg-muted);
   font-weight: 600;
   text-transform: uppercase;
-  font-size: 11px;
-  letter-spacing: 0.5px;
+  font-size: 10px;
+  letter-spacing: 0.6px;
 }
 
 table.data tbody tr:hover { background: var(--bg-elev-2); }
@@ -218,40 +378,20 @@ table.data td code,
 table.data th code {
   background: transparent;
   padding: 0;
-  color: var(--fg);
+  color: var(--fg-strong);
 }
 
-.footnote {
-  font-size: 12px;
-  margin-top: 12px;
-  margin-bottom: 0;
+/* ---------- Responsive ---------- */
+@media (max-width: 1200px) {
+  .statcards { grid-template-columns: repeat(3, 1fr); }
 }
 
-/* ---------- Definition lists (key/value pairs in cards) ---------- */
-dl.kv {
-  display: grid;
-  grid-template-columns: 130px 1fr;
-  gap: 6px 12px;
-  margin: 0;
-}
-
-dl.kv dt {
-  color: var(--fg-muted);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  align-self: center;
-}
-
-dl.kv dd {
-  margin: 0;
-  word-break: break-word;
-}
-
-/* Responsive: collapse grid on narrow screens */
-@media (max-width: 720px) {
-  .grid { grid-template-columns: 1fr; }
+@media (max-width: 760px) {
+  .statcards { grid-template-columns: repeat(2, 1fr); }
+  .dash-grid { grid-template-columns: 1fr; }
   .card.span-2 { grid-column: auto; }
-  .mainnav a { padding: 0 10px; font-size: 12px; }
-  .brand { margin-right: 16px; }
+  .sidebar { width: var(--sidebar-w); }
+  .sidebar:hover { width: var(--sidebar-w); }
+  .sidenav-label { display: none; }
+  .content { padding: 16px; }
 }

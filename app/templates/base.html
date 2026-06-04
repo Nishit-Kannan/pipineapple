@@ -7,27 +7,79 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand"><span class="logo">⚡</span> PiPineapple</div>
-    <nav class="mainnav">
-      <a href="{{ url_for('dashboard.index') }}"
-         class="{% block nav_dashboard %}{% endblock %}">Dashboard</a>
-      <a href="#" class="disabled" title="Recon — Session 03">Recon</a>
-      <a href="#" class="disabled" title="Captures — Session 06">Captures</a>
-      <a href="#" class="disabled" title="Rogue AP — Session 09">Rogue AP</a>
-      <a href="#" class="disabled" title="MITM — Session 13">MITM</a>
-      <a href="#" class="disabled" title="Network Recon — Session 15">Network Recon</a>
-      <a href="#" class="disabled" title="Settings — Session 17">Settings</a>
-    </nav>
+  {# ---------- Title bar ---------- #}
+  <header class="titlebar">
+    <div class="brand">
+      <span class="logo">⚡</span>
+      <span class="brand-name">PiPineapple</span>
+      <span class="version">v0.1.0</span>
+    </div>
+    <div class="titlebar-actions">
+      <button class="iconbtn" title="Notifications" aria-label="Notifications">
+        <span class="icon">🔔</span>
+        <span class="badge-dot"></span>
+      </button>
+      <button class="iconbtn" title="Informational messages" aria-label="Info">
+        <span class="icon">ℹ</span>
+      </button>
+      <button class="iconbtn" title="Web Terminal" aria-label="Web Terminal">
+        <span class="icon">▶_</span>
+      </button>
+      <button class="iconbtn" title="More" aria-label="More">
+        <span class="icon">⋮</span>
+      </button>
+    </div>
   </header>
 
-  <main class="content">
-    {% block content %}{% endblock %}
-  </main>
+  <div class="page">
+    {# ---------- Left sidebar ---------- #}
+    <aside class="sidebar">
+      <nav class="sidenav">
+        <a href="{{ url_for('dashboard.index') }}"
+           class="sidenav-item {% block nav_dashboard %}{% endblock %}">
+          <span class="sidenav-icon">▢</span>
+          <span class="sidenav-label">Dashboard</span>
+        </a>
+        <a href="#" class="sidenav-item disabled"
+           title="Recon — Phase B (Sessions 4–6)">
+          <span class="sidenav-icon">◎</span>
+          <span class="sidenav-label">Recon</span>
+        </a>
+        <a href="#" class="sidenav-item disabled"
+           title="PineAP — Phase D (Sessions 10–13)">
+          <span class="sidenav-icon">🍍</span>
+          <span class="sidenav-label">PineAP</span>
+        </a>
+        <a href="#" class="sidenav-item disabled"
+           title="Handshakes — Phase C (Sessions 7–9)">
+          <span class="sidenav-icon">⇄</span>
+          <span class="sidenav-label">Handshakes</span>
+        </a>
+        <a href="#" class="sidenav-item disabled"
+           title="Campaigns — Phase E (Session 14)">
+          <span class="sidenav-icon">▶</span>
+          <span class="sidenav-label">Campaigns</span>
+        </a>
+        <a href="#" class="sidenav-item disabled"
+           title="Modules — Phase F (Sessions 15–17)">
+          <span class="sidenav-icon">▥</span>
+          <span class="sidenav-label">Modules</span>
+        </a>
+        <a href="#" class="sidenav-item disabled"
+           title="Settings — Phase G (Session 18)">
+          <span class="sidenav-icon">⚙</span>
+          <span class="sidenav-label">Settings</span>
+        </a>
+      </nav>
+      <div class="sidenav-footer">
+        <span class="muted">lab-only</span>
+      </div>
+    </aside>
 
-  <footer class="bottombar">
-    <span>PiPineapple v0.1.0</span>
-    <span class="muted">lab-only · authorized targets only</span>
-  </footer>
+    {# ---------- Main content ---------- #}
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
 </body>
 </html>
