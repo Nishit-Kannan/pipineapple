@@ -1,0 +1,31 @@
+{% for w in status.wireless %}
+  <tr>
+    <td><code>{{ w.name }}</code></td>
+    <td>
+      {% if w.mode == "monitor" %}
+        <span class="badge badge-warn">monitor</span>
+      {% elif w.mode == "AP" %}
+        <span class="badge badge-warn">ap</span>
+      {% elif w.mode == "managed" %}
+        <span class="badge badge-muted">managed</span>
+      {% else %}
+        <span class="badge badge-muted">{{ w.mode or "—" }}</span>
+      {% endif %}
+    </td>
+    <td>
+      {% if w.channel %}
+        {{ w.channel }}
+        <span class="muted">({{ w.frequency_mhz }} MHz)</span>
+      {% else %}—{% endif %}
+    </td>
+    <td>{% if w.width_mhz %}{{ w.width_mhz }} MHz{% else %}—{% endif %}</td>
+    <td>{% if w.ssid %}<code>{{ w.ssid }}</code>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td><code>{{ w.driver or "—" }}</code></td>
+    <td>{% if w.txpower_dbm is not none %}{{ "%.1f"|format(w.txpower_dbm) }} dBm{% else %}—{% endif %}</td>
+    <td>
+      {% if w.signal_dbm is not none %}
+        {{ w.signal_dbm|int }} dBm
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
+  </tr>
+{% endfor %}

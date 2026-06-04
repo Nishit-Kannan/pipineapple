@@ -1,81 +1,73 @@
 """PiPineapple Flask application package.
 
-The application is constructed by the ``create_app`` factory below. Code
-that needs the Flask app — including ``run.py`` and tests — must call
-``create_app()`` rather than importing a module-level singleton, so that
-multiple independently configured instances can coexist.
+The application is constructed by the ``create_app`` factory below.
+Session 02 added a Flask-SocketIO instance for realtime UI updates; the
+``socketio`` object is a module-level singleton imported and used by
+``run.py`` (via ``socketio.run(app, ...)``) and by every service that
+needs to emit events.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from flask import Flask
+from flask_socketio import SocketIO
 
 from app.config import BaseConfig, resolve_config
 
+# Module-level SocketIO singleton. ``async_mode="threading"`` uses
+# Flask-SocketIO's built-in threading backend — no eventlet/gevent
+# required for our single-user lab deployment. See Session 02 notes for
+# the trade-off vs eventlet.
+socketio = SocketIO(
+    cors_allowed_origins="*",
+    async_mode="threading",
+    logger=False,
+    engineio_logger=False,
+)
+
 
 def create_app(config: type[BaseConfig] | str | None = None) -> Flask:
-    """Construct and configure a PiPineapple Flask app.
-
-    Parameters
-    ----------
-    config:
-        Either a config class (``DevConfig``, ``TestConfig``, …), a config
-        alias string (``"dev"``, ``"mac"``, ``"test"``, ``"prod"``), or
-        ``None`` to read the alias from the ``PIPINEAPPLE_CONFIG`` env
-        var (defaulting to ``"dev"``).
-    """
+    """Construct and configure a PiPineapple Flask app."""
     app = Flask(__name__, instance_relative_config=False)
 
-    # Resolve the config class. Strings and None go through resolve_config;
-    # an actual class is used directly.
     if isinstance(config, type) and issubclass(config, BaseConfig):
         config_class = config
     else:
         config_class = resolve_config(config)
     app.config.from_object(config_class)
 
-    # Production-only: blow up loudly if SECRET_KEY wasn't overridden.
     if hasattr(config_class, "validate"):
         config_class.validate()
 
-    # Ensure the data directory exists. The path may have been overridden
-    # via PIPINEAPPLE_DATA_DIR, so we resolve it from app.config rather
-    # than from the class attribute.
     data_dir: Path = app.config["DATA_DIR"]
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Mirror USE_REAL_TOOLS into the environment so the tool wrappers in
-    # ``app.tools`` (which deliberately don't import Flask) can read it
-    # via a single env var. The factory is the single point of truth for
-    # this flag's actual value.
-    import os
     os.environ["PIPINEAPPLE_USE_REAL_TOOLS"] = (
         "1" if app.config["USE_REAL_TOOLS"] else "0"
     )
 
     _configure_logging(app)
+    socketio.init_app(app)
+    _attach_services()
     _register_blueprints(app)
+    _start_background_tasks(app)
 
     app.logger.info(
-        "PiPineapple started with %s (real tools: %s, data dir: %s)",
+        "PiPineapple started with %s (real tools: %s, data dir: %s, async_mode: %s)",
         config_class.__name__,
         app.config["USE_REAL_TOOLS"],
         data_dir,
+        socketio.async_mode,
     )
     return app
 
 
 def _configure_logging(app: Flask) -> None:
-    """Set up a sensible log format for the dev server.
-
-    Production deployments will replace this when running under gunicorn
-    or behind nginx; for now we just want timestamped console output.
-    """
     if app.logger.handlers:
-        # Flask in debug mode already configured a handler; leave it.
         return
     handler = logging.StreamHandler()
     handler.setFormatter(
@@ -85,15 +77,38 @@ def _configure_logging(app: Flask) -> None:
     app.logger.setLevel(logging.DEBUG if app.config["DEBUG"] else logging.INFO)
 
 
-def _register_blueprints(app: Flask) -> None:
-    """Register all Flask blueprints with the app.
+def _attach_services() -> None:
+    """Wire the singleton services to the SocketIO instance."""
+    from app.services.job_manager import job_manager
+    from app.services.notifications import notifications
 
-    Each phase of the curriculum adds blueprints here. Keep the imports
-    local to this function so importing ``app`` doesn't pull in every
-    blueprint's transitive dependencies at module load time.
-    """
+    notifications.attach_socketio(socketio)
+    job_manager.attach_socketio(socketio)
+
+
+def _register_blueprints(app: Flask) -> None:
     from app.routes.dashboard import bp as dashboard_bp
     from app.routes.learning import bp as learning_bp
 
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(learning_bp)
+
+    # Debug routes only in dev/mac configs
+    if app.config.get("DEBUG", False):
+        from app.routes.debug import bp as debug_bp
+        app.register_blueprint(debug_bp)
+        app.logger.info("debug routes enabled at /debug/*")
+
+
+def _start_background_tasks(app: Flask) -> None:
+    """Start daemon background workers (sysinfo broadcaster, etc.)."""
+    # Skip background tasks during Flask's reloader parent process.
+    # WERKZEUG_RUN_MAIN is set to "true" only in the child process that
+    # actually serves requests, so this prevents us starting two
+    # broadcaster threads when debug mode forks.
+    if app.debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        return
+
+    from app.services import sysinfo_broadcaster
+
+    sysinfo_broadcaster.start(socketio, interval=2.0)

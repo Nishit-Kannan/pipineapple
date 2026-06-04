@@ -1,0 +1,22 @@
+{% for iface in status.interfaces %}
+  <tr>
+    <td><code>{{ iface.name }}</code></td>
+    <td>
+      {% if iface.state == "UP" %}
+        <span class="badge badge-good">up</span>
+      {% elif iface.state == "DOWN" %}
+        <span class="badge badge-muted">down</span>
+      {% else %}
+        <span class="badge badge-muted">{{ iface.state|lower }}</span>
+      {% endif %}
+    </td>
+    <td><code>{{ iface.mac or "—" }}</code></td>
+    <td>
+      {% if iface.addresses %}
+        {% for addr in iface.addresses %}
+          <code>{{ addr }}</code>{% if not loop.last %}<br>{% endif %}
+        {% endfor %}
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
+  </tr>
+{% endfor %}

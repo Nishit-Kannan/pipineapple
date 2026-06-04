@@ -50,6 +50,7 @@ The seven sections and what they own:
 - **Campaigns** — scripted attack templates: Reconnaissance (Monitor Only), Client Device Assessment (Passive), Client Device Assessment (Active). Per-campaign enable/disable toggle. Reports subtab — JSON or HTML, downloadable.
 - **Modules** — plugin system. Community-style extensions to the UI. MITM (bettercap) and nmap live here as modules rather than top-level sections. Packages subtab for CLI-only tools.
 - **Settings** — Networking (recon interface selector, client mode upstream, USB ethernet), WiFi (management network), Advanced (Censorship Mode for redacting MACs/SSIDs in screenshots, hostname, management access scoping), Help/Diagnostics.
+- **Learning Centre** *(project-specific addition, not in the Pineapple)* — curriculum-as-feature page accreting console commands by topic. Every session adds either a new topic section or new commands to existing sections, so the platform documents how to use it as it grows.
 
 **Three load-bearing UI patterns** that show up across multiple sections and need to be built right:
 
@@ -94,11 +95,11 @@ Eight phases, nineteen sessions. Each session lands one Pineapple-section featur
 
 ### Phase A — Dashboard & chrome
 
-**Session 01.** Project scaffold, Flask app factory, base template, **system status data layer** (CPU temp, memory, IPs, adapter list with mode/channel/driver). *Mostly done.* Console: `iw dev`, `ip -j addr show`, `/proc/net/wireless`, `vcgencmd measure_temp`.
+**Session 01.** *Done.* Project scaffold, Flask app factory, base template, **system status data layer** (CPU temp, memory, IPs, adapter list with mode/channel/driver). Pineapple chrome (title bar + hover-expand left sidebar) shipped early as part of the mid-session IA realignment. Dashboard layout matching the Pineapple's (stat cards row + four placeholder section cards + wireless radios + interfaces tables). Learning Centre section established. Console exercise covered `iw dev`, `ip -j addr show`, `/proc/net/wireless`, `vcgencmd measure_temp`, `iw reg get`, `ethtool -i`.
 
-**Session 02.** **Pineapple chrome** — title bar (brand + version + Notifications bell + Info messages + Web Terminal stub + context menu), left sidebar nav (Dashboard / Recon / PineAP / Handshakes / Campaigns / Modules / Settings, with disabled state for sections not yet built). WebSocket live updates so the dashboard stops needing a page refresh. JobManager skeleton for tracking long-running subprocesses. Console: anatomy of a long-running subprocess, signal handling.
+**Session 02.** **Realtime layer + Notifications + JobManager.** WebSocket integration via Flask-SocketIO so the dashboard's stat cards and tables update live without a page refresh. Notifications system fully wired — the bell icon's dot indicator turns on for unread, dropdown drawer lists last N messages with the five Pineapple severity levels (Info / Warning / Error / Success / Unknown), backend can `emit("notification", ...)` from anywhere. JobManager service skeleton — owns subprocess lifecycles for every later session's long-running tools (airodump, hostapd, hashcat, etc.), streams stdout to subscribed UI clients, handles signal-based teardown. Replace Unicode-glyph icons with real inline SVG. Console: subprocess lifecycle, signal handling, eventlet vs threading async modes for SocketIO.
 
-**Session 03.** **Full Dashboard layout** matching the Pineapple's: stat cards row across the top (CPU, RAM, Disk, Connected Clients count), Connected Clients table (placeholder — populates from PineAP in Phase D), Notifications summary card, Wireless Landscape mini-summary (latest recon scan teaser — populates from Recon in Phase B), Campaigns status placeholder. Console: how cards' data is sourced from the existing sysinfo service plus stubs.
+**Session 03.** *Folded into Session 01.* Originally planned as a separate "full dashboard layout" session, but the IA realignment in S01 delivered this scope already. Sessions renumber from here — what was S04 is now S03, etc. (Phase B starts at S03.)
 
 ### Phase B — Recon
 

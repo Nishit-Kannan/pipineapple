@@ -114,6 +114,38 @@ h2 {
   font-family: "SF Mono", Menlo, monospace;
 }
 
+/* Live indicator (WebSocket connection state) */
+.live-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 14px;
+  padding: 3px 9px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  border-radius: 3px;
+  background: var(--bg-elev-2);
+  transition: background 0.15s ease;
+}
+.live-indicator .live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.live-up   { color: var(--good); }
+.live-up .live-dot {
+  box-shadow: 0 0 6px rgba(119, 221, 153, 0.7);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+.live-down { color: var(--fg-muted); }
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
 .titlebar-actions {
   display: flex;
   align-items: center;
@@ -379,6 +411,94 @@ table.data th code {
   background: transparent;
   padding: 0;
   color: var(--fg-strong);
+}
+
+/* ---------- Notifications drawer ---------- */
+.notif-drawer {
+  position: fixed;
+  top: calc(var(--titlebar-h) + 6px);
+  right: 12px;
+  width: 360px;
+  max-height: 70vh;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.notif-drawer[hidden] { display: none; }
+
+.notif-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-elev-2);
+  border-bottom: 1px solid var(--border);
+}
+.notif-drawer-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--fg-muted);
+}
+.notif-drawer-actions { display: flex; gap: 12px; }
+.linkbtn {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+}
+.linkbtn:hover { text-decoration: underline; }
+
+.notif-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.notif-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.notif-item:last-child { border-bottom: 0; }
+.notif-item.unread { background: rgba(240, 198, 116, 0.04); }
+.notif-item .badge { flex-shrink: 0; margin-top: 2px; }
+.notif-body { flex: 1; min-width: 0; }
+.notif-message { color: var(--fg); word-wrap: break-word; }
+.notif-meta { font-size: 11px; margin-top: 2px; }
+
+.notif-empty {
+  padding: 20px 14px;
+  text-align: center;
+  font-size: 13px;
+}
+
+/* ---------- SVG icons inside sidebar/title bar ---------- */
+.sidenav-svg,
+.iconbtn-svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.sidenav-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* ---------- Learning Centre ---------- */

@@ -5,20 +5,23 @@
 {% block content %}
   <div class="page-header">
     <h1>Dashboard</h1>
-    <p class="muted">At-a-glance status of the platform, connected clients, and the wireless landscape.</p>
+    <p class="muted">
+      At-a-glance status of the platform, connected clients, and the
+      wireless landscape. Stat cards and tables update live via WebSocket.
+    </p>
   </div>
 
   {# ---------- Stat cards row (Pineapple-style) ---------- #}
   {% set sys = status.system %}
-  <div class="statcards">
+  <div class="statcards" id="statcards">
     <div class="statcard">
       <div class="statcard-label">CPU temp</div>
-      <div class="statcard-value">
+      <div class="statcard-value" data-field="cpu_temp">
         {% if sys and sys.cpu_temp_c is not none %}
           {{ "%.1f"|format(sys.cpu_temp_c) }}<span class="statcard-unit">°C</span>
         {% else %}—{% endif %}
       </div>
-      <div class="statcard-sub">
+      <div class="statcard-sub" data-field="cpu_temp_badge">
         {% if sys and sys.cpu_temp_c is not none %}
           {% if sys.cpu_temp_c >= 75 %}
             <span class="badge badge-danger">hot</span>
@@ -33,12 +36,12 @@
 
     <div class="statcard">
       <div class="statcard-label">Memory</div>
-      <div class="statcard-value">
+      <div class="statcard-value" data-field="memory_pct">
         {% if sys and sys.memory %}
           {{ sys.memory.used_pct }}<span class="statcard-unit">%</span>
         {% else %}—{% endif %}
       </div>
-      <div class="statcard-sub">
+      <div class="statcard-sub" data-field="memory_bytes">
         {% if sys and sys.memory %}
           {{ format_bytes(sys.memory.used_bytes) }} / {{ format_bytes(sys.memory.total_bytes) }}
         {% endif %}
@@ -47,15 +50,17 @@
 
     <div class="statcard">
       <div class="statcard-label">Uptime</div>
-      <div class="statcard-value">
+      <div class="statcard-value" data-field="uptime">
         {{ format_uptime(sys.uptime_seconds) if sys else "—" }}
       </div>
-      <div class="statcard-sub">{{ sys.kernel if sys else "" }}</div>
+      <div class="statcard-sub" data-field="kernel">
+        {{ sys.kernel if sys else "" }}
+      </div>
     </div>
 
     <div class="statcard">
       <div class="statcard-label">Connected clients</div>
-      <div class="statcard-value">0</div>
+      <div class="statcard-value" data-field="connected_clients">0</div>
       <div class="statcard-sub muted">
         populates from PineAP (Phase&nbsp;D)
       </div>
@@ -63,8 +68,8 @@
 
     <div class="statcard">
       <div class="statcard-label">Radios</div>
-      <div class="statcard-value">{{ status.wireless|length }}</div>
-      <div class="statcard-sub">
+      <div class="statcard-value" data-field="radios_count">{{ status.wireless|length }}</div>
+      <div class="statcard-sub" data-field="radios_monitor">
         {% set monitor_count = status.wireless|selectattr("mode", "equalto", "monitor")|list|length %}
         {{ monitor_count }} in monitor mode
       </div>
@@ -72,7 +77,7 @@
 
     <div class="statcard">
       <div class="statcard-label">Reg domain</div>
-      <div class="statcard-value">{{ status.reg_domain or "—" }}</div>
+      <div class="statcard-value" data-field="reg_domain">{{ status.reg_domain or "—" }}</div>
       <div class="statcard-sub muted">
         {% if not status.reg_domain %}
           set via <code>sudo iw reg set US</code>
@@ -81,7 +86,7 @@
     </div>
   </div>
 
-  {# ---------- Two-column body: Connected Clients + Notifications + Wireless Landscape + Campaigns ---------- #}
+  {# ---------- Section cards (placeholders pointing forward) ---------- #}
   <div class="dash-grid">
     <section class="card">
       <div class="card-head">
@@ -89,7 +94,7 @@
         <span class="muted">PineAP rogue APs</span>
       </div>
       <div class="placeholder-inline">
-        No clients connected. Populates from the PineAP rogue APs in Phase&nbsp;D
+        No clients connected. Populates from PineAP rogue APs in Phase&nbsp;D
         (Sessions 10–13).
       </div>
     </section>
@@ -100,8 +105,10 @@
         <span class="muted">recent events</span>
       </div>
       <div class="placeholder-inline">
-        Notifications drawer comes online in Session&nbsp;02 with the
-        WebSocket layer. Severity levels: info, warning, error, success.
+        Open the bell in the title bar to see the full drawer. Live
+        notifications stream over WebSocket — try
+        <code>curl http://localhost:5000/debug/notify/burst</code> from the Pi
+        (debug mode only).
       </div>
     </section>
 
@@ -123,12 +130,11 @@
       </div>
       <div class="placeholder-inline">
         No campaigns defined. Campaigns are pre-baked attack templates
-        (Reconnaissance, Client Device Assessment) built in Phase&nbsp;E
-        (Session 14).
+        built in Phase&nbsp;E (Session 14).
       </div>
     </section>
 
-    {# ---------- Wireless radios (current data — full width) ---------- #}
+    {# ---------- Wireless radios (live data) ---------- #}
     <section class="card span-2">
       <div class="card-head">
         <h2>Wireless radios</h2>
@@ -148,49 +154,18 @@
               <th>Signal</th>
             </tr>
           </thead>
-          <tbody>
-            {% for w in status.wireless %}
-              <tr>
-                <td><code>{{ w.name }}</code></td>
-                <td>
-                  {% if w.mode == "monitor" %}
-                    <span class="badge badge-warn">monitor</span>
-                  {% elif w.mode == "AP" %}
-                    <span class="badge badge-warn">ap</span>
-                  {% elif w.mode == "managed" %}
-                    <span class="badge badge-muted">managed</span>
-                  {% else %}
-                    <span class="badge badge-muted">{{ w.mode or "—" }}</span>
-                  {% endif %}
-                </td>
-                <td>
-                  {% if w.channel %}
-                    {{ w.channel }}
-                    <span class="muted">({{ w.frequency_mhz }} MHz)</span>
-                  {% else %}—{% endif %}
-                </td>
-                <td>{% if w.width_mhz %}{{ w.width_mhz }} MHz{% else %}—{% endif %}</td>
-                <td>{% if w.ssid %}<code>{{ w.ssid }}</code>{% else %}<span class="muted">—</span>{% endif %}</td>
-                <td><code>{{ w.driver or "—" }}</code></td>
-                <td>{% if w.txpower_dbm is not none %}{{ "%.1f"|format(w.txpower_dbm) }} dBm{% else %}—{% endif %}</td>
-                <td>
-                  {% if w.signal_dbm is not none %}
-                    {{ w.signal_dbm|int }} dBm
-                  {% else %}<span class="muted">—</span>{% endif %}
-                </td>
-              </tr>
-            {% endfor %}
+          <tbody data-field="wireless_tbody">
+            {% include "_wireless_rows.html" %}
           </tbody>
         </table>
       {% else %}
-        <div class="placeholder-inline">
-          No wireless interfaces detected. Check that adapters are plugged
-          in and that <code>iw</code> is installed.
+        <div class="placeholder-inline" data-field="wireless_empty">
+          No wireless interfaces detected.
         </div>
       {% endif %}
     </section>
 
-    {# ---------- Network interfaces (current data) ---------- #}
+    {# ---------- Network interfaces (live data) ---------- #}
     <section class="card span-2">
       <div class="card-head">
         <h2>Network interfaces</h2>
@@ -205,29 +180,8 @@
             <th>Addresses</th>
           </tr>
         </thead>
-        <tbody>
-          {% for iface in status.interfaces %}
-            <tr>
-              <td><code>{{ iface.name }}</code></td>
-              <td>
-                {% if iface.state == "UP" %}
-                  <span class="badge badge-good">up</span>
-                {% elif iface.state == "DOWN" %}
-                  <span class="badge badge-muted">down</span>
-                {% else %}
-                  <span class="badge badge-muted">{{ iface.state|lower }}</span>
-                {% endif %}
-              </td>
-              <td><code>{{ iface.mac or "—" }}</code></td>
-              <td>
-                {% if iface.addresses %}
-                  {% for addr in iface.addresses %}
-                    <code>{{ addr }}</code>{% if not loop.last %}<br>{% endif %}
-                  {% endfor %}
-                {% else %}<span class="muted">—</span>{% endif %}
-              </td>
-            </tr>
-          {% endfor %}
+        <tbody data-field="interfaces_tbody">
+          {% include "_interface_rows.html" %}
         </tbody>
       </table>
     </section>

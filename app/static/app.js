@@ -1,0 +1,315 @@
+// PiPineapple — front-end glue.
+//
+// Connects to the Flask-SocketIO server, subscribes to:
+//   - "sysinfo"       — periodic dashboard update payload
+//   - "notification"  — single new notification entry
+//   - "notification:read_all" / "notification:clear" — drawer management
+//
+// Updates the live indicator in the title bar based on socket state.
+
+(function () {
+  "use strict";
+
+  // ---------- DOM helpers ----------
+  function $(sel, root) { return (root || document).querySelector(sel); }
+  function $$(sel, root) { return Array.from((root || document).querySelectorAll(sel)); }
+  function setField(name, html) {
+    const el = document.querySelector(`[data-field="${name}"]`);
+    if (el) el.innerHTML = html;
+  }
+  function setText(name, text) {
+    const el = document.querySelector(`[data-field="${name}"]`);
+    if (el) el.textContent = text;
+  }
+
+  // ---------- Format helpers (mirror Python's format_uptime / format_bytes) ----------
+  function formatUptime(seconds) {
+    if (seconds == null) return "—";
+    const s = Math.floor(seconds);
+    const days = Math.floor(s / 86400);
+    const hours = Math.floor((s % 86400) / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    const parts = [];
+    if (days) parts.push(`${days}d`);
+    if (hours || days) parts.push(`${String(hours).padStart(2, "0")}h`);
+    parts.push(`${String(mins).padStart(2, "0")}m`);
+    return parts.join(" ");
+  }
+
+  function formatBytes(b) {
+    if (b == null) return "—";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let size = b;
+    for (let i = 0; i < units.length; i++) {
+      if (size < 1024 || i === units.length - 1) {
+        return units[i] === "B"
+          ? `${Math.floor(size)} ${units[i]}`
+          : `${size.toFixed(1)} ${units[i]}`;
+      }
+      size /= 1024;
+    }
+  }
+
+  function escapeHtml(s) {
+    if (s == null) return "";
+    return String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function relativeTime(ts) {
+    if (!ts) return "";
+    const now = Date.now() / 1000;
+    const diff = Math.floor(now - ts);
+    if (diff < 5)   return "just now";
+    if (diff < 60)  return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+  }
+
+  // ---------- Live indicator ----------
+  function setLive(state) {
+    const ind = $("#live-indicator");
+    if (!ind) return;
+    ind.classList.remove("live-up", "live-down");
+    ind.classList.add(state === "up" ? "live-up" : "live-down");
+    ind.title = state === "up"
+      ? "WebSocket connected — live updates active"
+      : "WebSocket disconnected";
+    const label = ind.querySelector(".live-label");
+    if (label) label.textContent = state === "up" ? "live" : "offline";
+  }
+
+  // ---------- Dashboard updates ----------
+  function applySysinfo(status) {
+    const sys = status.system;
+    if (sys) {
+      if (sys.cpu_temp_c != null) {
+        setField("cpu_temp",
+          `${sys.cpu_temp_c.toFixed(1)}<span class="statcard-unit">°C</span>`);
+        const t = sys.cpu_temp_c;
+        const cls = t >= 75 ? "badge-danger" : t >= 65 ? "badge-warn" : "badge-good";
+        const label = t >= 75 ? "hot" : t >= 65 ? "warm" : "ok";
+        setField("cpu_temp_badge", `<span class="badge ${cls}">${label}</span>`);
+      } else {
+        setField("cpu_temp", "—");
+        setField("cpu_temp_badge", "");
+      }
+      if (sys.memory) {
+        setField("memory_pct",
+          `${sys.memory.used_pct}<span class="statcard-unit">%</span>`);
+        setText("memory_bytes",
+          `${formatBytes(sys.memory.used_bytes)} / ${formatBytes(sys.memory.total_bytes)}`);
+      }
+      setText("uptime", formatUptime(sys.uptime_seconds));
+      setText("kernel", sys.kernel || "");
+    }
+    setText("radios_count", String((status.wireless || []).length));
+    const monitorCount = (status.wireless || []).filter(w => w.mode === "monitor").length;
+    setText("radios_monitor", `${monitorCount} in monitor mode`);
+    setText("reg_domain", status.reg_domain || "—");
+
+    // Rebuild wireless tbody
+    const wlBody = document.querySelector('[data-field="wireless_tbody"]');
+    if (wlBody && status.wireless) {
+      wlBody.innerHTML = status.wireless.map(renderWirelessRow).join("");
+    }
+    // Rebuild interfaces tbody
+    const ifBody = document.querySelector('[data-field="interfaces_tbody"]');
+    if (ifBody && status.interfaces) {
+      ifBody.innerHTML = status.interfaces.map(renderInterfaceRow).join("");
+    }
+  }
+
+  function renderWirelessRow(w) {
+    let modeBadge;
+    if (w.mode === "monitor")       modeBadge = '<span class="badge badge-warn">monitor</span>';
+    else if (w.mode === "AP")       modeBadge = '<span class="badge badge-warn">ap</span>';
+    else if (w.mode === "managed")  modeBadge = '<span class="badge badge-muted">managed</span>';
+    else                            modeBadge = `<span class="badge badge-muted">${escapeHtml(w.mode) || "—"}</span>`;
+
+    const channel = w.channel
+      ? `${w.channel} <span class="muted">(${w.frequency_mhz} MHz)</span>`
+      : "—";
+    const width = w.width_mhz ? `${w.width_mhz} MHz` : "—";
+    const ssid = w.ssid
+      ? `<code>${escapeHtml(w.ssid)}</code>`
+      : '<span class="muted">—</span>';
+    const driver = `<code>${escapeHtml(w.driver) || "—"}</code>`;
+    const txp = w.txpower_dbm != null ? `${w.txpower_dbm.toFixed(1)} dBm` : "—";
+    const sig = w.signal_dbm != null
+      ? `${Math.round(w.signal_dbm)} dBm`
+      : '<span class="muted">—</span>';
+
+    return `<tr>
+      <td><code>${escapeHtml(w.name)}</code></td>
+      <td>${modeBadge}</td>
+      <td>${channel}</td>
+      <td>${width}</td>
+      <td>${ssid}</td>
+      <td>${driver}</td>
+      <td>${txp}</td>
+      <td>${sig}</td>
+    </tr>`;
+  }
+
+  function renderInterfaceRow(iface) {
+    let stateBadge;
+    if (iface.state === "UP")        stateBadge = '<span class="badge badge-good">up</span>';
+    else if (iface.state === "DOWN") stateBadge = '<span class="badge badge-muted">down</span>';
+    else                             stateBadge = `<span class="badge badge-muted">${escapeHtml((iface.state || "").toLowerCase())}</span>`;
+
+    const addrs = (iface.addresses && iface.addresses.length)
+      ? iface.addresses.map(a => `<code>${escapeHtml(a)}</code>`).join("<br>")
+      : '<span class="muted">—</span>';
+
+    return `<tr>
+      <td><code>${escapeHtml(iface.name)}</code></td>
+      <td>${stateBadge}</td>
+      <td><code>${escapeHtml(iface.mac) || "—"}</code></td>
+      <td>${addrs}</td>
+    </tr>`;
+  }
+
+  // ---------- Notifications drawer ----------
+  const notifState = {
+    list: [],
+    open: false,
+  };
+
+  function badgeClassForSeverity(sev) {
+    switch (sev) {
+      case "info":    return "badge-info";
+      case "warning": return "badge-warn";
+      case "error":   return "badge-danger";
+      case "success": return "badge-good";
+      default:        return "badge-muted";
+    }
+  }
+
+  function renderNotifList() {
+    const ul = $("#notif-list");
+    if (!ul) return;
+    if (notifState.list.length === 0) {
+      ul.innerHTML = '<li class="notif-empty muted">No notifications yet.</li>';
+      return;
+    }
+    ul.innerHTML = notifState.list.map(n => `
+      <li class="notif-item ${n.read ? "" : "unread"}">
+        <span class="badge ${badgeClassForSeverity(n.severity)}">${escapeHtml(n.severity)}</span>
+        <div class="notif-body">
+          <div class="notif-message">${escapeHtml(n.message)}</div>
+          <div class="notif-meta muted">${escapeHtml(n.source)} · ${relativeTime(n.ts)}</div>
+        </div>
+      </li>
+    `).join("");
+  }
+
+  function updateNotifDot() {
+    const dot = $("#notif-dot");
+    if (!dot) return;
+    const loud = notifState.list.filter(n =>
+      !n.read && ["warning", "error", "success"].includes(n.severity)
+    ).length;
+    dot.hidden = loud === 0;
+  }
+
+  function toggleDrawer(force) {
+    const drawer = $("#notif-drawer");
+    if (!drawer) return;
+    const willOpen = force != null ? force : drawer.hidden;
+    drawer.hidden = !willOpen;
+    notifState.open = willOpen;
+    if (willOpen) renderNotifList();
+  }
+
+  function addNotification(entry) {
+    notifState.list.unshift(entry);
+    // Cap at 50 to match server-side
+    notifState.list = notifState.list.slice(0, 50);
+    if (notifState.open) renderNotifList();
+    updateNotifDot();
+  }
+
+  function markAllRead() {
+    notifState.list.forEach(n => n.read = true);
+    renderNotifList();
+    updateNotifDot();
+  }
+
+  function clearAll() {
+    notifState.list = [];
+    renderNotifList();
+    updateNotifDot();
+  }
+
+  // ---------- Boot ----------
+  function init() {
+    // Drawer button wiring
+    const btn = $("#notif-btn");
+    if (btn) btn.addEventListener("click", () => toggleDrawer());
+
+    const markBtn = $("#notif-mark-read");
+    if (markBtn) markBtn.addEventListener("click", () => {
+      markAllRead();
+      // Optional: tell server, but server doesn't currently care
+    });
+
+    const clearBtn = $("#notif-clear");
+    if (clearBtn) clearBtn.addEventListener("click", () => {
+      clearAll();
+      // Optional: tell server to clear its buffer too
+      fetch("/debug/notify/clear", { method: "POST" }).catch(() => {});
+    });
+
+    // Close drawer when clicking outside
+    document.addEventListener("click", (e) => {
+      const drawer = $("#notif-drawer");
+      const trigger = $("#notif-btn");
+      if (!drawer || drawer.hidden) return;
+      if (drawer.contains(e.target) || (trigger && trigger.contains(e.target))) return;
+      toggleDrawer(false);
+    });
+
+    // Connect SocketIO if the library is loaded
+    if (typeof io === "undefined") {
+      console.warn("socket.io client not loaded; live updates disabled");
+      setLive("down");
+      return;
+    }
+
+    const socket = io({ transports: ["websocket", "polling"] });
+
+    socket.on("connect", () => { setLive("up"); });
+    socket.on("disconnect", () => { setLive("down"); });
+    socket.on("connect_error", () => { setLive("down"); });
+
+    socket.on("sysinfo", (data) => {
+      try { applySysinfo(data); }
+      catch (e) { console.error("applySysinfo failed", e); }
+    });
+
+    socket.on("notification", (entry) => {
+      addNotification(entry);
+    });
+
+    socket.on("notification:read_all", () => {
+      markAllRead();
+    });
+
+    socket.on("notification:clear", () => {
+      clearAll();
+    });
+
+    // Expose for debugging from the browser console
+    window.pipineapple = { socket, notifState };
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();

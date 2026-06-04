@@ -188,6 +188,39 @@ A **Learning Centre** as a new top-level UI section, between Modules and Setting
 
 ---
 
+## Checkpoint 12 — Session 01 wrap
+
+**Shipped:**
+
+- Flask app factory with four configurations (Dev / MacDev / Test / Prod) and clean three-layer architecture (`routes/` → `services/` → `tools/`).
+- Six tool wrappers (one per shell tool) plus a shared `_common.py`. Stub mode covers the entire data pipeline for Mac-side dev.
+- System status data pipeline composing CPU temp, memory, uptime, kernel, Pi model, network interfaces, wireless radios, and reg domain into a single dict.
+- Pineapple-shaped chrome: fixed title bar with brand + version + four icon-button placeholders, hover-expand left sidebar with seven Pineapple-aligned sections + Learning Centre.
+- Dashboard rendering with six-card stat row, four placeholder section cards pointing at the sessions that will fill them, plus real wireless-radios and network-interfaces tables.
+- Learning Centre — a new top-level section not on the original roadmap. Curriculum-as-feature with four topic sections covering everything the dashboard sources from. TOC is sticky below the title bar.
+- 19-session Pineapple-aligned roadmap, project memory updated.
+
+**Deviations from the original Session 01 plan:**
+
+- Built the title bar + sidebar chrome in S01 instead of waiting for S02. Reason: the IA realignment landed mid-session after reviewing Hak5 docs, and reshaping the chrome was inseparable from the realignment work. Net effect — S02 gets to focus purely on WebSocket live updates, Notifications, and JobManager instead of also doing chrome.
+- Added Learning Centre as a new top-level section. Not on the roadmap when S01 started; emerged organically from the "checkpoints throughout the session" journaling habit. Now codified in the roadmap as an ongoing accretion target — every later session adds either a new topic section or new commands to existing ones.
+
+**Parked for Session 02:**
+
+- WebSocket live updates via Flask-SocketIO (the realtime extra is already declared in `pyproject.toml`).
+- Notifications system wiring — the bell icon's hidden dot indicator turns on when there are unread notifications, drawer shows last N messages with their severity (Info / Warning / Error / Success / Unknown).
+- JobManager service skeleton for tracking long-running subprocesses. Foundation for every later session's backend.
+- Real SVG icons for the sidebar to replace the Unicode-glyph placeholders.
+
+**Parked further out:**
+
+- `udev` sticky-name rules for three Alfa adapters (Session 04).
+- `hostapd-mana` build-from-source on Trixie (Session 12 area).
+- Mac-side `~/.ssh/config` Host entry to shorten `ssh <user>@pi-lab.local` to `ssh pi-lab`.
+- Migrating SSH from password auth to key auth (Session 19 polish).
+
+---
+
 ## Session-wide findings
 
 - The archived `lab-session-01-03.cap` from the pre-pivot session-02 had BSSID `82:4F:94:6E:56:EE` (SSID `"TL"`), not `06:41:A7:58:08:F2` as the old journal recorded. The journal and the actual capture file described different events — the captured handshake was an opportunistic one between the AP and client `14:1B:A0:80:EA:1A`, not the deauthed client `2A:ED:7A:77:62:D2`. **Lesson:** always cross-check journal notes against the actual capture data.

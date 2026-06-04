@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}PiPineapple{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" defer></script>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </head>
 <body>
   {# ---------- Title bar ---------- #}
@@ -13,67 +15,175 @@
       <span class="logo">⚡</span>
       <span class="brand-name">PiPineapple</span>
       <span class="version">v0.1.0</span>
+      <span id="live-indicator" class="live-indicator live-down" title="WebSocket disconnected">
+        <span class="live-dot"></span>
+        <span class="live-label">offline</span>
+      </span>
     </div>
     <div class="titlebar-actions">
-      <button class="iconbtn" title="Notifications" aria-label="Notifications">
-        <span class="icon">🔔</span>
-        <span class="badge-dot"></span>
+      <button id="notif-btn" class="iconbtn" title="Notifications" aria-label="Notifications">
+        {# bell #}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" class="iconbtn-svg">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+        <span id="notif-dot" class="badge-dot" hidden></span>
       </button>
       <button class="iconbtn" title="Informational messages" aria-label="Info">
-        <span class="icon">ℹ</span>
+        {# info circle #}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" class="iconbtn-svg">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="16" x2="12" y2="12"/>
+          <line x1="12" y1="8" x2="12.01" y2="8"/>
+        </svg>
       </button>
       <button class="iconbtn" title="Web Terminal" aria-label="Web Terminal">
-        <span class="icon">▶_</span>
+        {# terminal #}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" class="iconbtn-svg">
+          <polyline points="4 17 10 11 4 5"/>
+          <line x1="12" y1="19" x2="20" y2="19"/>
+        </svg>
       </button>
       <button class="iconbtn" title="More" aria-label="More">
-        <span class="icon">⋮</span>
+        {# vertical dots #}
+        <svg viewBox="0 0 24 24" fill="currentColor" class="iconbtn-svg">
+          <circle cx="12" cy="5" r="1.6"/>
+          <circle cx="12" cy="12" r="1.6"/>
+          <circle cx="12" cy="19" r="1.6"/>
+        </svg>
       </button>
     </div>
   </header>
+
+  {# ---------- Notifications drawer ---------- #}
+  <div id="notif-drawer" class="notif-drawer" hidden>
+    <div class="notif-drawer-head">
+      <span class="notif-drawer-title">Notifications</span>
+      <div class="notif-drawer-actions">
+        <button id="notif-mark-read" class="linkbtn">Mark all read</button>
+        <button id="notif-clear" class="linkbtn">Clear</button>
+      </div>
+    </div>
+    <ul id="notif-list" class="notif-list">
+      <li class="notif-empty muted">No notifications yet.</li>
+    </ul>
+  </div>
 
   <div class="page">
     {# ---------- Left sidebar ---------- #}
     <aside class="sidebar">
       <nav class="sidenav">
         <a href="{{ url_for('dashboard.index') }}"
-           class="sidenav-item {% block nav_dashboard %}{% endblock %}">
-          <span class="sidenav-icon">▢</span>
+           class="sidenav-item {% block nav_dashboard %}{% endblock %}"
+           title="Dashboard">
+          <span class="sidenav-icon">
+            {# layout grid #}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" class="sidenav-svg">
+              <rect x="3" y="3" width="7" height="7"/>
+              <rect x="14" y="3" width="7" height="7"/>
+              <rect x="14" y="14" width="7" height="7"/>
+              <rect x="3" y="14" width="7" height="7"/>
+            </svg>
+          </span>
           <span class="sidenav-label">Dashboard</span>
         </a>
+
         <a href="#" class="sidenav-item disabled"
            title="Recon — Phase B (Sessions 4–6)">
-          <span class="sidenav-icon">◎</span>
+          <span class="sidenav-icon">
+            {# radio waves / radar #}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" class="sidenav-svg">
+              <path d="M2 12.55a11 11 0 0 1 20 0"/>
+              <path d="M5 16a8 8 0 0 1 14 0"/>
+              <path d="M8 19.5a4 4 0 0 1 8 0"/>
+              <circle cx="12" cy="22" r="0.6" fill="currentColor"/>
+            </svg>
+          </span>
           <span class="sidenav-label">Recon</span>
         </a>
+
         <a href="#" class="sidenav-item disabled"
            title="PineAP — Phase D (Sessions 10–13)">
-          <span class="sidenav-icon">🍍</span>
+          <span class="sidenav-icon">
+            {# target / bullseye #}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" class="sidenav-svg">
+              <circle cx="12" cy="12" r="10"/>
+              <circle cx="12" cy="12" r="6"/>
+              <circle cx="12" cy="12" r="2"/>
+            </svg>
+          </span>
           <span class="sidenav-label">PineAP</span>
         </a>
+
         <a href="#" class="sidenav-item disabled"
            title="Handshakes — Phase C (Sessions 7–9)">
-          <span class="sidenav-icon">⇄</span>
+          <span class="sidenav-icon">
+            {# link / chain #}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" class="sidenav-svg">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+          </span>
           <span class="sidenav-label">Handshakes</span>
         </a>
+
         <a href="#" class="sidenav-item disabled"
            title="Campaigns — Phase E (Session 14)">
-          <span class="sidenav-icon">▶</span>
+          <span class="sidenav-icon">
+            {# play / triangle #}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" class="sidenav-svg">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+          </span>
           <span class="sidenav-label">Campaigns</span>
         </a>
+
         <a href="#" class="sidenav-item disabled"
            title="Modules — Phase F (Sessions 15–17)">
-          <span class="sidenav-icon">▥</span>
+          <span class="sidenav-icon">
+            {# package / box #}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" class="sidenav-svg">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+              <line x1="12" y1="22.08" x2="12" y2="12"/>
+            </svg>
+          </span>
           <span class="sidenav-label">Modules</span>
         </a>
+
         <a href="{{ url_for('learning.index') }}"
            class="sidenav-item {% block nav_learning %}{% endblock %}"
            title="Learning Centre — console commands by topic">
-          <span class="sidenav-icon">📖</span>
+          <span class="sidenav-icon">
+            {# book open #}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" class="sidenav-svg">
+              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+              <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+            </svg>
+          </span>
           <span class="sidenav-label">Learning</span>
         </a>
+
         <a href="#" class="sidenav-item disabled"
            title="Settings — Phase G (Session 18)">
-          <span class="sidenav-icon">⚙</span>
+          <span class="sidenav-icon">
+            {# gear (simplified) #}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" class="sidenav-svg">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 2v3M12 19v3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M2 12h3M19 12h3M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12"/>
+            </svg>
+          </span>
           <span class="sidenav-label">Settings</span>
         </a>
       </nav>
