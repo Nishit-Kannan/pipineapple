@@ -27,6 +27,8 @@ Status transitions:
 
 from __future__ import annotations
 
+import atexit
+import ctypes
 import logging
 import shlex
 import signal
@@ -40,6 +42,20 @@ from enum import Enum
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+
+# Linux PR_SET_PDEATHSIG — when the parent process dies (Flask exits),
+# the kernel sends SIGTERM to this child. Cleanly kills lingering
+# hostapd/dnsmasq daemons even if Flask is killed with SIGKILL.
+def _set_pdeathsig() -> None:
+    """preexec_fn that asks the kernel to send SIGTERM if parent dies."""
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        SIGTERM = 15
+        libc.prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0)
+    except Exception:  # pragma: no cover — best-effort
+        pass
 
 
 class JobStatus(str, Enum):
@@ -143,6 +159,7 @@ class JobManager:
                     stderr=subprocess.STDOUT,
                     bufsize=1,
                     text=True,
+                    preexec_fn=_set_pdeathsig,
                 )
                 # Stash the file so we close it in the wait-loop thread
                 job._stdout_file = stdout_target  # type: ignore[attr-defined]
@@ -154,6 +171,7 @@ class JobManager:
                     stderr=subprocess.STDOUT,
                     bufsize=1,
                     text=True,
+                    preexec_fn=_set_pdeathsig,
                 )
         except (FileNotFoundError, OSError) as e:
             job.status = JobStatus.FAILED
@@ -345,3 +363,21 @@ class JobManager:
 
 # Module-level singleton
 job_manager = JobManager()
+
+
+@atexit.register
+def _shutdown_jobs() -> None:
+    """Clean-shutdown path — invoked when Flask exits normally.
+
+    PR_SET_PDEATHSIG handles the SIGKILL case (kernel sends SIGTERM to
+    children automatically). This handler covers the Ctrl-C / clean
+    exit case where atexit hooks actually run.
+    """
+    try:
+        running = [j for j in job_manager.list_jobs()
+                   if j.status == JobStatus.RUNNING]
+        if running:
+            log.info("shutting down: stopping %d running job(s)", len(running))
+            job_manager.stop_all(grace=1.0)
+    except Exception:
+        pass
