@@ -93,5 +93,7 @@ def _register_blueprints(app: Flask) -> None:
     blueprint's transitive dependencies at module load time.
     """
     from app.routes.dashboard import bp as dashboard_bp
+    from app.routes.learning import bp as learning_bp
 
     app.register_blueprint(dashboard_bp)
+    app.register_blueprint(learning_bp)

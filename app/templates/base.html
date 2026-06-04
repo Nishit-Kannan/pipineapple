@@ -65,6 +65,12 @@
           <span class="sidenav-icon">▥</span>
           <span class="sidenav-label">Modules</span>
         </a>
+        <a href="{{ url_for('learning.index') }}"
+           class="sidenav-item {% block nav_learning %}{% endblock %}"
+           title="Learning Centre — console commands by topic">
+          <span class="sidenav-icon">📖</span>
+          <span class="sidenav-label">Learning</span>
+        </a>
         <a href="#" class="sidenav-item disabled"
            title="Settings — Phase G (Session 18)">
           <span class="sidenav-icon">⚙</span>

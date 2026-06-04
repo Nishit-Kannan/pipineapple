@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Learning Centre — PiPineapple{% endblock %}
+{% block nav_learning %}active{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Learning Centre</h1>
+    <p class="muted">
+      The console commands behind every UI feature, organised by topic. New
+      sections accrete as later sessions introduce new tools — each entry
+      links back to the wrapper module under <code>app/tools/</code> and the
+      UI surface that uses it.
+    </p>
+  </div>
+
+  {# ---------- TOC ---------- #}
+  <div class="learning-toc card">
+    <span class="muted toc-label">Jump to:</span>
+    {% for sec in sections %}
+      <a href="#{{ sec.id }}" class="toc-link">{{ sec.title }}</a>
+    {% endfor %}
+  </div>
+
+  {# ---------- Section blocks ---------- #}
+  {% for sec in sections %}
+    <section id="{{ sec.id }}" class="learning-section card">
+      <div class="card-head">
+        <h2>{{ sec.title }}</h2>
+        <span class="muted">added in session {{ sec.added_in_session }}</span>
+      </div>
+
+      <p class="section-intro">{{ sec.intro }}</p>
+
+      <div class="section-meta">
+        <div>
+          <span class="meta-label">Where used:</span>
+          <span>{{ sec.ui_reference }}</span>
+        </div>
+        <div>
+          <span class="meta-label">Wrapper modules:</span>
+          <span>
+            {% for m in sec.wrapper_modules %}
+              <code>{{ m }}</code>{% if not loop.last %}, {% endif %}
+            {% endfor %}
+          </span>
+        </div>
+      </div>
+
+      {% for cmd in sec.commands %}
+        <div class="cmd-block">
+          <pre class="cmd"><code>{{ cmd.command }}</code></pre>
+          {% if cmd.description %}
+            <p class="cmd-desc">{{ cmd.description }}</p>
+          {% endif %}
+          {% if cmd.example_output %}
+            <div class="cmd-output-label muted">Example output</div>
+            <pre class="cmd-output"><code>{{ cmd.example_output }}</code></pre>
+          {% endif %}
+          {% if cmd.notes %}
+            <p class="cmd-notes">
+              <span class="meta-label">Notes:</span> {{ cmd.notes }}
+            </p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </section>
+  {% endfor %}
+{% endblock %}

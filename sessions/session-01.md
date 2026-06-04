@@ -137,7 +137,54 @@ Journal format: incremental checkpoints added in real time. Each milestone gets 
 
 **Connection topology:** Ethernet for management (clean separation from offensive Wi-Fi work), `wlan0` reserved for future client-mode upstream (Session 18 settings page).
 
-**Next checkpoint will cover:** apt prerequisites install, project sync from Mac → Pi, venv setup, `python run.py`, first browse from Mac to `http://pi-lab.local:5000`.
+---
+
+## Checkpoint 10 — First deploy: GitHub clone, venv, browse from Mac
+
+**Done:**
+
+- `sudo apt install -y gh` — GitHub CLI from Trixie's main repo, plus the Session 01 prerequisites (`python3-pip python3-venv git iw ethtool`).
+- `gh auth login` via the device-code flow (Pi is headless, browser opens on the Mac): GitHub.com → HTTPS → authenticate Git → "Login with a web browser." `gh` printed a one-time code, we entered it at `github.com/login/device` on the Mac, approved, and the Pi reported `✓ Logged in as <user>`. `gh auth setup-git` ran behind the scenes so plain `git` operations now use the stored token transparently.
+- Cloned to `~/pipineapple` on the Pi, set up the venv (`python3 -m venv .venv && source .venv/bin/activate && pip install -e .`), launched `python run.py`. Flask bound to `0.0.0.0:5000`.
+- Browsed from Mac → `http://pi-lab.local:5000`. Dashboard rendered with real Pi data.
+
+**Gotcha and lesson:**
+
+First successful render showed the *pre-realignment* layout (top tabs: Dashboard / Recon / Captures / Rogue AP / MITM / Network Recon / Settings) because the GitHub push happened earlier in the session, before the Pineapple IA realignment landed on the Mac. Fix was a quick `git add -A && git commit && git push` on the Mac, `git pull` on the Pi, restart Flask, hard-refresh the Mac browser (Cmd+Shift+R) to bust the cached CSS. Then the actual Pineapple chrome (fixed title bar, hover-expand left sidebar, seven Pineapple-aligned sections) showed up.
+
+**Lesson:** always verify that what's deployed matches what you intended. Git-state and working-directory state can drift unnoticed — `git status` before assuming you've shipped your latest work is the cheap insurance.
+
+---
+
+## Checkpoint 11 — Console exercise + Learning Centre feature
+
+**Done by Nishit:**
+
+- Ran the console-exercise commands by hand on the Pi: `vcgencmd measure_temp`, `cat /sys/class/thermal/thermal_zone0/temp`, `cat /proc/meminfo`, `cat /proc/uptime`, `cat /proc/sys/kernel/osrelease`, `cat /proc/device-tree/model`, `ip addr show`, `ip -j addr show`, `iw dev`, `iw reg get`, `cat /proc/net/wireless`, `ethtool -i wlan0`. Saw how each maps to a dashboard surface and what the wrappers parsed.
+- Set regulatory domain to India: `sudo iw reg set IN`. Verified with `iw reg get` (now shows `country IN:` with the IN-specific 5 GHz channel set and DFS rules).
+
+**Built (new feature, not on the original roadmap):**
+
+A **Learning Centre** as a new top-level UI section, between Modules and Settings in the sidebar. Lives at `/learning`. The idea is curriculum-as-feature — every console command we cover gets captured here with its purpose, example output, and the UI surface it backs, so the platform itself documents how to use it. Each later session either appends a new topic section or adds commands to an existing one.
+
+**Architecture:**
+
+- Content data in `app/services/learning.py` as a list of section dicts. Schema documented in the module docstring (`id`, `title`, `added_in_session`, `intro`, `ui_reference`, `wrapper_modules`, `commands[]`).
+- New blueprint at `app/routes/learning.py`, mounted at `/learning/`. Single-page render, anchor links per section.
+- New template `app/templates/learning.html` with a TOC card at the top followed by one expanded section card per topic. Each command block renders: command syntax in a styled code block, description, optional example output in a separate code block with a label, optional notes line.
+- Sidebar nav updated in `base.html` — Learning entry between Modules and Settings, enabled (not disabled), with a 📖 icon.
+- CSS additions in `style.css` for `.learning-toc`, `.learning-section`, `.section-meta`, `.cmd-block`, `.cmd`, `.cmd-output`, `.cmd-notes`.
+
+**Session 01 Learning Centre content** — four topic sections covering everything we ran by hand:
+
+1. **System & status** — vcgencmd measure_temp, /sys thermal zone, /proc/meminfo, /proc/uptime, /proc/sys/kernel/osrelease, /proc/device-tree/model.
+2. **Network interfaces** — ip addr show (text), ip -j addr show (JSON parsed by wrapper), pretty-print via json.tool.
+3. **Wireless radios** — iw dev (interface enumeration), iw reg get (regulatory domain), sudo iw reg set IN (the actual command run this session), /proc/net/wireless (live signal stats).
+4. **Driver detection** — ethtool -i wlan0, ethtool -i eth0.
+
+**Verified:** all routes register correctly (`/`, `/learning/`, `/static/<path>`), Learning page renders with all four sections, sidebar nav shows Learning as enabled and active when on `/learning/`. Dashboard route remains regression-free.
+
+**Lesson worth capturing:** Jinja auto-escapes HTML in template variables, so the apostrophe in `temp=47.2'C` renders to the page as `temp=47.2&#39;C` in source, but displays as `temp=47.2'C` in the browser. Correct behaviour — XSS-safe — but worth knowing when writing test assertions that grep the raw HTML.
 
 ---
 
