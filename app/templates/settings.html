@@ -14,9 +14,8 @@
   {# ---------- Tab bar ---------- #}
   <div class="tabs">
     <button class="tab active" data-tab="adapters">Adapter Management</button>
+    <button class="tab" data-tab="networking">Networking</button>
     <button class="tab" data-tab="security">Security</button>
-    <button class="tab disabled" disabled title="Session 18">Networking</button>
-    <button class="tab disabled" disabled title="Session 18">WiFi</button>
     <button class="tab disabled" disabled title="Session 18">Advanced</button>
     <button class="tab disabled" disabled title="Session 18">Help</button>
   </div>
@@ -160,6 +159,128 @@
     </div>
 
     <div id="settings-status" class="settings-status muted" hidden></div>
+  </section>
+
+  {# ---------- Networking tab ---------- #}
+  <section id="tab-networking" class="tab-panel" hidden>
+    <div class="statcards">
+      <div class="statcard">
+        <div class="statcard-label">wlan0 mode</div>
+        <div class="statcard-value" data-field="wlan0-mode">{{ networking.wlan0_mode }}</div>
+        <div class="statcard-sub muted">idle / client / ap</div>
+      </div>
+      <div class="statcard">
+        <div class="statcard-label">Management AP</div>
+        <div class="statcard-value" data-field="mgmt-ap-status">
+          {% if networking.wlan0_mode == "ap" %}active{% else %}inactive{% endif %}
+        </div>
+        <div class="statcard-sub muted">
+          SSID: <code data-field="mgmt-ap-ssid">{{ networking.mgmt_ap.ssid }}</code>
+        </div>
+      </div>
+      <div class="statcard">
+        <div class="statcard-label">Saved networks</div>
+        <div class="statcard-value" data-field="saved-count">{{ networking.saved_wifi|length }}</div>
+        <div class="statcard-sub muted">profiles in NetworkManager</div>
+      </div>
+    </div>
+
+    <div class="dash-grid">
+      {# Client mode #}
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>wlan0 client mode — upstream Wi-Fi</h2>
+          <span class="muted">connect Pi to a Wi-Fi network for upstream/management</span>
+        </div>
+
+        <h3 class="subhead">Saved networks</h3>
+        <table class="data" id="saved-wifi-table">
+          <thead>
+            <tr><th>SSID</th><th>Active</th><th>Autoconnect</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% if networking.saved_wifi %}
+              {% for w in networking.saved_wifi %}
+                <tr data-name="{{ w.name }}">
+                  <td><code>{{ w.ssid }}</code></td>
+                  <td>
+                    {% if w.active %}<span class="badge badge-good">connected</span>
+                    {% else %}<span class="badge badge-muted">—</span>{% endif %}
+                  </td>
+                  <td>{% if w.autoconnect %}yes{% else %}no{% endif %}</td>
+                  <td class="action-cell">
+                    <button class="actbtn wifi-connect" data-ssid="{{ w.ssid }}">Connect</button>
+                    <button class="actbtn actbtn-muted wifi-forget" data-name="{{ w.name }}">Forget</button>
+                  </td>
+                </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="4" class="muted">No saved networks. Scan + connect below.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+
+        <h3 class="subhead" style="margin-top:18px;">Scan + add network</h3>
+        <div class="form-row">
+          <button id="wifi-scan-btn" class="actbtn">Scan for networks</button>
+          <button id="wifi-disconnect-btn" class="actbtn actbtn-muted">Disconnect wlan0</button>
+        </div>
+        <table class="data" id="wifi-scan-table" style="margin-top:8px;" hidden>
+          <thead>
+            <tr><th>SSID</th><th>Signal</th><th>Security</th><th>Freq</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      {# Management AP #}
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Management AP — operator-only Wi-Fi</h2>
+          <span class="muted">Pi broadcasts its own SSID for field operator access</span>
+        </div>
+        <p class="muted" style="font-size:13px;">
+          When enabled, <code>wlan0</code> stops being a client to any
+          upstream network and broadcasts <code data-field="mgmt-ap-ssid-2">{{ networking.mgmt_ap.ssid }}</code>
+          on subnet <code>{{ networking.mgmt_ap.subnet }}</code> (gateway
+          <code>{{ networking.mgmt_ap.gateway_ip }}</code>). Useful in
+          the field with no Ethernet. Cannot run simultaneously with
+          client mode — toggle one off before the other comes on.
+        </p>
+
+        <form id="mgmt-ap-form" class="auth-form-inline">
+          <div class="form-row">
+            <label>
+              <span class="auth-label">SSID</span>
+              <input type="text" name="ssid" value="{{ networking.mgmt_ap.ssid }}" required maxlength="32">
+            </label>
+            <label>
+              <span class="auth-label">WPA2 password (min 8 chars)</span>
+              <input type="password" name="password" placeholder="{% if networking.mgmt_ap.password_set %}(unchanged){% else %}set a password{% endif %}" minlength="8">
+            </label>
+            <label>
+              <span class="auth-label">Channel</span>
+              <input type="number" name="channel" value="{{ networking.mgmt_ap.channel }}" min="1" max="14">
+            </label>
+          </div>
+          <button type="submit" class="actbtn">Save config</button>
+        </form>
+
+        <div class="form-row" style="margin-top:14px;">
+          <button id="mgmt-ap-enable" class="bigbtn">Enable management AP</button>
+          <button id="mgmt-ap-disable" class="bigbtn actbtn-muted">Disable management AP</button>
+        </div>
+
+        <p class="muted" style="font-size:12px; margin-top:8px;">
+          <strong>Heads-up:</strong> enabling the management AP will
+          disconnect <code>wlan0</code> from any upstream Wi-Fi. If
+          you're reaching the UI <em>via</em> wlan0 (e.g. home Wi-Fi
+          client mode) you'll lose the connection. Reconnect to the new
+          management SSID after a moment and browse to
+          <code>http://10.42.0.1:5000</code>.
+        </p>
+      </section>
+    </div>
   </section>
 
   {# ---------- Security tab ---------- #}

@@ -191,5 +191,16 @@ def _start_background_tasks(app: Flask) -> None:
         return
 
     from app.services import sysinfo_broadcaster
-
     sysinfo_broadcaster.start(socketio, interval=2.0)
+
+    # Restore networking state (management AP if previously enabled)
+    # in a background thread so a slow restore doesn't block app startup.
+    import threading
+    def _restore():
+        try:
+            from app.services.networking import NetworkingService
+            svc = NetworkingService(app.config["DATA_DIR"])
+            svc.restore_on_startup()
+        except Exception:
+            app.logger.exception("networking restore failed")
+    threading.Thread(target=_restore, daemon=True, name="networking-restore").start()

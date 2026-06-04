@@ -66,6 +66,26 @@ _STUB_INTERFACES = [
 ]
 
 
+def add_address(iface: str, cidr: str) -> tuple[bool, str]:
+    """``ip addr add <cidr> dev <iface>``. Required for static IP on AP mode."""
+    if stub_mode():
+        return True, f"(stub) ip addr add {cidr} dev {iface}"
+    result = run(["ip", "addr", "add", cidr, "dev", iface], timeout=3.0)
+    if result.returncode == 0:
+        return True, f"set {cidr} on {iface}"
+    return False, f"ip addr add failed: {result.stderr.strip() or result.stdout.strip()}"
+
+
+def flush_address(iface: str) -> tuple[bool, str]:
+    """``ip addr flush dev <iface>`` — remove all IPs from the interface."""
+    if stub_mode():
+        return True, f"(stub) ip addr flush dev {iface}"
+    result = run(["ip", "addr", "flush", "dev", iface], timeout=3.0)
+    if result.returncode == 0:
+        return True, f"flushed addresses on {iface}"
+    return False, f"ip addr flush failed: {result.stderr.strip()}"
+
+
 def set_link_state(iface: str, state: str) -> tuple[bool, str]:
     """Bring an interface up or down via ``ip link set <iface> up|down``.
 

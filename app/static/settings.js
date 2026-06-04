@@ -90,6 +90,85 @@
     if (monField) monField.textContent = String(monitorCount);
   }
 
+  function renderNetworkingState(state) {
+    if (!state) return;
+    const modeEl = document.querySelector('[data-field="wlan0-mode"]');
+    if (modeEl) modeEl.textContent = state.wlan0_mode || "idle";
+    const apStatusEl = document.querySelector('[data-field="mgmt-ap-status"]');
+    if (apStatusEl) apStatusEl.textContent = state.wlan0_mode === "ap" ? "active" : "inactive";
+    const apSsidEls = document.querySelectorAll('[data-field="mgmt-ap-ssid"], [data-field="mgmt-ap-ssid-2"]');
+    apSsidEls.forEach(el => el.textContent = (state.mgmt_ap && state.mgmt_ap.ssid) || "—");
+    const savedCountEl = document.querySelector('[data-field="saved-count"]');
+    if (savedCountEl) savedCountEl.textContent = String((state.saved_wifi || []).length);
+
+    // Rebuild saved-networks table
+    const tbody = document.querySelector("#saved-wifi-table tbody");
+    if (tbody && state.saved_wifi) {
+      if (state.saved_wifi.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="muted">No saved networks. Scan + connect below.</td></tr>';
+      } else {
+        tbody.innerHTML = state.saved_wifi.map(w => `
+          <tr data-name="${escapeHtml(w.name)}">
+            <td><code>${escapeHtml(w.ssid)}</code></td>
+            <td>${w.active ? '<span class="badge badge-good">connected</span>' : '<span class="badge badge-muted">—</span>'}</td>
+            <td>${w.autoconnect ? "yes" : "no"}</td>
+            <td class="action-cell">
+              <button class="actbtn wifi-connect" data-ssid="${escapeHtml(w.ssid)}">Connect</button>
+              <button class="actbtn actbtn-muted wifi-forget" data-name="${escapeHtml(w.name)}">Forget</button>
+            </td>
+          </tr>
+        `).join("");
+      }
+    }
+  }
+
+  function renderWifiScan(networks) {
+    const table = document.querySelector("#wifi-scan-table");
+    const tbody = document.querySelector("#wifi-scan-table tbody");
+    if (!table || !tbody) return;
+    table.hidden = false;
+    if (networks.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="muted">No networks found.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = networks.map(n => {
+      const secBadge = n.security && n.security !== "OPEN" && n.security !== "--"
+        ? `<span class="badge badge-muted">${escapeHtml(n.security)}</span>`
+        : '<span class="badge badge-warn">OPEN</span>';
+      const freq = n.freq_mhz ? `${n.freq_mhz} MHz` : "—";
+      const signal = n.signal != null ? `${n.signal}%` : "—";
+      return `<tr>
+        <td><code>${escapeHtml(n.ssid)}</code></td>
+        <td>${signal}</td>
+        <td>${secBadge}</td>
+        <td class="muted">${freq}</td>
+        <td><button class="actbtn scan-connect" data-ssid="${escapeHtml(n.ssid)}" data-open="${(!n.security || n.security === 'OPEN' || n.security === '--')}">Connect…</button></td>
+      </tr>`;
+    }).join("");
+  }
+
+  // Connect-from-scan handler — prompts for password if secured
+  document.body.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".scan-connect");
+    if (!btn) return;
+    const ssid = btn.dataset.ssid;
+    const isOpen = btn.dataset.open === "true";
+    let pw = "";
+    if (!isOpen) {
+      pw = prompt(`Password for "${ssid}":`) || "";
+      if (!pw) return;
+    }
+    btn.disabled = true;
+    showStatus(`saving + connecting to ${ssid}…`);
+    try {
+      const res = await postJSON("/settings/networking/wifi/connect", { ssid, password: pw });
+      showStatus(res.msg, res.ok ? "ok" : "fail");
+      if (res.state) renderNetworkingState(res.state);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   function renderDenyTable(cidrs) {
     const tbody = document.querySelector("#deny-table tbody");
     if (!tbody) return;
@@ -175,7 +254,113 @@
       });
     }
 
-    // Deny-table remove buttons (delegated)
+    // ---------- Networking tab ----------
+    // Save management AP config
+    const apForm = $("#mgmt-ap-form");
+    if (apForm) {
+      apForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = new FormData(apForm);
+        const body = {
+          ssid: f.get("ssid"),
+          password: f.get("password"),
+          channel: parseInt(f.get("channel"), 10),
+        };
+        showStatus("saving management AP config…");
+        const res = await postJSON("/settings/networking/mgmt-ap/configure", body);
+        showStatus(res.msg, res.ok ? "ok" : "fail");
+      });
+    }
+
+    const apEnable = $("#mgmt-ap-enable");
+    if (apEnable) {
+      apEnable.addEventListener("click", async () => {
+        if (!confirm(
+          "Enable management AP?\nwlan0 will stop being a client to any upstream Wi-Fi and start broadcasting the management SSID.\nIf you reached this page via wlan0 (home Wi-Fi), you will lose the connection."
+        )) return;
+        apEnable.disabled = true;
+        showStatus("enabling management AP (you may lose this connection)…");
+        try {
+          const res = await postJSON("/settings/networking/mgmt-ap/enable");
+          showStatus((res.messages || []).join(" / "), res.ok ? "ok" : "fail");
+          if (res.state) renderNetworkingState(res.state);
+        } finally {
+          apEnable.disabled = false;
+        }
+      });
+    }
+
+    const apDisable = $("#mgmt-ap-disable");
+    if (apDisable) {
+      apDisable.addEventListener("click", async () => {
+        apDisable.disabled = true;
+        showStatus("disabling management AP…");
+        try {
+          const res = await postJSON("/settings/networking/mgmt-ap/disable");
+          showStatus((res.messages || []).join(" / "), res.ok ? "ok" : "fail");
+          if (res.state) renderNetworkingState(res.state);
+        } finally {
+          apDisable.disabled = false;
+        }
+      });
+    }
+
+    // Wi-Fi scan
+    const scanBtn = $("#wifi-scan-btn");
+    if (scanBtn) {
+      scanBtn.addEventListener("click", async () => {
+        scanBtn.disabled = true;
+        showStatus("scanning…");
+        try {
+          const res = await postJSON("/settings/networking/wifi/scan");
+          renderWifiScan(res.networks || []);
+          showStatus(`scan complete: ${res.networks.length} networks`, "ok");
+        } finally {
+          scanBtn.disabled = false;
+        }
+      });
+    }
+
+    // Wi-Fi disconnect
+    const disBtn = $("#wifi-disconnect-btn");
+    if (disBtn) {
+      disBtn.addEventListener("click", async () => {
+        if (!confirm("Disconnect wlan0 from upstream Wi-Fi?")) return;
+        const res = await postJSON("/settings/networking/wifi/disconnect");
+        showStatus(res.msg, res.ok ? "ok" : "fail");
+        if (res.state) renderNetworkingState(res.state);
+      });
+    }
+
+    // Connect to saved network (delegated)
+    document.body.addEventListener("click", async (e) => {
+      const btn = e.target.closest(".wifi-connect");
+      if (!btn) return;
+      const ssid = btn.dataset.ssid;
+      if (!confirm(`Connect wlan0 to "${ssid}"?\nIf the management AP is currently active it will be disabled first.`)) return;
+      btn.disabled = true;
+      showStatus(`connecting to ${ssid}…`);
+      try {
+        const res = await postJSON("/settings/networking/wifi/connect", { ssid });
+        showStatus(res.msg, res.ok ? "ok" : "fail");
+        if (res.state) renderNetworkingState(res.state);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // Forget saved network
+    document.body.addEventListener("click", async (e) => {
+      const btn = e.target.closest(".wifi-forget");
+      if (!btn) return;
+      const name = btn.dataset.name;
+      if (!confirm(`Forget the saved Wi-Fi profile "${name}"?`)) return;
+      const res = await postJSON("/settings/networking/wifi/forget", { name });
+      showStatus(res.msg, res.ok ? "ok" : "fail");
+      if (res.state) renderNetworkingState(res.state);
+    });
+
+    // ---------- Deny-table remove buttons (delegated) ----------
     const denyTable = $("#deny-table");
     if (denyTable) {
       denyTable.addEventListener("click", async (e) => {

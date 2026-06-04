@@ -799,6 +799,125 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 04.6 — Management AP + Wi-Fi client mode
+    # ------------------------------------------------------------------
+    {
+        "id": "mgmt-ap-client-mode",
+        "title": "Management AP & client mode (wlan0)",
+        "added_in_session": 4.6,
+        "intro": (
+            "The same wlan0 radio is either a Wi-Fi client (joining "
+            "upstream) or an access point (broadcasting the management "
+            "SSID). The platform's Networking tab is the orchestrator; "
+            "these are the shell commands it runs under the hood. "
+            "Useful for verifying state, diagnosing why a mode switch "
+            "didn't take, or recovering manually if locked out."
+        ),
+        "ui_reference": "Settings → Networking (mode switcher, scan, saved networks, AP config).",
+        "wrapper_modules": [
+            "app/services/networking.py",
+            "app/tools/hostapd.py", "app/tools/dnsmasq.py",
+            "app/tools/nm.py", "app/tools/iproute.py",
+        ],
+        "commands": [
+            {
+                "command": "nmcli device wifi list ifname wlan0",
+                "description": (
+                    "Scan for nearby Wi-Fi networks. Same operation the "
+                    "Networking tab's 'Scan' button runs. With "
+                    "--rescan=yes, forces a fresh scan rather than "
+                    "using cache."
+                ),
+                "example_output": (
+                    "IN-USE  BSSID              SSID            MODE   CHAN  RATE       SIGNAL  SECURITY\n"
+                    "        AA:BB:CC:DD:EE:01  HomeWiFi        Infra  36    540 Mbit/s 86      WPA2\n"
+                    "        AA:BB:CC:DD:EE:02  NeighborGuest   Infra  6     270 Mbit/s 51      WPA2"
+                ),
+            },
+            {
+                "command": "sudo nmcli device wifi connect \"<SSID>\" password \"<password>\" ifname wlan0",
+                "description": "Save a connection profile + connect in one step. Profile persists across reboots.",
+                "notes": "Use nmcli connection modify <SSID> connection.autoconnect yes to ensure auto-reconnect.",
+            },
+            {
+                "command": "nmcli connection show",
+                "description": "List all saved connection profiles (Wi-Fi, Ethernet, VPN). The Networking tab's 'Saved networks' table is filtered to 802-11-wireless rows.",
+            },
+            {
+                "command": "sudo nmcli connection delete <SSID>",
+                "description": "Forget a saved Wi-Fi profile. The 'Forget' button in the UI runs this.",
+            },
+            {
+                "command": "sudo nmcli device set wlan0 managed no",
+                "description": (
+                    "Release wlan0 from NetworkManager so hostapd can "
+                    "take over. Done at the start of the management AP "
+                    "enable sequence."
+                ),
+                "notes": "Reverse: `nmcli device set wlan0 managed yes`.",
+            },
+            {
+                "command": "sudo ip addr add 10.42.0.1/24 dev wlan0",
+                "description": "Assign the management AP gateway IP to wlan0. Required before dnsmasq can serve DHCP on that subnet.",
+                "notes": "`sudo ip addr flush dev wlan0` first to clear any prior addresses.",
+            },
+            {
+                "command": "cat /etc/pipineapple/mgmt-ap-hostapd.conf",
+                "description": "Inspect the hostapd config the platform generated.",
+                "example_output": (
+                    "interface=wlan0\n"
+                    "driver=nl80211\n"
+                    "ssid=PiPineapple-Mgmt\n"
+                    "hw_mode=g\n"
+                    "channel=6\n"
+                    "auth_algs=1\n"
+                    "wmm_enabled=1\n"
+                    "wpa=2\n"
+                    "wpa_passphrase=<your-pw>\n"
+                    "wpa_key_mgmt=WPA-PSK\n"
+                    "rsn_pairwise=CCMP"
+                ),
+            },
+            {
+                "command": "cat /etc/pipineapple/mgmt-ap-dnsmasq.conf",
+                "description": "Inspect the dnsmasq config (DHCP only, local hostnames mapped to the AP gateway).",
+            },
+            {
+                "command": "sudo hostapd /etc/pipineapple/mgmt-ap-hostapd.conf",
+                "description": "Run hostapd manually for debugging. Foreground output shows client associations and WPA2 handshakes.",
+                "notes": "Ctrl-C to stop. The platform runs this via the JobManager so it survives backgrounded.",
+            },
+            {
+                "command": "sudo dnsmasq -C /etc/pipineapple/mgmt-ap-dnsmasq.conf -k --log-facility=-",
+                "description": "Run dnsmasq foreground for debugging. -k keeps it from forking; --log-facility=- logs to stderr.",
+            },
+            {
+                "command": "iw dev wlan0 info",
+                "description": "Confirm wlan0 type after a mode switch. 'type AP' = management AP active; 'type managed' = client mode.",
+            },
+            {
+                "command": "nmcli device status",
+                "description": "Overview of every interface's state. Useful for confirming the right mode is active.",
+                "example_output": (
+                    "DEVICE        TYPE      STATE         CONNECTION\n"
+                    "wlan0         wifi      connected     HomeWiFi          # client mode\n"
+                    "wlan0         wifi      unmanaged     --                # AP mode\n"
+                    "eth0          ethernet  connected     Wired"
+                ),
+            },
+            {
+                "command": "rm $PIPINEAPPLE_DATA_DIR/networking.json",
+                "description": (
+                    "Emergency reset of the networking state. Next "
+                    "Flask startup falls back to defaults (wlan0 idle, "
+                    "management AP config defaulted). Used if you "
+                    "lock yourself out via misconfigured AP."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 01 — Driver detection
     # ------------------------------------------------------------------
     {

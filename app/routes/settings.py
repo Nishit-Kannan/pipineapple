@@ -11,6 +11,7 @@ from flask import Blueprint, jsonify, render_template, request
 
 from app.services.access_control import access_control
 from app.services.adapters import get_service
+from app.services.networking import get_service as get_networking
 from app.services.notifications import notifications
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
@@ -21,12 +22,80 @@ bp = Blueprint("settings", __name__, url_prefix="/settings")
 def index():
     """Settings page with the Adapter Management tab active."""
     svc = get_service()
+    net = get_networking()
     return render_template(
         "settings.html",
         adapters=svc.list_adapters(),
         roles_assigned=svc.get_roles(),
         deny_cidrs=access_control.list_cidrs(),
+        networking=net.get_state(),
     )
+
+
+# ---------- Networking tab ----------
+@bp.route("/networking")
+def networking_json():
+    return jsonify(get_networking().get_state())
+
+
+@bp.route("/networking/wifi/scan", methods=["POST"])
+def wifi_scan():
+    return jsonify({"networks": get_networking().scan_wifi()})
+
+
+@bp.route("/networking/wifi/connect", methods=["POST"])
+def wifi_connect():
+    data = request.get_json(silent=True) or {}
+    ssid = (data.get("ssid") or "").strip()
+    pw = data.get("password") or ""
+    if not ssid:
+        return jsonify({"ok": False, "msg": "missing ssid"}), 400
+    ok, msg = get_networking().connect_wifi(ssid, pw if pw else None)
+    notif = notifications.success if ok else notifications.error
+    notif(f"wifi connect: {msg}", source="networking")
+    return jsonify({"ok": ok, "msg": msg, "state": get_networking().get_state()})
+
+
+@bp.route("/networking/wifi/disconnect", methods=["POST"])
+def wifi_disconnect():
+    ok, msg = get_networking().disconnect_wifi()
+    return jsonify({"ok": ok, "msg": msg, "state": get_networking().get_state()})
+
+
+@bp.route("/networking/wifi/forget", methods=["POST"])
+def wifi_forget():
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "msg": "missing name"}), 400
+    ok, msg = get_networking().forget_wifi(name)
+    return jsonify({"ok": ok, "msg": msg, "state": get_networking().get_state()})
+
+
+@bp.route("/networking/mgmt-ap/configure", methods=["POST"])
+def mgmt_ap_configure():
+    data = request.get_json(silent=True) or {}
+    ssid = (data.get("ssid") or "").strip()
+    pw = (data.get("password") or "").strip()
+    channel = int(data.get("channel") or 6)
+    ok, msg = get_networking().configure_mgmt_ap(ssid, pw, channel)
+    return jsonify({"ok": ok, "msg": msg, "state": get_networking().get_state()})
+
+
+@bp.route("/networking/mgmt-ap/enable", methods=["POST"])
+def mgmt_ap_enable():
+    ok, messages = get_networking().enable_mgmt_ap()
+    summary = "; ".join(messages)
+    notif = notifications.success if ok else notifications.error
+    notif(f"management AP enable: {summary}", source="networking")
+    return jsonify({"ok": ok, "messages": messages, "state": get_networking().get_state()})
+
+
+@bp.route("/networking/mgmt-ap/disable", methods=["POST"])
+def mgmt_ap_disable():
+    ok, messages = get_networking().disable_mgmt_ap()
+    notifications.info("management AP disabled", source="networking")
+    return jsonify({"ok": ok, "messages": messages, "state": get_networking().get_state()})
 
 
 # ---------- Security tab ----------
