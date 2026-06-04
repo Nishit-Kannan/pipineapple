@@ -393,7 +393,10 @@
       return;
     }
 
-    const socket = io({ transports: ["websocket", "polling"] });
+    // Polling-only — the server disables upgrades (see app/__init__.py for
+    // why). The client tries polling first by default; explicitly omitting
+    // websocket from the allowed transports keeps the network panel clean.
+    const socket = io({ transports: ["polling"], upgrade: false });
 
     socket.on("connect", () => { setLive("up"); });
     socket.on("disconnect", () => { setLive("down"); });

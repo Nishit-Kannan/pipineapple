@@ -20,11 +20,19 @@ from app.config import BaseConfig, resolve_config
 
 # Module-level SocketIO singleton. ``async_mode="threading"`` uses
 # Flask-SocketIO's built-in threading backend — no eventlet/gevent
-# required for our single-user lab deployment. See Session 02 notes for
-# the trade-off vs eventlet.
+# required for our single-user lab deployment.
+#
+# ``allow_upgrades=False`` forces clients to stay on long-polling
+# instead of trying to upgrade to WebSocket. Werkzeug's WSGI server +
+# simple-websocket has an interop bug under sudo that fires a noisy
+# (but cosmetic) 500 on every upgrade attempt — the client gracefully
+# falls back to polling and everything works, but the log gets spammed.
+# Polling is fine for our 2-second cadence; revisit when we move to
+# gunicorn+nginx (Session 19) where WebSocket will work cleanly.
 socketio = SocketIO(
     cors_allowed_origins="*",
     async_mode="threading",
+    allow_upgrades=False,
     logger=False,
     engineio_logger=False,
 )
