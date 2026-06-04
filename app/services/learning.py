@@ -285,6 +285,163 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 02 — Subprocess inspection & signals
+    # ------------------------------------------------------------------
+    {
+        "id": "subprocess-signals",
+        "title": "Subprocesses & signals",
+        "added_in_session": 2,
+        "intro": (
+            "Inspecting and controlling long-running subprocesses from "
+            "the shell. The JobManager service (app/services/job_manager.py) "
+            "wraps these same operations — start a process, watch its state "
+            "via /proc, signal it cleanly to stop. Worth running these by "
+            "hand against a JobManager-spawned job so the wrapper feels "
+            "transparent."
+        ),
+        "ui_reference": (
+            "Backs every long-running tool in later sessions (airodump, "
+            "hostapd, aireplay, hashcat). Exposed via /debug/job/* in "
+            "DEBUG mode for Session 02 testing."
+        ),
+        "wrapper_modules": ["app/services/job_manager.py"],
+        "commands": [
+            {
+                "command": "ps -p <pid>",
+                "description": (
+                    "Quick info about one process: PID, TTY, time, command. "
+                    "Pass -fp for a fuller view (user, parent PID, start "
+                    "time, full command line)."
+                ),
+                "example_output": (
+                    "  PID TTY          TIME CMD\n"
+                    " 2678 ?        00:00:00 sleep"
+                ),
+            },
+            {
+                "command": "ps -fp <pid>",
+                "description": "Full format: user, parent PID, start time, full argv.",
+                "example_output": (
+                    "UID          PID    PPID  C STIME TTY          TIME CMD\n"
+                    "pi-lab      2678    2641  0 12:30 ?        00:00:00 sleep 20"
+                ),
+                "notes": "PPID points at the Flask process that launched the job.",
+            },
+            {
+                "command": "ps -ef --forest | grep -E 'flask|python|pipineapple' | head -20",
+                "description": (
+                    "Process tree filtered around the PiPineapple Flask "
+                    "process. Useful for seeing parent → child → grandchild "
+                    "relationships when JobManager launches tools."
+                ),
+                "notes": "On Pi OS, `pstree -p $(pgrep -f run.py)` is a cleaner alternative.",
+            },
+            {
+                "command": "ps -fLp <pid>",
+                "description": (
+                    "Show all threads of a process (one row per LWP — "
+                    "lightweight process). Useful for seeing the reader "
+                    "thread JobManager spawns per running job."
+                ),
+            },
+            {
+                "command": "cat /proc/<pid>/status",
+                "description": (
+                    "Kernel-level state: State (R/S/D/Z/T), VmRSS (resident "
+                    "memory), Threads, signal masks. State 'S' is "
+                    "interruptible sleep (waiting for IO or syscall) — "
+                    "what sleep 20 looks like most of its life."
+                ),
+                "example_output": (
+                    "Name:   sleep\n"
+                    "State:  S (sleeping)\n"
+                    "Tgid:   2678\n"
+                    "Pid:    2678\n"
+                    "PPid:   2641\n"
+                    "..."
+                ),
+            },
+            {
+                "command": "cat /proc/<pid>/cmdline; echo",
+                "description": (
+                    "Original argv, with null bytes between arguments. The "
+                    "; echo adds a newline because /proc/<pid>/cmdline "
+                    "has no trailing newline."
+                ),
+                "example_output": "sleep\\x0020",
+                "notes": "Use `tr '\\0' ' '` to make the argv human-readable.",
+            },
+            {
+                "command": "ls -l /proc/<pid>/fd/",
+                "description": (
+                    "Open file descriptors. Each entry is a symlink to the "
+                    "actual file/socket/pipe. For a JobManager-spawned job, "
+                    "you'll see stdin (closed or pipe), stdout (pipe — "
+                    "what the reader thread drains), stderr (the same pipe "
+                    "since we use stderr=STDOUT)."
+                ),
+                "example_output": (
+                    "lr-x------ 1 pi-lab pi-lab 64 Jun  4 12:30 0 -> /dev/null\n"
+                    "l-wx------ 1 pi-lab pi-lab 64 Jun  4 12:30 1 -> pipe:[12345]\n"
+                    "l-wx------ 1 pi-lab pi-lab 64 Jun  4 12:30 2 -> pipe:[12345]"
+                ),
+            },
+            {
+                "command": "kill -l",
+                "description": (
+                    "List all signal names and numbers the kernel supports. "
+                    "The four we care about in practice: TERM (15, graceful), "
+                    "KILL (9, uncatchable), INT (2, Ctrl-C), HUP (1, "
+                    "reload-config convention)."
+                ),
+                "example_output": (
+                    " 1) SIGHUP   2) SIGINT   3) SIGQUIT  9) SIGKILL\n"
+                    "15) SIGTERM 17) SIGCHLD ..."
+                ),
+            },
+            {
+                "command": "kill -TERM <pid>",
+                "description": (
+                    "Polite stop. The target gets a SIGTERM and has the "
+                    "opportunity to clean up (flush buffers, close sockets, "
+                    "remove tmpfiles) before exiting. This is what "
+                    "JobManager.stop_job tries first."
+                ),
+                "notes": (
+                    "Equivalent to `kill <pid>` with no flag. Most programs "
+                    "respect SIGTERM; some (rare) install a handler that "
+                    "ignores it."
+                ),
+            },
+            {
+                "command": "kill -KILL <pid>",
+                "description": (
+                    "Forced stop. The kernel kills the process immediately; "
+                    "no chance to clean up. JobManager escalates to SIGKILL "
+                    "if SIGTERM hasn't taken effect within the grace window."
+                ),
+                "notes": (
+                    "Equivalent to `kill -9 <pid>`. Cannot be caught, blocked, "
+                    "or ignored — even by processes running as root."
+                ),
+            },
+            {
+                "command": "lsof -p <pid>",
+                "description": (
+                    "Lists all open files, sockets, and pipes for a process. "
+                    "Heavier than ls /proc/<pid>/fd because it adds type "
+                    "labels (REG/PIPE/IPv4/CHR/DIR) and inode info."
+                ),
+                "notes": (
+                    "`sudo apt install lsof` if not already present. Slow on "
+                    "the Pi if you don't filter — usually pair with `-iTCP` "
+                    "or `-iUDP` for network-only output."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 01 — Driver detection
     # ------------------------------------------------------------------
     {

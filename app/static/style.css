@@ -173,11 +173,22 @@ h2 {
   position: absolute;
   top: 8px;
   right: 8px;
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--accent);
-  display: none; /* shown when notifications pending */
+  box-shadow: 0 0 0 2px var(--bg-elev), 0 0 6px rgba(240, 198, 116, 0.6);
+  animation: badge-pulse 1.6s ease-in-out infinite;
+}
+
+/* The HTML5 `hidden` attribute provides `display: none`. Without our
+ * old `display: none` override above, the attribute correctly controls
+ * visibility — JS just toggles `dot.hidden = loud === 0`. */
+.iconbtn .badge-dot[hidden] { display: none; }
+
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.55; transform: scale(0.85); }
 }
 
 /* ---------- Page layout (sidebar + content) ---------- */
