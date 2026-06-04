@@ -28,7 +28,6 @@ Status transitions:
 from __future__ import annotations
 
 import atexit
-import ctypes
 import logging
 import shlex
 import signal
@@ -44,18 +43,13 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-# Linux PR_SET_PDEATHSIG — when the parent process dies (Flask exits),
-# the kernel sends SIGTERM to this child. Cleanly kills lingering
-# hostapd/dnsmasq daemons even if Flask is killed with SIGKILL.
-def _set_pdeathsig() -> None:
-    """preexec_fn that asks the kernel to send SIGTERM if parent dies."""
-    try:
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        PR_SET_PDEATHSIG = 1
-        SIGTERM = 15
-        libc.prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0)
-    except Exception:  # pragma: no cover — best-effort
-        pass
+# Why no PR_SET_PDEATHSIG: on Linux, that prctl tracks the parent
+# *thread*, not the parent process. When subprocess.Popen is called
+# from a background thread (e.g. our networking restore daemon thread),
+# the children get SIGTERM the moment the thread completes — even though
+# Flask itself is still running. We rely on the atexit handler below
+# for clean shutdown (Ctrl-C of Flask) and accept that SIGKILL of Flask
+# leaves orphan daemons until manual `sudo pkill hostapd dnsmasq`.
 
 
 class JobStatus(str, Enum):
@@ -159,7 +153,6 @@ class JobManager:
                     stderr=subprocess.STDOUT,
                     bufsize=1,
                     text=True,
-                    preexec_fn=_set_pdeathsig,
                 )
                 # Stash the file so we close it in the wait-loop thread
                 job._stdout_file = stdout_target  # type: ignore[attr-defined]
@@ -171,7 +164,6 @@ class JobManager:
                     stderr=subprocess.STDOUT,
                     bufsize=1,
                     text=True,
-                    preexec_fn=_set_pdeathsig,
                 )
         except (FileNotFoundError, OSError) as e:
             job.status = JobStatus.FAILED
