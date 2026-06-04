@@ -301,7 +301,12 @@ class NetworkingService:
                     "mgmt_ap":    dict(BOOTSTRAP_MGMT_AP),
                     "bootstrap":  True,
                 }
-                self._enable_mgmt_ap_unlocked(state, state["mgmt_ap"])
+                messages = self._enable_mgmt_ap_unlocked(state, state["mgmt_ap"])
+                for m in messages:
+                    log.info("bootstrap-ap: %s", m)
+                if state.get("wlan0_mode") != "ap":
+                    log.error("bootstrap-ap: enable sequence did not reach completion "
+                              "(wlan0_mode=%s, last messages above)", state.get("wlan0_mode"))
                 self._save(state)
                 return
 

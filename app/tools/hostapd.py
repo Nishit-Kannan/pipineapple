@@ -75,10 +75,13 @@ def write_config(path: Path, config_body: str) -> tuple[bool, str]:
         preview = Path(f"/tmp/pipineapple-hostapd-{path.name}.preview")
         preview.write_text(config_body)
         return True, f"(stub) wrote {preview}"
+    log.info("hostapd.write_config -> %s", path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(config_body)
         path.chmod(0o600)
-    except (PermissionError, OSError) as e:
+    except Exception as e:
+        log.exception("hostapd config write failed (%s)", path)
         return False, f"hostapd config write failed: {e}"
+    log.info("hostapd config written: %s (%d bytes)", path, len(config_body))
     return True, f"wrote {path}"

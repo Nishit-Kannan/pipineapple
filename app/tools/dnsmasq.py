@@ -59,9 +59,12 @@ def write_config(path: Path, config_body: str) -> tuple[bool, str]:
         preview = Path(f"/tmp/pipineapple-dnsmasq-{path.name}.preview")
         preview.write_text(config_body)
         return True, f"(stub) wrote {preview}"
+    log.info("dnsmasq.write_config -> %s", path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(config_body)
-    except (PermissionError, OSError) as e:
+    except Exception as e:
+        log.exception("dnsmasq config write failed (%s)", path)
         return False, f"dnsmasq config write failed: {e}"
+    log.info("dnsmasq config written: %s (%d bytes)", path, len(config_body))
     return True, f"wrote {path}"
