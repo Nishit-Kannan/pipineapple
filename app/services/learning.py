@@ -442,6 +442,258 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 04 — Monitor mode & adapter state
+    # ------------------------------------------------------------------
+    {
+        "id": "monitor-mode",
+        "title": "Monitor mode & adapter state",
+        "added_in_session": 4,
+        "intro": (
+            "Putting a wireless interface into monitor mode is the gateway "
+            "to recon and capture. Three commands per toggle: down, set "
+            "type, up. The driver refuses to change interface type while "
+            "the interface is up, so the bracketing matters."
+        ),
+        "ui_reference": (
+            "Settings → Adapter Management → Monitor / Managed buttons. "
+            "The three-step sequence shows up in the Command Stream tagged "
+            "'tool' when you click the button."
+        ),
+        "wrapper_modules": [
+            "app/tools/iw.py", "app/tools/iproute.py",
+            "app/services/adapters.py",
+        ],
+        "commands": [
+            {
+                "command": "sudo ip link set <iface> down",
+                "description": (
+                    "Bring the interface down before changing its type. "
+                    "Most drivers reject a type change on an up interface "
+                    "with an EBUSY error."
+                ),
+            },
+            {
+                "command": "sudo iw dev <iface> set type monitor",
+                "description": (
+                    "Reconfigure the radio to monitor mode. The driver "
+                    "stops filtering frames by BSSID/destination and starts "
+                    "passing every 802.11 frame it can decode up to "
+                    "userspace, prepended with a radiotap header (signal "
+                    "strength, channel, antenna, etc.)."
+                ),
+                "notes": (
+                    "Other valid types: managed (default), ibss (ad-hoc), "
+                    "__ap (in-kernel AP mode, not what hostapd uses)."
+                ),
+            },
+            {
+                "command": "sudo ip link set <iface> up",
+                "description": "Bring the interface back up so the radio starts receiving.",
+            },
+            {
+                "command": "iw dev <iface> info",
+                "description": (
+                    "Verify the new mode. After a monitor-mode toggle, the "
+                    "'type' line should read 'monitor'. Compare to the same "
+                    "command before the toggle to see exactly what changed."
+                ),
+                "example_output": (
+                    "Interface wlan-mon-2g\n"
+                    "\tifindex 5\n"
+                    "\twdev 0x100000001\n"
+                    "\taddr 00:c0:ca:11:22:33\n"
+                    "\ttype monitor\n"
+                    "\twiphy 1\n"
+                    "\tchannel 0 (0 MHz), width: 20 MHz (no HT), center1: 0 MHz\n"
+                    "\ttxpower 20.00 dBm"
+                ),
+            },
+            {
+                "command": "iw dev <iface> set channel <N>",
+                "description": (
+                    "Lock a monitor-mode adapter to a specific channel "
+                    "(no hopping). Required for targeted handshake capture "
+                    "in Phase C."
+                ),
+                "notes": (
+                    "Channel numbers map to frequencies: 2.4 GHz channels "
+                    "1-11 (US) / 1-13 (other), 5 GHz channels 36-165 "
+                    "depending on reg domain and DFS rules."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
+    # Session 04 — udev sticky names
+    # ------------------------------------------------------------------
+    {
+        "id": "udev-sticky-names",
+        "title": "udev sticky names",
+        "added_in_session": 4,
+        "intro": (
+            "udev rules pin a stable interface name (wlan-mon-2g, "
+            "wlan-mon-5g, wlan-ap) to a specific MAC address, so the "
+            "kernel renames the interface before userspace sees it. "
+            "Without this, plug order and detection timing decide which "
+            "Alfa becomes wlan1 vs wlan2 on each reboot."
+        ),
+        "ui_reference": (
+            "Settings → Adapter Management → 'Generate & apply udev rules' "
+            "button. The file written is /etc/udev/rules.d/"
+            "99-pipineapple-adapters.rules."
+        ),
+        "wrapper_modules": ["app/tools/udev.py", "app/services/adapters.py"],
+        "commands": [
+            {
+                "command": "cat /etc/udev/rules.d/99-pipineapple-adapters.rules",
+                "description": "Inspect the rules file PiPineapple generated.",
+                "example_output": (
+                    'SUBSYSTEM=="net", ACTION=="add", '
+                    'ATTR{address}=="00:c0:ca:11:22:33", NAME="wlan-mon-2g"\n'
+                    'SUBSYSTEM=="net", ACTION=="add", '
+                    'ATTR{address}=="00:c0:ca:44:55:66", NAME="wlan-mon-5g"\n'
+                    'SUBSYSTEM=="net", ACTION=="add", '
+                    'ATTR{address}=="00:c0:ca:77:88:99", NAME="wlan-ap"'
+                ),
+                "notes": (
+                    "MAC addresses MUST be lowercase — udev string-compares "
+                    "against ATTR{address} which is always lowercase in "
+                    "/sys/class/net/*/address."
+                ),
+            },
+            {
+                "command": "sudo udevadm control --reload-rules",
+                "description": (
+                    "Tell udev to re-read its rules files. Required after "
+                    "editing rules. Doesn't apply them to currently-attached "
+                    "devices — only affects future hotplug events."
+                ),
+            },
+            {
+                "command": "sudo udevadm trigger",
+                "description": (
+                    "Re-process every device's udev attributes. In theory "
+                    "this could rename a live interface. In practice with "
+                    "wireless drivers it usually doesn't — you need to "
+                    "unplug+replug the adapter or reboot for the new name "
+                    "to land."
+                ),
+            },
+            {
+                "command": "udevadm info /sys/class/net/<iface>",
+                "description": (
+                    "Show every udev attribute for an interface. Useful "
+                    "when writing a new rule: see exactly what ATTR{...} "
+                    "values are available to match on."
+                ),
+                "notes": (
+                    "ID_VENDOR_ID and ID_MODEL_ID (USB devices) are good "
+                    "alternative match keys if you don't want to hardcode "
+                    "the MAC — though for our three identical Alfas, MAC "
+                    "is the only way to distinguish them."
+                ),
+            },
+            {
+                "command": "ls /sys/class/net/",
+                "description": (
+                    "List every interface the kernel knows about. Confirm "
+                    "your new sticky names appear here after reboot."
+                ),
+                "example_output": "eth0  lo  wlan-ap  wlan-mon-2g  wlan-mon-5g  wlan0",
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
+    # Session 04 — NetworkManager control
+    # ------------------------------------------------------------------
+    {
+        "id": "network-manager",
+        "title": "NetworkManager control",
+        "added_in_session": 4,
+        "intro": (
+            "NetworkManager will silently flip offensive radios back to "
+            "managed mode if you don't disarm it. Two ways: the scalpel "
+            "(unmanaging config that tells NM to ignore specific "
+            "interface names) or the sledgehammer (systemctl stop "
+            "NetworkManager wpa_supplicant, equivalent of 'airmon-ng "
+            "check kill'). PiPineapple uses the scalpel by default."
+        ),
+        "ui_reference": (
+            "Settings → Adapter Management → 'Generate & apply NM config' "
+            "(scalpel) and 'Stop NM + wpa_supplicant' (sledgehammer)."
+        ),
+        "wrapper_modules": ["app/tools/nm.py", "app/services/adapters.py"],
+        "commands": [
+            {
+                "command": "cat /etc/NetworkManager/conf.d/99-pipineapple-unmanaged.conf",
+                "description": (
+                    "Inspect the unmanaging config. The pattern matches "
+                    "any interface starting with 'wlan-mon-' plus the "
+                    "single 'wlan-ap' interface."
+                ),
+                "example_output": (
+                    "[keyfile]\n"
+                    "unmanaged-devices=interface-name:wlan-mon-*;"
+                    "interface-name:wlan-ap"
+                ),
+            },
+            {
+                "command": "sudo nmcli general reload",
+                "description": "Tell NM to re-read its config. Idempotent, no service restart needed.",
+                "notes": (
+                    "If nmcli isn't available, fall back to "
+                    "`sudo systemctl reload NetworkManager`."
+                ),
+            },
+            {
+                "command": "nmcli device status",
+                "description": (
+                    "Show every interface NM knows about and its state. "
+                    "After the unmanaging config takes effect, offensive "
+                    "radios should show STATE 'unmanaged' instead of "
+                    "'disconnected'/'connected'."
+                ),
+                "example_output": (
+                    "DEVICE        TYPE      STATE         CONNECTION\n"
+                    "wlan0         wifi      connected     HomeWiFi\n"
+                    "eth0          ethernet  connected     Wired\n"
+                    "wlan-mon-2g   wifi      unmanaged     --\n"
+                    "wlan-mon-5g   wifi      unmanaged     --\n"
+                    "wlan-ap       wifi      unmanaged     --"
+                ),
+            },
+            {
+                "command": "sudo systemctl stop NetworkManager wpa_supplicant",
+                "description": (
+                    "The sledgehammer — kill both services until next boot. "
+                    "Equivalent to `airmon-ng check kill`. Use this when "
+                    "the unmanaging config isn't enough (some legacy Karma "
+                    "attacks need NM completely out of the picture)."
+                ),
+                "notes": (
+                    "wlan0 will lose its home Wi-Fi connection. Ensure "
+                    "you're on Ethernet for the management plane before "
+                    "running this."
+                ),
+            },
+            {
+                "command": "sudo systemctl start NetworkManager",
+                "description": "Bring NM back. The unmanaging config still applies; offensive radios stay untouched.",
+            },
+            {
+                "command": "ps -ef | grep -E 'NetworkManager|wpa_supplicant' | grep -v grep",
+                "description": (
+                    "Verify whether the supervisors are running. Useful "
+                    "before a session to confirm you're starting from a "
+                    "known state."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 01 — Driver detection
     # ------------------------------------------------------------------
     {
