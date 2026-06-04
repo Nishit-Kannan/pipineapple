@@ -45,7 +45,8 @@ def test_killed_job():
 
     # Let the process actually start
     time.sleep(0.05)
-    assert jm.stop_job(job.id, grace=1.0) is True
+    stopped, reason = jm.stop_job(job.id, grace=1.0)
+    assert stopped is True, f"stop failed: {reason}"
 
     assert _wait_for_status(job, JobStatus.KILLED, timeout=2.0), (
         f"job did not transition to KILLED, final status={job.status}"

@@ -12,6 +12,10 @@ license = {text = "MIT"}
 dependencies = [
     "flask>=3.0",
     "flask-socketio>=5.3",
+    # simple-websocket gives python-engineio real WebSocket transport
+    # support in threading async mode (otherwise the werkzeug dev server
+    # raises AssertionError on the upgrade handshake — see Session 02).
+    "simple-websocket>=1.0",
     "python-dotenv>=1.0",
 ]
 

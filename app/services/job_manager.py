@@ -190,14 +190,25 @@ class JobManager:
         if self._socketio is not None:
             self._socketio.emit("job:exited", job.to_dict(), namespace="/")
 
-    def stop_job(self, job_id: str, grace: float = 2.0) -> bool:
-        """Send SIGTERM, wait up to ``grace`` seconds, escalate to SIGKILL."""
+    def stop_job(self, job_id: str, grace: float = 2.0) -> tuple[bool, str]:
+        """Send SIGTERM, wait up to ``grace`` seconds, escalate to SIGKILL.
+
+        Returns ``(stopped, reason)`` so callers can surface why a stop
+        attempt didn't succeed.
+        """
         with self._lock:
             job = self._jobs.get(job_id)
-        if job is None or job._proc is None:
-            return False
+        if job is None:
+            log.warning("stop_job: no such job_id %s", job_id)
+            return False, f"no job with id {job_id}"
+        if job._proc is None:
+            log.warning("stop_job: job %s has no Popen handle (status=%s)",
+                        job_id, job.status.value)
+            return False, f"job has no subprocess handle (status={job.status.value})"
         if job.status != JobStatus.RUNNING:
-            return False
+            log.info("stop_job: job %s already in terminal state %s",
+                     job_id, job.status.value)
+            return False, f"job is not running (status={job.status.value})"
 
         proc = job._proc
         log.info("stopping job %s (pid=%d) with SIGTERM", job_id, job.pid)
@@ -213,10 +224,10 @@ class JobManager:
                 proc.send_signal(signal.SIGKILL)
                 proc.wait()
             job.status = JobStatus.KILLED
-            return True
-        except Exception:
+            return True, "stopped"
+        except Exception as e:
             log.exception("error stopping job %s", job_id)
-            return False
+            return False, f"exception while stopping: {e!r}"
 
     def stop_all(self, grace: float = 1.0) -> None:
         """Stop every running job. Used at app shutdown."""

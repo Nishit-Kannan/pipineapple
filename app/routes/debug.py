@@ -73,8 +73,8 @@ def list_jobs():
 
 @bp.route("/job/<job_id>/stop", methods=["POST", "GET"])
 def stop_job(job_id):
-    ok = job_manager.stop_job(job_id)
-    return jsonify({"stopped": ok, "job_id": job_id})
+    stopped, reason = job_manager.stop_job(job_id)
+    return jsonify({"stopped": stopped, "reason": reason, "job_id": job_id})
 
 
 @bp.route("/job/<job_id>")
