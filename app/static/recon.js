@@ -423,6 +423,22 @@
         : (client.bssid && client.bssid !== "(not associated)"
             ? `<code>${escapeHtml(client.bssid)}</code> <span class="muted">— SSID not in range</span>`
             : `<span class="muted">(not associated)</span>`);
+
+      const inRange   = client.probed_in_range     || [];
+      const outRange  = client.probed_not_in_range || [];
+
+      const inRangeHtml = inRange.length
+        ? inRange.map((s) => `<span class="badge badge-good">${escapeHtml(s)}</span>`).join(" ")
+        : `<span class="muted">none</span>`;
+
+      // Highlight the not-in-range probes — these are the
+      // privacy-leaky ones. A device asking for "OldOfficeWifi" or
+      // "HotelLasVegas2019" away from those places reveals where
+      // it's been.
+      const outRangeHtml = outRange.length
+        ? outRange.map((s) => `<span class="badge badge-warn">${escapeHtml(s)}</span>`).join(" ")
+        : `<span class="muted">none</span>`;
+
       body.innerHTML = `
         <h3>Identity</h3>
         <dl>
@@ -436,27 +452,90 @@
           <dt>First seen</dt><dd class="muted">${escapeHtml(client.first_seen || "—")}</dd>
           <dt>Last seen</dt><dd class="muted">${escapeHtml(client.last_seen || "—")}</dd>
         </dl>
-        <h3>Probed networks (in range)</h3>
-        <p>${(client.probed_in_range && client.probed_in_range.length)
-            ? client.probed_in_range.map(escapeHtml).join(", ")
-            : `<span class="muted">none of this client's probed SSIDs match an AP we currently see</span>`}</p>`;
+        <h3>Probed SSIDs — in range here</h3>
+        <p>${inRangeHtml}</p>
+        <h3>Probed SSIDs — NOT in range (PNL leak)</h3>
+        <p>${outRangeHtml}</p>
+        <p class="muted" style="margin-top:8px; font-size:11px;">
+          The "not in range" list shows networks this device remembers
+          from elsewhere and is actively asking about. If it's a device
+          you own, consider forgetting old networks it no longer needs.
+        </p>`;
     } else if (activeTab === "probes") {
-      if (!probes.length) {
-        body.innerHTML = `<p class="muted">No probe-request frames captured
-          yet. Either this client only sends them rarely, or the pcap is
-          empty / scapy isn't installed on the Pi.</p>`;
+      // Merge two data sources so nothing is lost:
+      //   1. pcap-derived ``probes`` — full timing + count per SSID
+      //   2. CSV-derived ``client.probed_essids`` — basic name list
+      // The pcap parser may miss frames (slow start, scapy not installed,
+      // or just hasn't caught a probe for that SSID yet). The CSV list
+      // is always populated by airodump's own merger. Fall back to the
+      // CSV when the pcap entry is missing, so the full probed-SSID
+      // history is visible regardless of whether scapy is doing its job.
+      const pcapSsids = new Set(probes.map((p) => p.ssid));
+      const csvProbed = client.probed_essids || [];
+      const inRangeSet = new Set(client.probed_in_range || []);
+
+      const synthetic = csvProbed
+        .filter((s) => !pcapSsids.has(s))
+        .map((s) => ({
+          ssid:         s,
+          is_broadcast: false,
+          count:        null,          // sentinel → "?"
+          first_seen:   null,
+          last_seen:    null,
+          synthetic:    true,
+        }));
+      const all = [...probes, ...synthetic];
+
+      if (!all.length) {
+        body.innerHTML = `<p class="muted">No probed SSIDs captured yet
+          for this client.</p>`;
       } else {
-        const rows = probes.map((p) =>
-          `<tr>
-            <td>${p.is_broadcast ? "<span class=\"muted\">&lt;broadcast&gt;</span>" : escapeHtml(p.ssid)}</td>
-            <td style="text-align:right;">${p.count}</td>
-            <td class="muted">${new Date(p.first_seen * 1000).toLocaleTimeString()}</td>
-            <td class="muted">${new Date(p.last_seen * 1000).toLocaleTimeString()}</td>
-          </tr>`).join("");
+        // Sort: not-in-range first (the interesting ones), then by
+        // count desc within each group.
+        all.sort((a, b) => {
+          const aIn = inRangeSet.has(a.ssid) || a.is_broadcast ? 1 : 0;
+          const bIn = inRangeSet.has(b.ssid) || b.is_broadcast ? 1 : 0;
+          if (aIn !== bIn) return aIn - bIn;
+          return (b.count || 0) - (a.count || 0);
+        });
+        const rows = all.map((p) => {
+          const ssidCell = p.is_broadcast
+            ? `<span class="muted">&lt;broadcast&gt;</span>`
+            : escapeHtml(p.ssid);
+          const inRangeFlag = p.is_broadcast
+            ? `<span class="muted">—</span>`
+            : (inRangeSet.has(p.ssid)
+                ? `<span class="badge badge-good">in range</span>`
+                : `<span class="badge badge-warn">not in range</span>`);
+          const countCell = p.count == null
+            ? `<span class="muted">? <span title="airodump CSV only, pcap parse hasn't seen this yet">(CSV)</span></span>`
+            : p.count;
+          const tFirst = p.first_seen
+            ? new Date(p.first_seen * 1000).toLocaleTimeString()
+            : `<span class="muted">—</span>`;
+          const tLast = p.last_seen
+            ? new Date(p.last_seen * 1000).toLocaleTimeString()
+            : `<span class="muted">—</span>`;
+          return `<tr>
+            <td>${ssidCell}</td>
+            <td>${inRangeFlag}</td>
+            <td style="text-align:right;">${countCell}</td>
+            <td class="muted">${tFirst}</td>
+            <td class="muted">${tLast}</td>
+          </tr>`;
+        }).join("");
         body.innerHTML = `
           <h3>Per-SSID probe activity</h3>
+          <p class="muted" style="font-size:11px;">
+            Sorted with not-in-range SSIDs first — those are the
+            privacy-interesting ones (networks the device remembers
+            from elsewhere). "(CSV)" means the SSID is known from
+            airodump's summary but the pcap parser hasn't caught a
+            specific frame yet (so no timing data).
+          </p>
           <table class="ie-table">
-            <thead><tr><th>SSID</th><th style="text-align:right;">Count</th>
+            <thead><tr><th>SSID</th><th>Status</th>
+                       <th style="text-align:right;">Count</th>
                        <th>First seen</th><th>Last seen</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>`;

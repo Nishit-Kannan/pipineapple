@@ -558,9 +558,16 @@ class ReconService:
         for c in merged_clients.values():
             ap_bssid = (c.get("bssid") or "").lower()
             c["ap_ssid"] = bssid_to_ssid.get(ap_bssid, "")
-            # Per probed-SSID flag for downstream UI
+            # Split probes into in-range vs not-in-range. The
+            # not-in-range list is the privacy-interesting one — those
+            # are SSIDs the device remembers from elsewhere and is
+            # actively asking about ("MyOldOfficeWifi", "JoesCoffee",
+            # "Hotel-Vegas"). Operator's own devices probing for old
+            # networks they no longer use = PNL hygiene problem worth
+            # surfacing.
             probed = c.get("probed_essids", [])
-            c["probed_in_range"] = [s for s in probed if s in known_ssids]
+            c["probed_in_range"]     = [s for s in probed if s in known_ssids]
+            c["probed_not_in_range"] = [s for s in probed if s and s not in known_ssids]
 
         with self._lock:
             self._aps = merged_aps
