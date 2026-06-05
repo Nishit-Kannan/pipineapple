@@ -408,6 +408,15 @@ class NetworkingService:
         #    stdout to log files because (a) long-running daemons don't
         #    interact well with our pipe+reader model and (b) when they
         #    crash we need post-mortem logs.
+        #
+        # Port-53 wait BEFORE starting dnsmasq, same fix as
+        # ``_restart_dnsmasq_with_current_config`` uses. Critical for
+        # the AP-reconfigure path: the previous dnsmasq just died in
+        # ``_disable_mgmt_ap_unlocked`` but the kernel can hold the
+        # UDP/TCP socket on port 53 briefly. Without the wait, the new
+        # dnsmasq fails with "Address already in use", AP clients lose
+        # DHCP, hostapd looks like it's running but nobody can connect.
+        messages.append(self._wait_for_port_free(gateway, 53))
         dn_job = job_manager.start_job(
             ["dnsmasq", "-C", str(dnsmasq_path), "-k", "--log-facility=-"],
             name="mgmt-ap-dnsmasq",
@@ -514,37 +523,29 @@ class NetworkingService:
         iproute.flush_address(iface)
         messages.append(f"flushed {iface} IP")
 
-        # CRITICAL for AP reconfigure: fully reset the nl80211 state on the
-        # iface between hostapd runs. After hostapd exits, the driver
-        # leaves the iface in ``type AP`` with leftover nl80211 socket
-        # bindings/filters. The NEXT hostapd start then fails with:
+        # CRITICAL for AP reconfigure: fully reset the iface so the next
+        # hostapd can take it over cleanly. After hostapd exits, the
+        # Realtek rtw_8821cu driver (and to a lesser extent some mt76
+        # variants) keeps internal nl80211 vif state in AP mode. The next
+        # hostapd start then fails with "nl80211: Could not configure
+        # driver mode" / "AP-DISABLED" / "wasn't started".
         #
-        #     nl80211: kernel reports: Match already configured
-        #     nl80211: Could not configure driver mode
-        #     wlan-mgmt-ap: AP-DISABLED
-        #
-        # The standard fix is the bring-down → set-type-managed → bring-up
-        # dance, which forces the driver to drop all nl80211 state for
-        # the iface. Most pronounced on the Realtek rtw_8821cu driver
-        # (mgmt AP host on this hardware); mt76 chipsets are gentler
-        # but the same reset is safe.
-        ok, msg = iproute.set_link_state(iface, "down")
-        messages.append(f"link down {iface}: {msg}")
-        ok, msg = iw.set_type(iface, "managed")
-        messages.append(f"reset type managed {iface}: {msg}")
+        # ``ip link down`` + ``iw set type managed`` + ``ip link up`` was
+        # the first attempt — works on mt76, NOT enough on Realtek. The
+        # only reliable cross-driver fix is to destroy and recreate the
+        # netdev via ``iw dev del`` + ``iw phy interface add``, which is
+        # what ``iw.recreate_interface`` does.
+        ok, msg = iw.recreate_interface(iface)
+        messages.append(f"recreate {iface}: {msg}")
 
-        # Return interface to NM (no-op for Alfas; they're always unmanaged)
+        # Return interface to NM (no-op for Alfas; they're always
+        # unmanaged via the conf.d snippet)
         ok, msg = nm.set_managed(iface, managed=True)
         messages.append(msg)
 
-        # Bring the interface back up. For wlan0, NM needs it up to manage
-        # it (otherwise it shows "unavailable" and scan returns nothing).
-        # For wlan-mgmt-ap or other Alfas, we ALSO bring it up because
-        # the next AP enable needs a UP iface to bind hostapd to — without
-        # this, ``_enable_mgmt_ap_unlocked``'s ``ip addr add`` step works
-        # (addr can be assigned to DOWN ifaces) but the subsequent hostapd
-        # has to do the bring-up itself, racing with our explicit ``ip
-        # link set up`` later in the enable path.
+        # Bring the (newly-created) interface up. For wlan0, NM needs it
+        # up to manage it. For wlan-mgmt-ap or other Alfas, we ALSO bring
+        # it up because the next AP enable expects to find a UP iface.
         ok, msg = iproute.set_link_state(iface, "up")
         messages.append(f"link up {iface}: {msg}")
 

@@ -177,6 +177,72 @@ def set_type(iface: str, mode: str) -> tuple[bool, str]:
     return False, f"iw set type failed: {result.stderr.strip() or result.stdout.strip()}"
 
 
+def recreate_interface(iface: str) -> tuple[bool, str]:
+    """Destroy and recreate a wireless netdev to fully release driver state.
+
+    Standard ``ip link down`` / ``iw set type managed`` / ``ip link up``
+    is not enough on some drivers (notably Realtek ``rtw_8821cu``) to
+    release the per-interface nl80211 vif state left over from AP mode.
+    The next hostapd start then fails with:
+
+        nl80211: Could not configure driver mode
+        wlan-mgmt-ap: AP-DISABLED
+        hostapd_free_hapd_data: Interface ... wasn't started
+
+    Destroying the netdev (``iw dev <iface> del``) forces the driver to
+    release everything. Recreating with the same name in managed type
+    (``iw phy phyN interface add <iface> type managed``) gives back a
+    fresh netdev that hostapd can take over cleanly.
+
+    Caveats:
+      * There's a small window where the netdev doesn't exist — other
+        code holding a reference will see ENODEV. We immediately
+        recreate so the window is sub-second.
+      * The recreated netdev usually keeps the same MAC (EEPROM-sourced
+        for both Realtek and mt76 chipsets we care about). If a driver
+        does randomise the MAC on recreate, the udev sticky-name rule
+        won't re-fire and the iface name may not stick — worth knowing,
+        but not seen on this hardware.
+      * Safe but slightly heavier than needed for mt76 chipsets; we
+        call it unconditionally because the cost is small (~100 ms)
+        and the alternative is "works for mt76, breaks for Realtek."
+    """
+    if stub_mode():
+        return True, f"(stub) recreate {iface} (iw dev del + iw phy add)"
+
+    # Find which phy the iface lives on so we can recreate it there.
+    r = run(["iw", "dev", iface, "info"], timeout=3.0)
+    if r.returncode != 0:
+        return False, f"iw dev {iface} info failed: {r.stderr.strip()}"
+    phy = None
+    for line in r.stdout.splitlines():
+        m = re.match(r"\s*wiphy\s+(\d+)\s*$", line)
+        if m:
+            phy = m.group(1)
+            break
+    if phy is None:
+        return False, f"could not determine phy index for {iface}"
+
+    # Delete
+    r = run(["iw", "dev", iface, "del"], timeout=3.0)
+    if r.returncode != 0:
+        return False, f"iw dev {iface} del failed: {r.stderr.strip()}"
+
+    # Recreate as managed type — hostapd will set it to AP later
+    r = run(
+        ["iw", "phy", f"phy{phy}", "interface", "add", iface,
+         "type", "managed"],
+        timeout=3.0,
+    )
+    if r.returncode != 0:
+        return False, (
+            f"iw phy phy{phy} interface add {iface} failed: "
+            f"{r.stderr.strip()}"
+        )
+
+    return True, f"recreated {iface} on phy{phy}"
+
+
 def set_channel(iface: str, channel: int) -> tuple[bool, str]:
     """Pin the interface to a specific channel.
 
