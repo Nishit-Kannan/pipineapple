@@ -190,8 +190,15 @@
     if (startBtn) startBtn.disabled = status.state !== "idle";
     if (stopBtn)  stopBtn.disabled  = status.state === "idle";
 
-    // Duration ticker
-    if (status.state === "idle" || status.started_at == null) {
+    // Duration ticker — only tick while RUNNING. "starting" and
+    // "stopping" are transient transitions, not actual scan time.
+    if (status.state === "running" && status.started_at != null) {
+      _scanStartedAt = status.started_at;
+      _updateDurationLabel();
+      if (!_durationTimer) {
+        _durationTimer = setInterval(_updateDurationLabel, 1000);
+      }
+    } else {
       _scanStartedAt = null;
       if (_durationTimer) {
         clearInterval(_durationTimer);
@@ -199,12 +206,6 @@
       }
       const el = $("recon-duration");
       if (el) el.textContent = "";
-    } else {
-      _scanStartedAt = status.started_at;
-      _updateDurationLabel();
-      if (!_durationTimer) {
-        _durationTimer = setInterval(_updateDurationLabel, 1000);
-      }
     }
   }
 
@@ -240,6 +241,29 @@
     clients = [];
     renderAps();
     renderClients();
+    // The recon service runs teardown in a background thread and emits
+    // a final recon:update over SocketIO when state goes idle. Polling
+    // is the fallback: if the SocketIO event doesn't land (tab not
+    // focused, polling transport gap, race), this picks it up. Stops
+    // as soon as state is idle, or after 30s as a safety cap.
+    _pollUntilIdle(30);
+  }
+
+  function _pollUntilIdle(maxSeconds) {
+    const deadline = Date.now() + maxSeconds * 1000;
+    const tick = async () => {
+      if (Date.now() > deadline) return;
+      try {
+        const r = await fetch("/recon/snapshot");
+        if (r.ok) {
+          const snap = await r.json();
+          if (snap.status) setStatus(snap.status);
+          if (snap.status && snap.status.state === "idle") return;
+        }
+      } catch (e) { /* ignore — try again */ }
+      setTimeout(tick, 2000);
+    };
+    setTimeout(tick, 1500);   // first check after teardown's settle window
   }
 
   // ---- Sortable column headers ----
