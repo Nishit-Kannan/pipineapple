@@ -121,8 +121,9 @@
           <span class="sidenav-label">Dashboard</span>
         </a>
 
-        <a href="#" class="sidenav-item disabled"
-           title="Recon — Phase B (Sessions 4–6)">
+        <a href="{{ url_for('recon.index') }}"
+           class="sidenav-item {% block nav_recon %}{% endblock %}"
+           title="Recon — passive WiFi scan">
           <span class="sidenav-icon">
             {# radio waves / radar #}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"

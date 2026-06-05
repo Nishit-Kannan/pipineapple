@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}Recon — PiPineapple{% endblock %}
+{% block nav_recon %}active{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Recon</h1>
+    <p class="muted">
+      Passive 802.11 scan. Two airodump-ng processes run in parallel —
+      one per band, each on its dedicated monitor adapter. APs and
+      clients populate live as beacons and frames are received.
+    </p>
+  </div>
+
+  {# ---------- Control row ---------- #}
+  <div class="card" id="recon-controls">
+    <div class="card-head">
+      <h2>Scan control</h2>
+      <span class="muted">
+        2.4&nbsp;GHz on <code>wlan-mon-2g</code> ·
+        5&nbsp;GHz on <code>wlan-mon-5g</code>
+      </span>
+    </div>
+    <div class="card-body">
+      <div class="form-row" style="gap:12px; align-items:center;">
+        <button id="recon-start" class="bigbtn"
+                {% if status.state != "idle" %}disabled{% endif %}>
+          Start scan
+        </button>
+        <button id="recon-stop" class="bigbtn actbtn-muted"
+                {% if status.state == "idle" %}disabled{% endif %}>
+          Stop scan
+        </button>
+        <span class="muted">·</span>
+        <span class="badge" id="recon-state-badge"
+              data-state="{{ status.state }}">
+          {{ status.state }}
+        </span>
+        <span class="muted" id="recon-counts">
+          {{ status.ap_count }} APs · {{ status.client_count }} clients
+        </span>
+        {% if status.stub %}
+          <span class="badge badge-warn" title="USE_REAL_TOOLS=0 — synthetic data">stub mode</span>
+        {% endif %}
+      </div>
+      <p class="muted" style="margin-top:8px;">
+        Recon puts both monitor adapters into <code>monitor</code> mode
+        when starting. Stopping leaves them in monitor (no auto-restore)
+        so re-running is fast — change back via
+        Settings&nbsp;→&nbsp;Adapter&nbsp;Management when you're done.
+      </p>
+    </div>
+  </div>
+
+  {# ---------- APs table ---------- #}
+  <div class="card" style="margin-top:16px;">
+    <div class="card-head">
+      <h2>Access points</h2>
+      <span class="muted" id="recon-ap-count">{{ status.ap_count }}</span>
+    </div>
+
+    <table class="data" id="recon-ap-table">
+      <thead>
+        <tr>
+          <th data-sort="signal_dbm" class="sortable">Signal</th>
+          <th data-sort="band">Band</th>
+          <th data-sort="channel">Ch</th>
+          <th data-sort="essid">SSID</th>
+          <th data-sort="bssid">BSSID</th>
+          <th data-sort="encryption">Security</th>
+          <th data-sort="beacons" class="sortable">Beacons</th>
+          <th data-sort="data_packets" class="sortable">Data</th>
+          <th data-sort="last_seen">Last seen</th>
+        </tr>
+      </thead>
+      <tbody id="recon-ap-tbody">
+        {% for ap in snapshot.aps %}
+          <tr data-bssid="{{ ap.bssid }}">
+            <td><span class="sig-pill" data-dbm="{{ ap.signal_dbm or '' }}">
+              {{ ap.signal_dbm if ap.signal_dbm is not none else "—" }}
+            </span></td>
+            <td>{{ ap.band or "—" }}</td>
+            <td>{{ ap.channel or "—" }}</td>
+            <td>{{ ap.essid or "<hidden>" }}</td>
+            <td><code>{{ ap.bssid }}</code></td>
+            <td>{{ ap.encryption }}{% if ap.auth %}/{{ ap.auth }}{% endif %}</td>
+            <td>{{ ap.beacons }}</td>
+            <td>{{ ap.data_packets }}</td>
+            <td class="muted">{{ ap.last_seen or "—" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if not snapshot.aps %}
+      <p class="muted" id="recon-ap-empty" style="padding:12px;">
+        No APs yet. Press <strong>Start scan</strong> above.
+      </p>
+    {% endif %}
+  </div>
+
+  {# ---------- Clients table ---------- #}
+  <div class="card" style="margin-top:16px;">
+    <div class="card-head">
+      <h2>Clients</h2>
+      <span class="muted" id="recon-client-count">{{ status.client_count }}</span>
+    </div>
+
+    <table class="data" id="recon-client-table">
+      <thead>
+        <tr>
+          <th data-sort="signal_dbm" class="sortable">Signal</th>
+          <th data-sort="station_mac">Station MAC</th>
+          <th data-sort="bssid">Associated AP</th>
+          <th data-sort="packets" class="sortable">Packets</th>
+          <th data-sort="probed_essids">Probing for</th>
+          <th data-sort="last_seen">Last seen</th>
+        </tr>
+      </thead>
+      <tbody id="recon-client-tbody">
+        {% for c in snapshot.clients %}
+          <tr data-mac="{{ c.station_mac }}">
+            <td><span class="sig-pill" data-dbm="{{ c.signal_dbm or '' }}">
+              {{ c.signal_dbm if c.signal_dbm is not none else "—" }}
+            </span></td>
+            <td><code>{{ c.station_mac }}</code></td>
+            <td><code>{{ c.bssid }}</code></td>
+            <td>{{ c.packets }}</td>
+            <td>{{ c.probed_essids|join(", ") if c.probed_essids else "—" }}</td>
+            <td class="muted">{{ c.last_seen or "—" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if not snapshot.clients %}
+      <p class="muted" id="recon-client-empty" style="padding:12px;">
+        No clients yet. They appear as data frames or probe requests are seen.
+      </p>
+    {% endif %}
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='recon.js') }}"></script>
+{% endblock %}

@@ -1072,3 +1072,33 @@ body.auth-page {
   .sidenav-label { display: none; }
   .content { padding: 16px; }
 }
+
+/* ---------- Recon page ---------------------------------------------- */
+/* Signal-strength pill: colour-coded by dBm bucket so the eye picks
+   strong networks out of a noisy table at a glance. */
+.sig-pill {
+  display: inline-block;
+  min-width: 38px;
+  padding: 2px 6px;
+  text-align: center;
+  border-radius: 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+}
+.sig-pill.sig-strong  { background: rgba(119, 221, 153, 0.20); color: var(--good); }
+.sig-pill.sig-medium  { background: rgba(240, 198, 116, 0.20); color: var(--accent); }
+.sig-pill.sig-weak    { background: rgba(221, 119, 119, 0.20); color: var(--danger); }
+.sig-pill.sig-faint   { background: var(--bg-elev-2); color: var(--fg-muted); }
+.sig-pill.sig-unknown { background: var(--bg-elev-2); color: var(--fg-muted); }
+
+/* Sortable column headers — visual cue only, behaviour is in recon.js */
+table.data th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+table.data th.sortable:hover {
+  background: var(--bg-elev-2);
+}
