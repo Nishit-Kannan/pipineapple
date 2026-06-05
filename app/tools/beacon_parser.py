@@ -23,6 +23,8 @@ needed yet.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,31 @@ from typing import Any
 from app.tools._common import stub_mode
 
 log = logging.getLogger(__name__)
+
+
+# ---------- Result cache ------------------------------------------------
+# scapy walking a multi-megabyte pcap takes seconds and a chunk of CPU.
+# Without caching, every slide-out reopen re-parses the entire file.
+# Two users (or one user fast-clicking) is enough to trip the Pi into
+# CPU/memory thrash that locks SSH. Cache results keyed on
+# (path, file mtime, optional extra key) for a short TTL so repeated
+# fetches hit memory instead of disk+CPU.
+_CACHE_TTL = 5.0                    # seconds
+_CACHE_MAX_ENTRIES = 64
+_cache_lock = threading.Lock()
+_beacon_cache: dict[tuple[str, float, str], tuple[float, dict | None]] = {}
+_probes_cache: dict[tuple[str, float], tuple[float, list]] = {}
+
+
+def _gc_cache(cache: dict, now: float) -> None:
+    """Drop entries older than 2*TTL when the cache grows past
+    _CACHE_MAX_ENTRIES. Keeps memory bounded without per-call overhead."""
+    if len(cache) <= _CACHE_MAX_ENTRIES:
+        return
+    cutoff = now - _CACHE_TTL * 2
+    stale = [k for k, (ts, _) in cache.items() if ts < cutoff]
+    for k in stale:
+        cache.pop(k, None)
 
 
 # ---------- RSN OUI:type lookups ---------------------------------------
@@ -85,6 +112,9 @@ def parse_latest_beacon(pcap_path: str | Path, bssid: str) -> dict[str, Any] | N
     Walks the pcap end-to-end (a beacon may appear many times — typical
     100 ms cadence) and keeps the last one whose BSSID matches. Returns
     None if the pcap doesn't exist or no matching beacon is found.
+
+    Cached on (path, mtime, bssid) for ``_CACHE_TTL`` seconds — protects
+    the Pi from repeated slide-out opens triggering full pcap walks.
     """
     if stub_mode():
         return _stub_beacon(bssid)
@@ -92,6 +122,18 @@ def parse_latest_beacon(pcap_path: str | Path, bssid: str) -> dict[str, Any] | N
     p = Path(pcap_path)
     if not p.is_file():
         return None
+
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        return None
+
+    key = (str(p), mtime, bssid.lower())
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _beacon_cache.get(key)
+        if hit is not None and (now - hit[0]) < _CACHE_TTL:
+            return hit[1]
 
     try:
         # Late import — scapy is the heaviest dep in the project, only
@@ -104,6 +146,7 @@ def parse_latest_beacon(pcap_path: str | Path, bssid: str) -> dict[str, Any] | N
 
     target = bssid.lower()
     latest = None
+    started = time.monotonic()
     try:
         with PcapReader(str(p)) as r:
             for pkt in r:
@@ -117,9 +160,21 @@ def parse_latest_beacon(pcap_path: str | Path, bssid: str) -> dict[str, Any] | N
         log.warning("beacon parse failed %s: %s", pcap_path, e)
         return None
 
-    if latest is None:
-        return None
-    return _decode_beacon(latest)
+    elapsed = time.monotonic() - started
+    if elapsed > 2.0:
+        log.warning(
+            "beacon parse slow: %.1fs for %s (pcap size %d MB) — "
+            "consider stopping/restarting the scan to recycle the pcap",
+            elapsed, pcap_path, p.stat().st_size // (1024 * 1024),
+        )
+
+    result = _decode_beacon(latest) if latest is not None else None
+
+    with _cache_lock:
+        _beacon_cache[key] = (now, result)
+        _gc_cache(_beacon_cache, now)
+
+    return result
 
 
 def parse_probe_requests(pcap_path: str | Path) -> list[dict[str, Any]]:
@@ -148,6 +203,18 @@ def parse_probe_requests(pcap_path: str | Path) -> list[dict[str, Any]]:
         return []
 
     try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        return []
+
+    key = (str(p), mtime)
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _probes_cache.get(key)
+        if hit is not None and (now - hit[0]) < _CACHE_TTL:
+            return hit[1]
+
+    try:
         from scapy.all import PcapReader
         from scapy.layers.dot11 import Dot11, Dot11Elt, Dot11ProbeReq
     except ImportError:
@@ -156,6 +223,7 @@ def parse_probe_requests(pcap_path: str | Path) -> list[dict[str, Any]]:
 
     # (mac, ssid) -> stats dict
     agg: dict[tuple[str, str], dict[str, Any]] = {}
+    started = time.monotonic()
     try:
         with PcapReader(str(p)) as r:
             for pkt in r:
@@ -171,10 +239,10 @@ def parse_probe_requests(pcap_path: str | Path) -> list[dict[str, Any]]:
                 ssid, is_broadcast = _extract_probe_ssid(pkt)
                 ts = float(pkt.time) if hasattr(pkt, "time") else 0.0
 
-                key = (mac, ssid)
-                entry = agg.get(key)
+                k2 = (mac, ssid)
+                entry = agg.get(k2)
                 if entry is None:
-                    agg[key] = {
+                    agg[k2] = {
                         "station_mac":  mac,
                         "ssid":         ssid,
                         "is_broadcast": is_broadcast,
@@ -192,8 +260,21 @@ def parse_probe_requests(pcap_path: str | Path) -> list[dict[str, Any]]:
         log.warning("probe parse failed %s: %s", pcap_path, e)
         return []
 
+    elapsed = time.monotonic() - started
+    if elapsed > 2.0:
+        log.warning(
+            "probe parse slow: %.1fs for %s (pcap size %d MB) — "
+            "consider stopping/restarting the scan to recycle the pcap",
+            elapsed, pcap_path, p.stat().st_size // (1024 * 1024),
+        )
+
     out = list(agg.values())
     out.sort(key=lambda d: d["last_seen"], reverse=True)
+
+    with _cache_lock:
+        _probes_cache[key] = (now, out)
+        _gc_cache(_probes_cache, now)
+
     return out
 
 

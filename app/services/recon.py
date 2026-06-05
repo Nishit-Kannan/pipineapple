@@ -530,6 +530,50 @@ class ReconService:
         return True, messages, iface
 
     # ---------- Poller ----------
+    # Size at which slide-out parses start getting slow and CPU-heavy.
+    # At 30 MB each, opening a Client slide-out (which parses BOTH
+    # pcaps for probes) walks 60 MB through scapy — already enough to
+    # be noticeably laggy on the Pi. Beyond ~100 MB we've seen the Pi
+    # swap and lock up under repeated slide-out fetches.
+    _PCAP_WARN_MB = 30
+    _PCAP_DANGER_MB = 100
+
+    def _check_pcap_sizes(self) -> None:
+        """Emit a warning notification when pcap files grow past
+        _PCAP_WARN_MB. Once per size class — re-emits only if the file
+        crosses the next threshold."""
+        from app.services.notifications import notifications
+        for label, path in (("2.4GHz", PCAP_PATH_2G), ("5GHz", PCAP_PATH_5G)):
+            try:
+                size_mb = path.stat().st_size // (1024 * 1024)
+            except OSError:
+                continue
+            # Per-file warn/danger memoisation so we don't spam every tick.
+            attr = f"_pcap_warn_state_{label}"
+            prev = getattr(self, attr, None)
+            curr: str | None = None
+            if size_mb >= self._PCAP_DANGER_MB:
+                curr = "danger"
+            elif size_mb >= self._PCAP_WARN_MB:
+                curr = "warn"
+            if curr and curr != prev:
+                if curr == "danger":
+                    notifications.error(
+                        f"recon pcap {label} is {size_mb} MB — slide-out "
+                        f"opens may freeze the Pi. Stop scan to recycle.",
+                        source="recon",
+                    )
+                else:
+                    notifications.warning(
+                        f"recon pcap {label} is {size_mb} MB — slide-out "
+                        f"opens are getting slow. Consider stopping the scan.",
+                        source="recon",
+                    )
+                setattr(self, attr, curr)
+            elif not curr and prev is not None:
+                # File shrank (probably reset between runs); clear memo
+                setattr(self, attr, None)
+
     def _start_poller(self) -> None:
         self._poller_stop.clear()
         t = threading.Thread(
@@ -557,13 +601,22 @@ class ReconService:
         log.info("recon poller exiting")
 
     def _tick(self) -> None:
-        """One poll: parse both CSVs, merge into self._aps/_clients, emit."""
+        """One poll: parse both CSVs, merge into self._aps/_clients, emit.
+
+        Also size-checks the pcap files and emits a single warning per
+        threshold crossing so the operator knows when slide-out opens
+        will start getting expensive (scapy parses the whole file on
+        demand). Doesn't auto-recycle — that's surprising; we just
+        nudge the operator to stop+restart the scan if they want fresh
+        pcaps.
+        """
         if airodump.is_stub():
             aps_2g, clients_2g = airodump.stub_snapshot("bg")
             aps_5g, clients_5g = airodump.stub_snapshot("a")
         else:
             aps_2g, clients_2g = airodump.parse_csv(CSV_PATH_2G)
             aps_5g, clients_5g = airodump.parse_csv(CSV_PATH_5G)
+            self._check_pcap_sizes()
 
         merged_aps: dict[str, dict] = {}
         for ap in aps_2g + aps_5g:
