@@ -136,7 +136,27 @@ class ReconService:
 
     def stop_scan(self) -> tuple[bool, list[str]]:
         """Stop both airodump jobs and the poller thread. Safe to call
-        when already idle."""
+        when already idle.
+
+        Teardown order matters for MT76/Realtek driver stability:
+
+        1. Stop the poller so we don't try to emit after the jobs die.
+        2. Send SIGINT to airodump-ng (not SIGTERM!). The aircrack-ng
+           tools install a SIGINT handler that flushes CSV + pcap,
+           releases the radio cleanly, and tears down the channel
+           hopper. SIGTERM bypasses that handler and leaves the MT76
+           driver in a state where the next operation (or just
+           idleness) can kernel-hang the USB controller — which on
+           the Pi 5 also serves the SSD, locking the whole box.
+        3. Wait a beat after SIGINT for the driver flush to complete
+           before bringing the interface down.
+
+        Stop_signal needs to be SIGINT specifically; the JobManager
+        accepts it via the new first_signal parameter.
+        """
+        import signal as _signal
+        import time as _time
+
         messages: list[str] = []
         with self._lock:
             if self._state == STATE_IDLE:
@@ -146,15 +166,48 @@ class ReconService:
         # Stop poller first so we don't try to emit after the jobs die.
         self._stop_poller()
 
+        # Resolve interfaces so we can bring them down post-stop. We
+        # don't take them down BEFORE airodump-ng exits: airodump-ng's
+        # own SIGINT handler does the channel reset, and yanking the
+        # interface out from under a running airodump is itself a
+        # source of driver hangs.
+        ifaces: list[str] = []
+        for role in ("wlan-mon-2g", "wlan-mon-5g"):
+            iface = self._resolve_iface_for_role(role)
+            if iface:
+                ifaces.append(iface)
+
         for label, attr in (("2.4GHz", "_job_id_2g"), ("5GHz", "_job_id_5g")):
             jid = getattr(self, attr)
             if jid:
-                ok, reason = job_manager.stop_job(jid)
-                messages.append(f"stop {label}: {reason}")
+                # SIGINT + longer grace — give the aircrack-ng handler
+                # time to flush. 5s is generous; typical clean exit is <1s.
+                ok, reason = job_manager.stop_job(
+                    jid, grace=5.0, first_signal=_signal.SIGINT)
+                messages.append(f"stop {label} (SIGINT): {reason}")
                 setattr(self, attr, None)
 
-        # Clean up CSV files so the next scan starts on -01 again
-        for p in (CSV_PATH_2G, CSV_PATH_5G):
+        # Brief settle so any post-exit driver work finishes before we
+        # touch the interfaces again. Without this we've seen the MT76
+        # USB chipsets reset partway through the down-then-mode-change
+        # dance.
+        _time.sleep(0.5)
+
+        # Now safe to bring the monitor interfaces down. We deliberately
+        # do NOT flip them back to managed mode — recon often runs in
+        # cycles and the up/down/up dance is wasteful. Operator flips
+        # mode via Settings → Adapter Management when they're done.
+        if not airodump.is_stub():
+            from app.tools import iproute
+            for iface in ifaces:
+                try:
+                    iproute.set_link_state(iface, "down")
+                    messages.append(f"set {iface} down")
+                except Exception as e:
+                    messages.append(f"{iface} down failed: {e}")
+
+        # Clean up CSV + pcap files so the next scan starts on -01 again
+        for p in (CSV_PATH_2G, CSV_PATH_5G, PCAP_PATH_2G, PCAP_PATH_5G):
             try:
                 if p.is_file():
                     p.unlink()

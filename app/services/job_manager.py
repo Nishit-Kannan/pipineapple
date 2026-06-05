@@ -292,11 +292,24 @@ class JobManager:
         if self._socketio is not None:
             self._socketio.emit("job:exited", job.to_dict(), namespace="/")
 
-    def stop_job(self, job_id: str, grace: float = 2.0) -> tuple[bool, str]:
-        """Send SIGTERM, wait up to ``grace`` seconds, escalate to SIGKILL.
+    def stop_job(
+        self,
+        job_id: str,
+        grace: float = 2.0,
+        first_signal: int = signal.SIGTERM,
+    ) -> tuple[bool, str]:
+        """Send ``first_signal``, wait up to ``grace``s, escalate to SIGKILL.
 
         Returns ``(stopped, reason)`` so callers can surface why a stop
         attempt didn't succeed.
+
+        ``first_signal`` lets the caller pick the polite-shutdown signal.
+        Defaults to SIGTERM (works for hostapd/dnsmasq/most daemons). The
+        recon service passes SIGINT for airodump-ng — aircrack-ng tools
+        treat SIGINT as "Ctrl-C" and run their CSV/pcap flush + radio
+        teardown handler, which SIGTERM doesn't trigger as reliably.
+        Ungraceful airodump exits on MT76 chipsets are the source of the
+        "Pi locks up over SSH" symptom we hit in S06 testing.
         """
         with self._lock:
             job = self._jobs.get(job_id)
@@ -313,15 +326,16 @@ class JobManager:
             return False, f"job is not running (status={job.status.value})"
 
         proc = job._proc
-        log.info("stopping job %s (pid=%d) with SIGTERM", job_id, job.pid)
+        sig_name = signal.Signals(first_signal).name
+        log.info("stopping job %s (pid=%d) with %s", job_id, job.pid, sig_name)
         try:
-            proc.send_signal(signal.SIGTERM)
+            proc.send_signal(first_signal)
             try:
                 proc.wait(timeout=grace)
             except subprocess.TimeoutExpired:
                 log.warning(
-                    "job %s ignored SIGTERM after %.1fs, sending SIGKILL",
-                    job_id, grace,
+                    "job %s ignored %s after %.1fs, sending SIGKILL",
+                    job_id, sig_name, grace,
                 )
                 proc.send_signal(signal.SIGKILL)
                 proc.wait()
