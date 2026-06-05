@@ -72,20 +72,59 @@ def reload() -> tuple[bool, str]:
     return False, f"reload failed: {r.stderr.strip()} / {r2.stderr.strip()}"
 
 
+def _get_device_state(iface: str) -> str | None:
+    """Return NM's current state for ``iface`` (e.g. 'unmanaged',
+    'connected', 'disconnected'), or None if the interface isn't
+    listed by nmcli."""
+    r = run(["nmcli", "-t", "-f", "DEVICE,STATE", "device", "status"], timeout=3.0)
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        parts = line.split(":")
+        if len(parts) >= 2 and parts[0] == iface:
+            return parts[1]
+    return None
+
+
 def set_managed(iface: str, managed: bool) -> tuple[bool, str]:
-    """Tell NM to release/reclaim an interface.
+    """Tell NM to release/reclaim an interface — idempotently.
 
     Used when standing up the management AP on wlan0: NM has to let go
     of wlan0 before hostapd can take over. The orchestrator calls this
     with managed=False before starting hostapd, and managed=True after
     stopping it.
+
+    Critically: this MUST be a no-op when NM already has the interface
+    in the desired state. Interfaces in NM's permanent unmanaged-devices
+    list (Alfas, wlan-mgmt-ap — configured via conf.d) cause
+    ``nmcli device set <iface> managed no`` to return rc=1 with
+    "Device 'X' is unmanaged.". Treating that as failure used to abort
+    the AP enable sequence (no hostapd, no dnsmasq, no static IP),
+    which is exactly what we don't want — the unmanaged state IS the
+    goal. Same idea for managed=True: if NM already has it managed,
+    skip the call.
     """
     if stub_mode():
         return True, f"(stub) nmcli device set {iface} managed {'yes' if managed else 'no'}"
+
+    # Idempotency check — query current state first.
+    current = _get_device_state(iface)
+    if current is not None:
+        currently_unmanaged = (current == "unmanaged")
+        want_unmanaged = not managed
+        if currently_unmanaged == want_unmanaged:
+            return True, f"{iface} already {current}"
+
     state = "yes" if managed else "no"
     r = run(["nmcli", "device", "set", iface, "managed", state], timeout=5.0)
     if r.returncode == 0:
         return True, f"nmcli device set {iface} managed {state}"
+    # Belt-and-suspenders: NM's error for "device is in the permanent
+    # unmanaged list" is rc=1 with stderr containing "unmanaged".
+    # If that's what we asked for anyway, call it success.
+    err = (r.stderr or "").lower()
+    if not managed and "unmanaged" in err:
+        return True, f"{iface} already unmanaged ({r.stderr.strip()})"
     return False, f"nmcli set managed failed: {r.stderr.strip()}"
 
 
