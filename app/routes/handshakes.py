@@ -90,6 +90,38 @@ def status(bssid: str):
 
 @bp.route("/list")
 def list_captures():
-    """Persisted handshake captures across all AP targets. Used by the
-    top-level Handshakes page (Session 08)."""
-    return jsonify({"captures": get_service().list_captures()})
+    """Persisted handshake captures. Optional ``?bssid=`` filters to one AP.
+
+    Used both by the top-level Handshakes page (Session 08) and by the
+    AP slide-out's Captures tab (Session 07).
+    """
+    bssid = request.args.get("bssid")
+    captures = get_service().list_captures(bssid=bssid)
+    return jsonify({"captures": captures})
+
+
+@bp.route("/delete", methods=["POST"])
+def delete_capture():
+    """Delete a single capture by id. Refuses if a capture is in flight
+    for that BSSID (would clobber the live writer)."""
+    data = request.get_json(silent=True) or {}
+    cid = (data.get("id") or "").strip()
+    if not cid:
+        return jsonify({"ok": False, "msg": "id is required"}), 400
+    ok, msg = get_service().delete_capture(cid)
+    notif = notifications.success if ok else notifications.warning
+    notif(f"capture delete: {msg}", source="handshakes")
+    return jsonify({"ok": ok, "msg": msg})
+
+
+@bp.route("/delete-by-bssid", methods=["POST"])
+def delete_by_bssid():
+    """Bulk delete every persisted capture for one AP."""
+    data = request.get_json(silent=True) or {}
+    bssid = (data.get("bssid") or "").strip()
+    if not bssid:
+        return jsonify({"ok": False, "msg": "bssid is required"}), 400
+    ok, msg = get_service().delete_all_for_bssid(bssid)
+    notif = notifications.success if ok else notifications.warning
+    notif(f"captures bulk-delete {bssid}: {msg}", source="handshakes")
+    return jsonify({"ok": ok, "msg": msg})

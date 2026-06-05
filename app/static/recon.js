@@ -377,6 +377,7 @@
       { id: "security",   label: "Security" },
       { id: "tags",       label: "Tagged params" },
       { id: "clients",    label: `Clients (${associated.length})` },
+      { id: "captures",   label: "Captures" },
     ]);
 
     const body = $("slideout-body");
@@ -450,6 +451,10 @@
                ${c.packets} pkts, last ${escapeHtml(c.last_seen || "—")}</dd>`
         ).join("") + `</dl>`;
       }
+    } else if (activeTab === "captures") {
+      // Loaded async — show a placeholder until the fetch returns.
+      body.innerHTML = `<p class="muted">Loading captures…</p>`;
+      _loadCapturesTab(ap.bssid);
     }
 
     // Actions row — Deauth + Capture Handshakes. Both auto-disable
@@ -849,6 +854,102 @@
     // opens the modal — we just intercept the stop case here.
   }, true);
 
+  // ---- Captures tab (persisted handshake list per AP) ----
+  function _fmtBytes(n) {
+    if (n == null) return "—";
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  function _fmtTs(unix) {
+    if (!unix) return "—";
+    const d = new Date(unix * 1000);
+    return d.toLocaleString();
+  }
+
+  async function _loadCapturesTab(bssid) {
+    let captures = [];
+    try {
+      const r = await fetch(`/handshakes/list?bssid=${encodeURIComponent(bssid)}`);
+      if (r.ok) {
+        const data = await r.json();
+        captures = data.captures || [];
+      }
+    } catch (e) { /* render empty */ }
+    _renderCapturesTab(bssid, captures);
+  }
+
+  function _renderCapturesTab(bssid, captures) {
+    const body = $("slideout-body");
+    if (!body) return;
+    if (activeKind !== "ap" || !activeDetail ||
+        activeDetail.ap.bssid.toLowerCase() !== bssid.toLowerCase() ||
+        activeTab !== "captures") {
+      return;  // user switched away while we were loading
+    }
+
+    let header = `<h3>Saved captures for this AP</h3>`;
+    if (!captures.length) {
+      body.innerHTML = header + `<p class="muted">
+        No captures yet for ${escapeHtml(bssid)}. Use the "Capture
+        handshakes" button below to start one.</p>`;
+      return;
+    }
+
+    const bulkBtn = `<button class="bigbtn actbtn-muted" id="captures-bulk-delete"
+                      style="float:right; font-size:11px; padding:4px 10px;">
+                      Delete all
+                    </button>`;
+    const rows = captures.map((c) => {
+      const dots = _fmtMsgDots(c.messages_seen);
+      let pill;
+      if (c.is_complete)      pill = `<span class="capture-pill capture-complete">complete</span>`;
+      else if (c.is_partial)  pill = `<span class="capture-pill capture-partial">partial</span>`;
+      else                     pill = `<span class="capture-pill capture-progress">no handshake</span>`;
+      const deauthBit = c.deauth_used
+        ? ` · deauth ×${c.deauth_count || 0}` : ` · passive`;
+      const sizeBit = c.pcap_size_bytes != null
+        ? _fmtBytes(c.pcap_size_bytes) : "missing";
+      return `<div class="capture-row" data-id="${escapeHtml(c.id)}">
+        <div class="capture-row-head">
+          ${pill} ${dots}
+          <button class="capture-del" data-id="${escapeHtml(c.id)}"
+                  title="Delete this capture">×</button>
+        </div>
+        <div class="capture-row-meta muted">
+          ${escapeHtml(_fmtTs(c.started_at))} ·
+          ${escapeHtml(c.duration_secs)}s ·
+          ${escapeHtml(sizeBit)}${deauthBit}
+        </div>
+        <div class="capture-row-meta muted" style="font-size:10px;">
+          <code>${escapeHtml(c.pcap_relative_path || "")}</code>
+        </div>
+      </div>`;
+    }).join("");
+    body.innerHTML = header + bulkBtn + `<div class="capture-list">${rows}</div>`;
+
+    // Per-row delete
+    body.querySelectorAll(".capture-del").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.id;
+        if (!confirm("Delete this capture? The pcap file will be removed.")) return;
+        await postJson("/handshakes/delete", { id });
+        _loadCapturesTab(bssid);
+      });
+    });
+    // Bulk delete
+    const bulk = $("captures-bulk-delete");
+    if (bulk) bulk.addEventListener("click", async () => {
+      if (!confirm(
+        `Delete ALL ${captures.length} capture(s) for ${bssid}? ` +
+        `pcap files will be removed.`
+      )) return;
+      await postJson("/handshakes/delete-by-bssid", { bssid });
+      _loadCapturesTab(bssid);
+    });
+  }
+
   function attachCaptureSocketHandler() {
     const tryWire = () => {
       const sock = window.pipineapple && window.pipineapple.socket;
@@ -868,6 +969,11 @@
             activeDetail.ap.bssid.toLowerCase() === bssid) {
           _renderCaptureStatus(activeDetail.ap.bssid,
                                payload.ended ? null : payload);
+          // If the captures tab is active, refresh it so the just-saved
+          // capture appears in the list immediately.
+          if (payload.ended && activeTab === "captures") {
+            _loadCapturesTab(activeDetail.ap.bssid);
+          }
         }
       });
     };

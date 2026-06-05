@@ -53,8 +53,10 @@ log = logging.getLogger(__name__)
 # ---------- Constants -----------------------------------------------------
 
 POLL_INTERVAL = 1.0           # seconds — capture status poller cadence
-DEAUTH_INTERVAL = 5.0         # seconds between deauth bursts when enabled
-DEAUTH_COUNT_PER_BURST = 5    # aireplay --deauth N per burst
+DEAUTH_INTERVAL = 3.0         # seconds between deauth bursts when enabled
+DEAUTH_COUNT_PER_BURST = 10   # aireplay --deauth N per burst
+IFACE_SETTLE_SECS = 1.5       # wait after set_channel for driver to settle
+DEAUTH_INITIAL_WAIT = 5.0     # let airodump fully initialize before first burst
 INJECT_ROLE = "wlan-ap"       # role/name of the injection + focused-capture radio
 
 
@@ -173,6 +175,38 @@ class HandshakesService:
             msgs.append(f"channel: {msg}")
             if not ok:
                 return False, msgs
+
+            # Settle delay — the driver needs a moment after the
+            # down/monitor/up dance + channel-set before it'll actually
+            # see frames. Without this, the FIRST capture against a
+            # never-used wlan-ap captures zero frames, aireplay-ng hangs
+            # waiting for beacons, our run() timeout fires after 30s,
+            # and the operator sees "deauth_count: 0" with an empty pcap.
+            # (Subsequent captures often work because the iface state is
+            # already initialised from the previous one.)
+            time.sleep(IFACE_SETTLE_SECS)
+            msgs.append(f"settled {IFACE_SETTLE_SECS}s for driver state")
+
+            # Verify the iface ended up in the expected mode + channel.
+            # If something silently failed (regdom restriction, driver
+            # quirk), better to fail loudly here than spend 30s waiting
+            # for aireplay to time out.
+            r = iw.list_wireless_devices()
+            iface_info = next((d for d in r if d["name"] == iface), None)
+            if iface_info is None:
+                return False, msgs + [f"{iface} not visible to iw dev after setup"]
+            if iface_info.get("mode") != "monitor":
+                return False, msgs + [
+                    f"{iface} ended up in mode={iface_info.get('mode')!r}, "
+                    f"expected 'monitor'"
+                ]
+            actual_ch = iface_info.get("channel")
+            if actual_ch != int(channel):
+                msgs.append(
+                    f"warning: {iface} reports channel {actual_ch}, "
+                    f"expected {channel} — driver may not have settled "
+                    f"or AP is on a wide channel; continuing anyway"
+                )
 
         # Wipe any leftover files matching this prefix (shouldn't exist
         # since timestamp is fresh, but be defensive).
@@ -297,10 +331,12 @@ class HandshakesService:
             return None
         return self._status_dict(capture)
 
-    def list_captures(self) -> list[dict[str, Any]]:
-        """Return all captures from the persisted index (for S08).
+    def list_captures(self, bssid: str | None = None) -> list[dict[str, Any]]:
+        """Return persisted captures, optionally filtered by BSSID.
 
-        Sort newest-first by started_at.
+        Sorted newest-first by started_at. Each entry also gets a live
+        ``pcap_size_bytes`` field — useful in the UI to flag the
+        "1 packet" junk captures separately from real ones.
         """
         if not self._index_path.is_file():
             return []
@@ -310,8 +346,80 @@ class HandshakesService:
             log.warning("index.json unreadable: %s", e)
             return []
         captures = data.get("captures") or []
+        if bssid:
+            target = bssid.lower()
+            captures = [c for c in captures if (c.get("bssid") or "").lower() == target]
+        # Enrich with on-disk size so the UI can show pcap size + flag
+        # empties. Missing file → size None (the pcap was deleted but
+        # the index entry survived).
+        for c in captures:
+            rel = c.get("pcap_relative_path")
+            if rel:
+                p = self._dir / rel
+                try:
+                    c["pcap_size_bytes"] = p.stat().st_size
+                except OSError:
+                    c["pcap_size_bytes"] = None
         captures.sort(key=lambda d: d.get("started_at") or 0, reverse=True)
         return captures
+
+    def delete_capture(self, capture_id: str) -> tuple[bool, str]:
+        """Delete a single capture's pcap file + remove from index.
+
+        Refuses to delete a capture whose BSSID is currently being
+        captured (would clobber the live writer's file).
+        """
+        if not self._index_path.is_file():
+            return False, "no index.json — nothing to delete"
+        try:
+            data = json.loads(self._index_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            return False, f"index.json read failed: {e}"
+
+        captures = data.get("captures") or []
+        idx = next((i for i, c in enumerate(captures) if c.get("id") == capture_id), -1)
+        if idx < 0:
+            return False, f"no capture with id {capture_id}"
+        entry = captures[idx]
+
+        # Safety: don't delete a capture that's currently live
+        with self._lock:
+            if (entry.get("bssid") or "").lower() in self._active:
+                return False, "this BSSID has a capture in flight; stop it first"
+
+        # Remove pcap file (best effort — keep going if it's already gone)
+        rel = entry.get("pcap_relative_path")
+        if rel:
+            p = self._dir / rel
+            try:
+                if p.is_file():
+                    p.unlink()
+                # Clean up the per-BSSID directory if it's now empty
+                parent = p.parent
+                if parent.is_dir() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError as e:
+                log.warning("delete pcap failed %s: %s", p, e)
+
+        # Drop from index
+        captures.pop(idx)
+        data["captures"] = captures
+        tmp = self._index_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(self._index_path)
+        return True, f"deleted capture {capture_id[:8]}…"
+
+    def delete_all_for_bssid(self, bssid: str) -> tuple[bool, str]:
+        """Delete every persisted capture for one AP."""
+        target = bssid.lower()
+        with self._lock:
+            if target in self._active:
+                return False, "this BSSID has a capture in flight; stop it first"
+        cs = self.list_captures(bssid=bssid)
+        ids = [c["id"] for c in cs]
+        for cid in ids:
+            self.delete_capture(cid)
+        return True, f"deleted {len(ids)} capture(s) for {bssid}"
 
     # ---------- Internals ----------
     def _resolve_inject_iface(self) -> str | None:
@@ -358,9 +466,11 @@ class HandshakesService:
         """Fire deauth bursts every DEAUTH_INTERVAL seconds while active."""
         from app.tools import aireplay
         log.info("capture deauth loop starting for %s", capture.bssid)
-        # Brief initial pause so airodump is definitely listening before
-        # we start kicking clients off.
-        capture._stop_event.wait(2.0)
+        # Initial pause so airodump is fully listening (writing pcap)
+        # before we start kicking clients off. The previous 2s was too
+        # short on a cold-start wlan-ap — the first burst fired before
+        # airodump had bound the radio properly, EAPOL frames missed.
+        capture._stop_event.wait(DEAUTH_INITIAL_WAIT)
         while not capture._stop_event.is_set():
             if capture.iface is None:
                 break
