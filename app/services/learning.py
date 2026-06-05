@@ -1370,6 +1370,280 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 06 — Beacon / probe parsing, deauth, driver reset
+    # ------------------------------------------------------------------
+    {
+        "id": "beacon-probe-deauth",
+        "title": "Beacon IEs, probe requests, deauth, driver reset",
+        "added_in_session": 6,
+        "intro": (
+            "The Recon slide-out backend: parsing the full beacon "
+            "Information Elements (RSN cipher suites, HT/VHT/HE, "
+            "vendor IEs) from pcap with scapy, aggregating probe "
+            "requests per client to surface Preferred Network Lists, "
+            "and sending deauthentication frames from the dedicated "
+            "injection radio. Plus the Realtek-specific dance to "
+            "fully reset a wireless netdev (needed for AP "
+            "reconfigure to not fail with \"Could not configure "
+            "driver mode\")."
+        ),
+        "ui_reference": (
+            "Recon page → click an AP or Client row → slide-out tabs "
+            "(Overview, Security, Tagged params, Clients / Probes) + "
+            "Deauth All Clients button"
+        ),
+        "wrapper_modules": [
+            "app/tools/beacon_parser.py",
+            "app/tools/aireplay.py",
+            "app/tools/iw.py",
+            "app/services/recon.py",
+        ],
+        "commands": [
+            # ---- Beacon parsing ----
+            {
+                "command": "tshark -r /tmp/pipineapple-recon-2g-01.cap -Y 'wlan.fc.type_subtype == 0x08' -V | head -120",
+                "description": (
+                    "Dump beacon frames from the airodump pcap with "
+                    "full IE decoding. Useful sanity-check for what "
+                    "the scapy parser sees. Subtype 0x08 = beacon."
+                ),
+            },
+            {
+                "command": "python3 -c \"from scapy.all import rdpcap; from scapy.layers.dot11 import Dot11Beacon; pkts = rdpcap('/tmp/pipineapple-recon-2g-01.cap'); print(sum(1 for p in pkts if p.haslayer(Dot11Beacon)), 'beacons')\"",
+                "description": (
+                    "Count beacons in a pcap with scapy. Same library "
+                    "the slide-out backend uses; if this works the "
+                    "platform's parser will too."
+                ),
+            },
+            {
+                "command": "iw dev wlan-mon-2g scan",
+                "description": (
+                    "Live beacon dump from one radio. Decodes RSN, HT, "
+                    "VHT, country, vendor IEs in a human-readable way. "
+                    "Requires the iface in monitor mode is fine (some "
+                    "drivers want managed). Useful when you want a "
+                    "single beacon parse without going through the "
+                    "scan workflow."
+                ),
+            },
+
+            # ---- RSN element interpretation ----
+            {
+                "command": "(reference) RSN AKM suite IDs (OUI 00-0F-AC)",
+                "description": (
+                    "1 = 802.1X (WPA2-Enterprise) · 2 = PSK "
+                    "(WPA2-Personal) · 3 = FT-802.1X · 4 = FT-PSK · "
+                    "5 = 802.1X-SHA256 · 6 = PSK-SHA256 · 8 = SAE "
+                    "(WPA3-Personal) · 11 = Suite-B-192 · "
+                    "18 = OWE (open-with-encryption). The slide-out's "
+                    "Security tab summary uses these to pick "
+                    "'WPA2-Personal' / 'WPA3-Personal' / "
+                    "'WPA2-Enterprise' etc."
+                ),
+            },
+            {
+                "command": "(reference) RSN cipher suite IDs (OUI 00-0F-AC)",
+                "description": (
+                    "1 = WEP-40 · 2 = TKIP · 4 = CCMP-128 (the "
+                    "standard) · 6 = BIP-CMAC-128 · 8 = GCMP-128 · "
+                    "9 = GCMP-256 · 10 = CCMP-256. Group cipher and "
+                    "pairwise cipher are encoded the same way."
+                ),
+            },
+            {
+                "command": "(reference) MFP bits in RSN capabilities",
+                "description": (
+                    "Bit 6 = MFPC (Management Frame Protection "
+                    "Capable). Bit 7 = MFPR (Required). When MFPR is "
+                    "set, deauth frames from us get rejected by the "
+                    "client because the AP-client deauth is "
+                    "cryptographically protected. WPA3 mandates MFP; "
+                    "WPA2 makes it optional. The slide-out's Deauth "
+                    "button auto-disables when MFPR is set."
+                ),
+            },
+
+            # ---- Probe requests ----
+            {
+                "command": "tshark -r /tmp/pipineapple-recon-2g-01.cap -Y 'wlan.fc.type_subtype == 0x04 && wlan.ssid != \\\"\\\"'",
+                "description": (
+                    "Filter directed probe requests (subtype 0x04) "
+                    "with non-empty SSID — these are the privacy-leaky "
+                    "ones revealing the client's Preferred Network "
+                    "List. Broadcast probes (empty SSID) aren't "
+                    "interesting on their own."
+                ),
+            },
+            {
+                "command": "(behavior) iOS / Android probe patterns",
+                "description": (
+                    "iPhones randomise MAC per saved SSID — each "
+                    "network gets its own MAC for probes AND for "
+                    "association. They send broadcast probes from the "
+                    "real hardware MAC when actively scanning (e.g., "
+                    "Settings → Wi-Fi open). Android does similar "
+                    "randomisation since Android 10; older Android "
+                    "devices use real MACs throughout. Forgetting a "
+                    "stale SSID stops the device probing for it."
+                ),
+            },
+
+            # ---- Deauth via aireplay-ng ----
+            {
+                "command": "sudo aireplay-ng --deauth 10 -a <BSSID> <iface>",
+                "description": (
+                    "Broadcast deauth — send 10 deauth bursts at "
+                    "<BSSID> with destination ff:ff:ff:ff:ff:ff (all "
+                    "associated clients). Fastest way to force a "
+                    "reassociation storm. <iface> must be in monitor "
+                    "mode and pinned to <BSSID>'s channel."
+                ),
+                "notes": (
+                    "Lab equipment only. Sending deauth frames at "
+                    "networks you don't own or have written "
+                    "authorisation to test is illegal in most "
+                    "jurisdictions (US: 18 U.S.C. § 1362, FCC Part 15)."
+                ),
+            },
+            {
+                "command": "sudo aireplay-ng --deauth 10 -a <BSSID> -c <CLIENT_MAC> <iface>",
+                "description": (
+                    "Targeted deauth — kick a single client. Useful "
+                    "when you want to disturb one device (e.g., a "
+                    "test phone) without affecting the rest of the "
+                    "network."
+                ),
+            },
+            {
+                "command": "sudo iw dev wlan-ap set channel 6",
+                "description": (
+                    "Pin the injection radio to the target's channel "
+                    "BEFORE sending deauth. Frames sent off-channel "
+                    "are silently dropped by the AP. The recon "
+                    "service does this automatically as step 5 of "
+                    "the deauth flow."
+                ),
+            },
+
+            # ---- Realtek nl80211 reset (the AP reconfigure fix) ----
+            {
+                "command": "sudo iw dev wlan-mgmt-ap del; sudo iw phy phy4 interface add wlan-mgmt-ap type managed",
+                "description": (
+                    "Hard-reset a wireless netdev by destroying and "
+                    "recreating it. Required between hostapd runs on "
+                    "the Realtek rtw_8821cu driver — the standard "
+                    "down → set type managed → up dance is not enough "
+                    "to release the per-interface nl80211 vif state, "
+                    "and the next hostapd start fails with: "
+                    "\"nl80211: kernel reports: Match already configured\" "
+                    "→ \"Could not configure driver mode\" → \"AP-DISABLED\". "
+                    "mt76 chipsets don't strictly need this but it's "
+                    "harmless."
+                ),
+                "notes": (
+                    "Get the phy index from 'iw dev <iface> info'. "
+                    "The recon service wraps this as "
+                    "iw.recreate_interface(iface) and calls it from "
+                    "_disable_mgmt_ap_unlocked."
+                ),
+            },
+            {
+                "command": "sudo modprobe -r 8821cu && sleep 1 && sudo modprobe 8821cu",
+                "description": (
+                    "Heavier alternative if the iw del+add doesn't "
+                    "work — reload the Realtek kernel module to fully "
+                    "destroy and recreate the netdev with a clean "
+                    "driver. ~5 second outage; udev rules re-fire "
+                    "and the iface gets renamed back to wlan-mgmt-ap "
+                    "via the MAC mapping."
+                ),
+            },
+
+            # ---- Operational gotchas from the build ----
+            {
+                "command": "(gotcha) airodump-ng stdout must go to /dev/null",
+                "description": (
+                    "airodump's stdout is the live curses-style "
+                    "refreshing table — full redraw with ANSI escapes "
+                    "every --write-interval second. Redirecting it to "
+                    "a file (the obvious thing, via JobManager's "
+                    "stdout_path) produced ~2 GB per band per 5 "
+                    "minutes. /tmp on Pi OS is tmpfs (RAM-backed), so "
+                    "this consumed RAM, triggered swap, and ground "
+                    "the Pi to a halt. The useful data is all in the "
+                    "CSV + pcap files airodump writes via --write. "
+                    "Recon service uses stdout_path='/dev/null'."
+                ),
+            },
+            {
+                "command": "(gotcha) SIGINT, not SIGTERM, for aircrack-ng tools",
+                "description": (
+                    "aircrack-ng tools install a SIGINT handler that "
+                    "flushes CSV + pcap, releases the radio, and "
+                    "tears down the channel hopper. SIGTERM bypasses "
+                    "that handler and leaves the mt76 driver in a "
+                    "state where the next op (or even just idleness) "
+                    "can hard-hang the USB controller — which on the "
+                    "Pi 5 also serves the SSD, locking the whole "
+                    "machine. JobManager.stop_job now takes a "
+                    "first_signal parameter for this; recon passes "
+                    "signal.SIGINT."
+                ),
+            },
+            {
+                "command": "(gotcha) Service-level state needs a singleton",
+                "description": (
+                    "If a service stores live process state (job IDs, "
+                    "open file handles) on the instance, get_service() "
+                    "must return a singleton. Otherwise every request "
+                    "gets a fresh instance with no idea what the "
+                    "previous one started, and stop_job calls silently "
+                    "no-op because the job IDs are all None. "
+                    "NetworkingService had this bug for several "
+                    "sessions — the stop hostapd / stop dnsmasq lines "
+                    "never appeared in the journal, and AP "
+                    "reconfigure failed because the old daemons were "
+                    "still holding port 53. Fixed by switching to a "
+                    "module-level singleton, same pattern ReconService "
+                    "uses."
+                ),
+            },
+            {
+                "command": "(gotcha) Async work in Flask needs app_context",
+                "description": (
+                    "Background threads spawned outside a request "
+                    "(e.g., recon teardown thread, networking restore "
+                    "thread) don't inherit Flask's request context. "
+                    "Calling get_adapter_service() or anything else "
+                    "that uses current_app raises RuntimeError, the "
+                    "exception is swallowed by the thread runner, and "
+                    "the work never completes. Fix: capture "
+                    "current_app._get_current_object() before "
+                    "spawning, then `with app.app_context(): ...` "
+                    "inside the thread."
+                ),
+            },
+            {
+                "command": "(gotcha) Enable persistent journald to debug crashes",
+                "description": (
+                    "Pi OS Lite's default journald is volatile — logs "
+                    "are lost on every reboot. When the Pi hard-hangs "
+                    "and you power-cycle, all kernel messages from "
+                    "before the crash are gone. Enable persistence "
+                    "ONCE with: sudo mkdir -p /var/log/journal && "
+                    "sudo systemd-tmpfiles --create --prefix "
+                    "/var/log/journal && sudo systemctl restart "
+                    "systemd-journald. After that, 'journalctl -k "
+                    "-b -1' shows kernel messages from the previous "
+                    "boot — invaluable for mt76 / USB / RCU stall "
+                    "diagnosis."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 01 — Driver detection
     # ------------------------------------------------------------------
     {
