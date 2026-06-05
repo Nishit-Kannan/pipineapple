@@ -452,14 +452,24 @@
       }
     }
 
-    // Actions row — deauth always present; will gate via ethics modal
+    // Actions row — Deauth + Capture Handshakes. Both auto-disable
+    // when MFP is required (deauth gets rejected, and our capture
+    // strategy relies on deauth to force handshakes).
     const actions = $("slideout-actions");
     const mfpRequired = beacon && beacon.rsn && beacon.rsn.mfp_required;
+    const mfpTooltip = mfpRequired
+      ? 'title="MFP required — frames will be cryptographically rejected"' : "";
     actions.innerHTML = `
       <button class="bigbtn bigbtn-danger" id="slideout-deauth"
-              ${mfpRequired ? "disabled title=\"MFP required — deauth will be rejected\"" : ""}>
-        Deauth all clients
-      </button>`;
+              ${mfpRequired ? `disabled ${mfpTooltip}` : ""}>
+        Deauth all
+      </button>
+      <button class="bigbtn" id="slideout-capture"
+              ${mfpRequired ? `disabled ${mfpTooltip}` : ""}>
+        Capture handshakes
+      </button>
+      <div id="slideout-capture-status" class="muted"
+           style="margin-left:auto; font-size:12px; text-align:right;"></div>`;
     const dbtn = $("slideout-deauth");
     if (dbtn && !mfpRequired) {
       dbtn.addEventListener("click", () => showEthicsModal(
@@ -471,6 +481,12 @@
         }
       ));
     }
+    const cbtn = $("slideout-capture");
+    if (cbtn && !mfpRequired) {
+      cbtn.addEventListener("click", () => showCaptureModal(ap));
+    }
+    // Reflect any in-flight capture state for this BSSID
+    _refreshCaptureStatus(ap.bssid);
   }
 
   function renderClientSlideout() {
@@ -687,6 +703,177 @@
     });
   }
 
+  // ==================================================================
+  // Handshake capture (Session 07)
+  // ==================================================================
+  // BSSID currently being captured, if any. Tracked so the slide-out
+  // status badge updates correctly when the operator opens an AP that
+  // already has a capture in flight.
+  let _captureInFlightBssid = null;
+  let _captureStatusByBssid = {};   // bssid -> last status payload
+
+  function _fmtMsgDots(messagesSeen) {
+    const set = new Set(messagesSeen || []);
+    return [1, 2, 3, 4].map((n) =>
+      set.has(n)
+        ? `<span class="msg-dot msg-dot-on" title="M${n} captured">M${n}</span>`
+        : `<span class="msg-dot" title="M${n} not yet seen">M${n}</span>`
+    ).join("");
+  }
+
+  function _captureSummaryText(s) {
+    if (!s) return "";
+    const inner = s.status || {};
+    const dots = _fmtMsgDots(inner.messages_seen);
+    let label;
+    if (inner.is_complete) {
+      label = `<span class="capture-pill capture-complete">complete</span>`;
+    } else if (inner.is_partial) {
+      label = `<span class="capture-pill capture-partial">partial</span>`;
+    } else if (inner.messages_seen && inner.messages_seen.length) {
+      label = `<span class="capture-pill capture-progress">capturing</span>`;
+    } else {
+      label = `<span class="capture-pill capture-progress">waiting</span>`;
+    }
+    const deauth = s.deauth_used
+      ? ` · deauth ×${s.deauth_count || 0}` : "";
+    return `${label} ${dots}${deauth}`;
+  }
+
+  async function _refreshCaptureStatus(bssid) {
+    // Pull the latest status (covers the case where the operator
+    // opened the slide-out after a capture was already in flight)
+    let s = _captureStatusByBssid[bssid.toLowerCase()];
+    if (!s) {
+      try {
+        const r = await fetch(`/handshakes/status/${encodeURIComponent(bssid)}`);
+        if (r.ok) s = await r.json();
+      } catch (e) { /* 404 = no capture, expected */ }
+    }
+    _renderCaptureStatus(bssid, s);
+  }
+
+  function _renderCaptureStatus(bssid, s) {
+    const el = $("slideout-capture-status");
+    const btn = $("slideout-capture");
+    if (!el) return;
+    if (!s) {
+      el.innerHTML = "";
+      if (btn) {
+        btn.textContent = "Capture handshakes";
+        btn.classList.remove("bigbtn-danger");
+      }
+      return;
+    }
+    el.innerHTML = _captureSummaryText(s);
+    if (btn) {
+      btn.textContent = "Stop capture";
+      btn.classList.add("bigbtn-danger");
+    }
+  }
+
+  function showCaptureModal(ap) {
+    // Reuse the ethics-confirm shape but inline; the capture flow has
+    // its own deauth toggle. Build a one-off modal each time for
+    // simplicity — small enough that the construction cost is fine.
+    const overlay = document.createElement("div");
+    overlay.className = "modal";
+    overlay.innerHTML = `
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <h3>Capture handshakes — ${escapeHtml(ap.essid || ap.bssid)}</h3>
+        <p>
+          Locks an airodump on <code>wlan-ap</code> to channel
+          <strong>${escapeHtml(ap.channel)}</strong>, BSSID
+          <code>${escapeHtml(ap.bssid)}</code>, watching for the WPA
+          4-way EAPOL exchange (M1/M2/M3/M4).
+        </p>
+        <label style="display:flex; align-items:center; gap:8px; margin-top:12px;">
+          <input type="checkbox" id="capture-deauth-toggle" checked>
+          <span>Also send periodic deauth bursts to force fresh
+                handshakes (recommended for faster capture)</span>
+        </label>
+        <p class="muted" style="margin-top:8px; font-size:11px;">
+          Deauth frames are <strong>offensive</strong>. Lab equipment only.
+        </p>
+        <div class="modal-actions">
+          <button class="bigbtn actbtn-muted" data-act="cancel">Cancel</button>
+          <button class="bigbtn" data-act="start">Start capture</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const dismiss = () => overlay.remove();
+    overlay.querySelector(".modal-backdrop").addEventListener("click", dismiss);
+    overlay.querySelector("[data-act=cancel]").addEventListener("click", dismiss);
+    overlay.querySelector("[data-act=start]").addEventListener("click", async () => {
+      const deauth = overlay.querySelector("#capture-deauth-toggle").checked;
+      overlay.querySelector("[data-act=start]").disabled = true;
+      overlay.querySelector("[data-act=start]").textContent = "Starting…";
+      const res = await postJson("/handshakes/start", {
+        bssid:   ap.bssid,
+        channel: ap.channel,
+        essid:   ap.essid,
+        deauth:  deauth,
+      });
+      dismiss();
+      if (res.ok && res.status) {
+        _captureInFlightBssid = ap.bssid.toLowerCase();
+        _captureStatusByBssid[ap.bssid.toLowerCase()] = res.status;
+        _renderCaptureStatus(ap.bssid, res.status);
+      }
+    });
+  }
+
+  async function stopCaptureFromSlideout(bssid) {
+    if (!confirm("Stop the running capture? The pcap will be saved.")) return;
+    await postJson("/handshakes/stop", { bssid: bssid });
+    delete _captureStatusByBssid[bssid.toLowerCase()];
+    if (_captureInFlightBssid === bssid.toLowerCase()) {
+      _captureInFlightBssid = null;
+    }
+    _renderCaptureStatus(bssid, null);
+  }
+
+  // Capture button rendering is dual-purpose: when there's no active
+  // capture for this BSSID it says "Capture handshakes", when there is
+  // it switches to a red "Stop capture". We attach the dispatch here.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("#slideout-capture");
+    if (!btn || btn.disabled) return;
+    if (!activeDetail || activeKind !== "ap") return;
+    const bssid = activeDetail.ap.bssid;
+    if (_captureStatusByBssid[bssid.toLowerCase()]) {
+      stopCaptureFromSlideout(bssid);
+    }
+    // Otherwise the renderApSlideout-wired listener fires first and
+    // opens the modal — we just intercept the stop case here.
+  }, true);
+
+  function attachCaptureSocketHandler() {
+    const tryWire = () => {
+      const sock = window.pipineapple && window.pipineapple.socket;
+      if (!sock) { setTimeout(tryWire, 200); return; }
+      sock.on("capture:status", (payload) => {
+        if (!payload || !payload.bssid) return;
+        const bssid = payload.bssid.toLowerCase();
+        if (payload.ended) {
+          delete _captureStatusByBssid[bssid];
+          if (_captureInFlightBssid === bssid) _captureInFlightBssid = null;
+        } else {
+          _captureStatusByBssid[bssid] = payload;
+          _captureInFlightBssid = bssid;
+        }
+        // If the slide-out is open on this AP, re-render its status line
+        if (activeKind === "ap" && activeDetail &&
+            activeDetail.ap.bssid.toLowerCase() === bssid) {
+          _renderCaptureStatus(activeDetail.ap.bssid,
+                               payload.ended ? null : payload);
+        }
+      });
+    };
+    tryWire();
+  }
+
   // ---- Wire-up ----
   document.addEventListener("DOMContentLoaded", () => {
     const startBtn = $("recon-start");
@@ -697,6 +884,7 @@
     attachRowHandlers();
     attachSlideoutChrome();
     attachEthicsHandlers();
+    attachCaptureSocketHandler();
 
     // Fetch one snapshot immediately so we don't wait up to POLL_INTERVAL
     // for the first SocketIO event after page load.

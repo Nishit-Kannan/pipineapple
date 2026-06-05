@@ -123,12 +123,14 @@ def _attach_services(app: Flask | None = None) -> None:
 def _register_blueprints(app: Flask) -> None:
     from app.routes.auth import bp as auth_bp
     from app.routes.dashboard import bp as dashboard_bp
+    from app.routes.handshakes import bp as handshakes_bp
     from app.routes.learning import bp as learning_bp
     from app.routes.recon import bp as recon_bp
     from app.routes.settings import bp as settings_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
+    app.register_blueprint(handshakes_bp)
     app.register_blueprint(learning_bp)
     app.register_blueprint(recon_bp)
     app.register_blueprint(settings_bp)

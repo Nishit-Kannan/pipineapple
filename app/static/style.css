@@ -1302,3 +1302,37 @@ table.data th.sortable:hover {
   justify-content: flex-end;
   margin-top: 16px;
 }
+
+/* ---------- Handshake capture status (Session 07) ------------------- */
+/* M1/M2/M3/M4 progress dots shown in the AP slide-out actions row. */
+.msg-dot {
+  display: inline-block;
+  padding: 1px 5px;
+  margin-left: 3px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+}
+.msg-dot.msg-dot-on {
+  background: rgba(119, 221, 153, 0.25);
+  color: var(--good);
+  border-color: var(--good);
+}
+
+.capture-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-right: 4px;
+}
+.capture-pill.capture-progress { background: var(--bg-elev-2);                  color: var(--fg-muted); }
+.capture-pill.capture-partial  { background: rgba(240, 198, 116, 0.20);          color: var(--accent); }
+.capture-pill.capture-complete { background: rgba(119, 221, 153, 0.25);          color: var(--good); }
