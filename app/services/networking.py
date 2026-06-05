@@ -132,6 +132,11 @@ class NetworkingService:
         }
 
     def scan_wifi(self) -> list[dict]:
+        # Ensure NM's wifi radio is on AND the interface is up before
+        # asking for a scan — covers the case where wlan0 was just
+        # freed from AP mode and NM hasn't re-enabled it yet.
+        nm.radio_wifi_on()
+        iproute.set_link_state("wlan0", "up")
         return nm.wifi_scan("wlan0", rescan=True)
 
     # ---------- Client mode ----------

@@ -89,6 +89,22 @@ def set_managed(iface: str, managed: bool) -> tuple[bool, str]:
     return False, f"nmcli set managed failed: {r.stderr.strip()}"
 
 
+def radio_wifi_on() -> tuple[bool, str]:
+    """Ensure NetworkManager's Wi-Fi radio is enabled.
+
+    NM has a separate software switch from kernel-level rfkill — even
+    when rfkill is unblocked, NM can still have wifi disabled, which
+    leaves managed interfaces in "unavailable" state. This is the
+    `nmcli radio wifi on` equivalent.
+    """
+    if stub_mode():
+        return True, "(stub) nmcli radio wifi on"
+    r = run(["nmcli", "radio", "wifi", "on"], timeout=5.0)
+    if r.returncode == 0:
+        return True, "nmcli radio wifi on"
+    return False, f"nmcli radio wifi on failed: {r.stderr.strip()}"
+
+
 def wifi_scan(iface: str = "wlan0", rescan: bool = True) -> list[dict]:
     """Return nearby Wi-Fi networks via ``nmcli device wifi list``.
 
