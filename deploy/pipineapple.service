@@ -1,0 +1,38 @@
+[Unit]
+Description=PiPineapple - WiFi pen-testing platform
+Documentation=https://github.com/nishit/wifi-pentest-lab
+# We bring up the management AP ourselves, so we do NOT wait for
+# network-online.target (that would deadlock when wlan0 is our AP).
+# We DO need NetworkManager up (to unmanage our interfaces) and dbus
+# (which NM depends on).
+After=NetworkManager.service dbus.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/pi-lab/pipineapple
+
+# Persistent state location - must match what run-as-root.sh exports.
+# /tmp would be wiped every boot, taking auth.json, networking.json,
+# adapter_roles.json, and the deny-list with it.
+Environment="PIPINEAPPLE_DATA_DIR=/var/lib/pipineapple"
+Environment="PIPINEAPPLE_CONFIG=dev"
+
+# Direct exec - no sudo wrapper needed since systemd already runs as root.
+ExecStart=/home/pi-lab/pipineapple/.venv/bin/python /home/pi-lab/pipineapple/run.py
+
+# Auto-restart if Flask crashes; give it 5s breathing room between retries.
+Restart=on-failure
+RestartSec=5
+
+# Allow up to 60s for first boot - bootstrap AP setup runs hostapd/dnsmasq
+# launch + udev wait, can be slow.
+TimeoutStartSec=60
+
+# Send stdout/stderr to journalctl so 'journalctl -u pipineapple' just works.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -30,5 +30,13 @@ if [[ ! -x .venv/bin/python ]]; then
     exit 1
 fi
 
+# Pin DATA_DIR to a persistent path. The config default is /tmp/pipineapple
+# (handy for clean-slate dev/test on the Mac), but /tmp is wiped on every
+# Pi reboot — which silently nukes auth.json, networking.json, the deny-list
+# and adapter roles, so the operator gets the setup wizard every boot.
+# /var/lib/pipineapple is FHS-correct for runtime state and survives reboots.
+# Override per-session by exporting PIPINEAPPLE_DATA_DIR before calling.
+export PIPINEAPPLE_DATA_DIR="${PIPINEAPPLE_DATA_DIR:-/var/lib/pipineapple}"
+
 # -E preserves the environment so PIPINEAPPLE_CONFIG etc. carry through.
 exec sudo -E ./.venv/bin/python ./run.py "$@"
