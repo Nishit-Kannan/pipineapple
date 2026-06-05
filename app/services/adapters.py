@@ -30,7 +30,7 @@ from app.tools import ethtool, iproute, iw, nm, udev
 
 log = logging.getLogger(__name__)
 
-CANONICAL_ROLES = ("wlan-mon-2g", "wlan-mon-5g", "wlan-ap")
+CANONICAL_ROLES = ("wlan-mgmt-ap", "wlan-mon-2g", "wlan-mon-5g", "wlan-ap")
 
 
 class AdapterService:

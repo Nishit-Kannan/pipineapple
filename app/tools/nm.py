@@ -22,7 +22,11 @@ CONF_PATH = Path("/etc/NetworkManager/conf.d/99-pipineapple-unmanaged.conf")
 
 # The patterns we unmanage. Anything matching wlan-mon-* (recon radios)
 # or wlan-ap (rogue AP host) — same naming the udev rules establish.
-UNMANAGED_PATTERNS = ["interface-name:wlan-mon-*", "interface-name:wlan-ap"]
+UNMANAGED_PATTERNS = [
+    "interface-name:wlan-mon-*",
+    "interface-name:wlan-ap",
+    "interface-name:wlan-mgmt-ap",
+]
 
 
 def render_conf() -> str:
@@ -188,22 +192,26 @@ def wifi_connect(ssid: str, password: str | None, iface: str = "wlan0") -> tuple
 def wifi_save_profile(
     ssid: str,
     password: str | None,
-    iface: str = "wlan0",
+    iface: str | None = None,
 ) -> tuple[bool, str]:
     """Save a Wi-Fi connection profile WITHOUT trying to connect now.
 
-    Useful when the target interface is busy doing something else (e.g.
-    hosting the management AP) but you want to pre-stage credentials
-    so NetworkManager auto-connects later when the interface is freed.
+    The profile is NOT bound to a specific interface by default — that's
+    deliberate. When wlan0 is unmanaged (it is, while we're hosting the
+    management AP), nmcli refuses to add a profile bound to wlan0.
+    Leaving ifname off means NM uses the profile with whichever wifi
+    interface is available when we later activate it (typically wlan0
+    after the management AP is disabled).
     """
     if stub_mode():
-        return True, f"(stub) save profile {ssid} for {iface}"
+        return True, f"(stub) save profile {ssid}"
     args = [
         "nmcli", "connection", "add", "type", "wifi",
-        "ifname", iface,
         "con-name", ssid,
         "ssid", ssid,
     ]
+    if iface:
+        args += ["ifname", iface]
     if password:
         args += [
             "wifi-sec.key-mgmt", "wpa-psk",
@@ -235,21 +243,28 @@ def wifi_disconnect(iface: str = "wlan0") -> tuple[bool, str]:
 
 
 def list_saved_wifi() -> list[dict]:
-    """Return saved Wi-Fi connection profiles via ``nmcli connection show``."""
+    """Return saved Wi-Fi connection profiles via ``nmcli connection show``.
+
+    Accepts both terse-format type strings nmcli might emit:
+    ``"802-11-wireless"`` (older) and ``"wifi"`` (newer/Trixie).
+    """
     if stub_mode():
         return [
             {"name": "HomeWiFi", "ssid": "HomeWiFi", "autoconnect": True, "active": True},
         ]
     r = run(["nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show"], timeout=5.0)
     if r.returncode != 0:
+        log.warning("nmcli connection show failed: rc=%d stderr=%s",
+                    r.returncode, r.stderr.strip())
         return []
+    log.debug("nmcli connection show raw output:\n%s", r.stdout)
     out: list[dict] = []
     for line in r.stdout.splitlines():
         parts = _terse_split(line)
         if len(parts) < 3:
             continue
         name, ctype, device = parts[:3]
-        if ctype != "802-11-wireless":
+        if ctype not in ("802-11-wireless", "wifi"):
             continue
         # Look up autoconnect + active state
         r2 = run(["nmcli", "-t", "-f", "connection.autoconnect,GENERAL.STATE",

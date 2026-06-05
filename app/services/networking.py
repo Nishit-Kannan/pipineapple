@@ -32,7 +32,7 @@ from threading import Lock
 from typing import Any
 
 from app.services.job_manager import job_manager
-from app.tools import dnsmasq, hostapd, iproute, nm, rfkill
+from app.tools import dnsmasq, hostapd, iproute, iw, nm, rfkill
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +42,11 @@ DEFAULT_MGMT_AP = {
     "channel":    6,
     "subnet":     "10.42.0.0/24",
     "gateway_ip": "10.42.0.1",
+    # Which physical interface hosts the AP. Default wlan0 (Pi onboard)
+    # is the only stable name on a fresh first boot. After udev sticky
+    # names land, the operator can move this to wlan-mgmt-ap (an Alfa)
+    # via the Settings → Networking → Management AP → Interface dropdown.
+    "interface":  "wlan0",
 }
 
 # Bootstrap credentials used on truly first boot, before the operator
@@ -55,6 +60,7 @@ BOOTSTRAP_MGMT_AP = {
     "channel":    6,
     "subnet":     "10.42.0.0/24",
     "gateway_ip": "10.42.0.1",
+    "interface":  "wlan0",
 }
 
 CONF_DIR = Path("/etc/pipineapple")
@@ -93,9 +99,10 @@ class NetworkingService:
         ap["password_set"] = bool(ap.get("password"))
         ap.pop("password", None)
         return {
-            "wlan0_mode":    state.get("wlan0_mode", "idle"),
-            "mgmt_ap":       ap,
-            "saved_wifi":    nm.list_saved_wifi(),
+            "wlan0_mode":     state.get("wlan0_mode", "idle"),
+            "mgmt_ap":        ap,
+            "saved_wifi":     nm.list_saved_wifi(),
+            "wireless_ifaces": [w["name"] for w in iw.list_wireless_devices()],
         }
 
     def scan_wifi(self) -> list[dict]:
@@ -125,8 +132,10 @@ class NetworkingService:
 
         Used when wlan0 is busy hosting the management AP and can't act
         as a client. NM will use the saved profile once wlan0 is freed.
+        Deliberately passes iface=None so nmcli doesn't refuse to bind
+        to wlan0 while it's unmanaged.
         """
-        return nm.wifi_save_profile(ssid, password, iface="wlan0")
+        return nm.wifi_save_profile(ssid, password, iface=None)
 
     def disconnect_wifi(self) -> tuple[bool, str]:
         with self._lock:
@@ -173,20 +182,24 @@ class NetworkingService:
         """Caller holds the lock. Mutates state in place; saves at the end."""
         messages: list[str] = []
 
+        # Which physical interface the AP runs on. Defaults to wlan0 for
+        # first-boot bootstrap; operator can move it to wlan-mgmt-ap
+        # after the Alfa adapters have their udev sticky names.
+        iface = ap.get("interface", "wlan0")
+        messages.append(f"target interface: {iface}")
+
         # 0. Clear any rfkill soft-block. Pi 5 frequently boots with
-        #    wlan0 in a soft-blocked state — `ip link set up` then fails
+        #    wifi in a soft-blocked state — `ip link set up` then fails
         #    with "Operation not possible due to RF-kill". Idempotent
         #    no-op if already unblocked.
         ok, msg = rfkill.unblock_wifi()
         messages.append(msg)
         if not ok:
-            # Soft-failure: log and continue. Most often the radio is
-            # already usable; rfkill may not be installed on minimal
-            # systems.
             log.warning("rfkill unblock returned non-zero: %s", msg)
 
-        # 1. Release wlan0 from NM
-        ok, msg = nm.set_managed("wlan0", managed=False)
+        # 1. Release the interface from NM (only matters for wlan0; the
+        #    Alfas are already in NM's unmanaged list by config).
+        ok, msg = nm.set_managed(iface, managed=False)
         messages.append(msg)
         if not ok:
             return messages
@@ -195,14 +208,13 @@ class NetworkingService:
         gateway = ap.get("gateway_ip", "10.42.0.1")
         subnet  = ap.get("subnet", "10.42.0.0/24")
         prefix = ipaddress.ip_network(subnet, strict=False).prefixlen
-        # Flush first to avoid duplicate-address noise on re-enable
-        iproute.flush_address("wlan0")
-        ok, msg = iproute.add_address("wlan0", f"{gateway}/{prefix}")
+        iproute.flush_address(iface)
+        ok, msg = iproute.add_address(iface, f"{gateway}/{prefix}")
         messages.append(msg)
         if not ok:
             return messages
 
-        ok, msg = iproute.set_link_state("wlan0", "up")
+        ok, msg = iproute.set_link_state(iface, "up")
         messages.append(msg)
         if not ok:
             return messages
@@ -218,7 +230,7 @@ class NetworkingService:
         dhcp_end   = str(all_hosts[99]) if len(all_hosts) >= 100 else str(all_hosts[-2])
 
         ok, msg = hostapd.write_config(hostapd_path, hostapd.render_config(
-            iface=    "wlan0",
+            iface=    iface,
             ssid=     ap["ssid"],
             password= ap["password"],
             channel=  ap.get("channel", 6),
@@ -228,7 +240,7 @@ class NetworkingService:
             return messages
 
         ok, msg = dnsmasq.write_config(dnsmasq_path, dnsmasq.render_config(
-            iface=            "wlan0",
+            iface=            iface,
             gateway_ip=       gateway,
             dhcp_range_start= dhcp_start,
             dhcp_range_end=   dhcp_end,
@@ -267,6 +279,40 @@ class NetworkingService:
         self._save(state)
         return messages
 
+    def move_mgmt_ap(self, new_iface: str) -> tuple[bool, list[str]]:
+        """Move the management AP from its current interface to ``new_iface``.
+
+        Atomic: stops the AP on the current interface, updates state,
+        restarts on the new interface. Operator briefly loses the
+        connection during the transition and reconnects to the same SSID
+        now hosted by a different physical radio.
+        """
+        new_iface = new_iface.strip()
+        if not new_iface:
+            return False, ["target interface is empty"]
+        messages: list[str] = []
+        with self._lock:
+            state = self._load()
+            ap = state.get("mgmt_ap") or {}
+            current_iface = ap.get("interface", "wlan0")
+            if current_iface == new_iface and state.get("wlan0_mode") == "ap":
+                return False, [f"already running on {new_iface}"]
+            # Tear down on current interface (if active)
+            if state.get("wlan0_mode") == "ap":
+                messages += self._disable_mgmt_ap_unlocked(state)
+            # Update config
+            ap["interface"] = new_iface
+            state["mgmt_ap"] = ap
+            # Bring up on new interface
+            if ap.get("ssid") and ap.get("password"):
+                messages += self._enable_mgmt_ap_unlocked(state, ap)
+                self._save(state)
+                ok = state.get("wlan0_mode") == "ap"
+                return ok, messages
+            # No credentials yet — just save the chosen interface
+            self._save(state)
+            return True, messages + [f"interface set to {new_iface}; configure SSID+password to enable"]
+
     def disable_mgmt_ap(self) -> tuple[bool, list[str]]:
         with self._lock:
             state = self._load()
@@ -277,6 +323,8 @@ class NetworkingService:
     def _disable_mgmt_ap_unlocked(self, state: dict) -> list[str]:
         """Caller holds the lock. Mutates state; doesn't save (caller saves)."""
         messages: list[str] = []
+        iface = (state.get("mgmt_ap") or {}).get("interface", "wlan0")
+
         # Stop hostapd + dnsmasq (order matters less, but stop hostapd first
         # so clients see the SSID disappear cleanly).
         for jid_name, jid in (("hostapd", self._mgmt_hostapd_job_id),
@@ -287,13 +335,12 @@ class NetworkingService:
         self._mgmt_hostapd_job_id = None
         self._mgmt_dnsmasq_job_id = None
 
-        # Flush the static IP
-        from app.tools._common import run as _run
-        _run(["ip", "addr", "flush", "dev", "wlan0"])
-        messages.append("flushed wlan0 IP")
+        # Flush the static IP on the AP interface
+        iproute.flush_address(iface)
+        messages.append(f"flushed {iface} IP")
 
-        # Return wlan0 to NM
-        ok, msg = nm.set_managed("wlan0", managed=True)
+        # Return interface to NM (no-op for Alfas; they're always unmanaged)
+        ok, msg = nm.set_managed(iface, managed=True)
         messages.append(msg)
 
         state["wlan0_mode"] = "idle"

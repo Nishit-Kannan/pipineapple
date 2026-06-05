@@ -109,6 +109,20 @@ def mgmt_ap_enable():
     return jsonify({"ok": ok, "messages": messages, "state": get_networking().get_state()})
 
 
+@bp.route("/networking/mgmt-ap/move", methods=["POST"])
+def mgmt_ap_move():
+    """Atomic move of the management AP from one interface to another."""
+    data = request.get_json(silent=True) or {}
+    new_iface = (data.get("interface") or "").strip()
+    if not new_iface:
+        return jsonify({"ok": False, "msg": "missing interface"}), 400
+    ok, messages = get_networking().move_mgmt_ap(new_iface)
+    summary = "; ".join(messages)
+    notif = notifications.success if ok else notifications.error
+    notif(f"mgmt-ap move to {new_iface}: {summary}", source="networking")
+    return jsonify({"ok": ok, "messages": messages, "state": get_networking().get_state()})
+
+
 @bp.route("/networking/mgmt-ap/disable", methods=["POST"])
 def mgmt_ap_disable():
     ok, messages = get_networking().disable_mgmt_ap()

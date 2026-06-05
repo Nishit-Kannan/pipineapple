@@ -56,6 +56,7 @@
 
       const roleOpts = [
         ["none",         "— none —"],
+        ["wlan-mgmt-ap", "wlan-mgmt-ap"],
         ["wlan-mon-2g",  "wlan-mon-2g"],
         ["wlan-mon-5g",  "wlan-mon-5g"],
         ["wlan-ap",      "wlan-ap"],
@@ -286,6 +287,31 @@
           if (res.state) renderNetworkingState(res.state);
         } finally {
           apEnable.disabled = false;
+        }
+      });
+    }
+
+    // Move AP from one interface to another (atomic swap)
+    const apMoveBtn = $("#mgmt-ap-move-btn");
+    if (apMoveBtn) {
+      apMoveBtn.addEventListener("click", async () => {
+        const sel = $("#mgmt-ap-iface-select");
+        if (!sel) return;
+        const target = sel.value;
+        if (!target) return;
+        if (!confirm(
+          `Move management AP to ${target}?\n` +
+          `The AP will drop on the current interface and come back on ${target} with the same SSID/password. ` +
+          `You may briefly lose the management connection (your device should reconnect to the same SSID once the new radio comes up).`
+        )) return;
+        apMoveBtn.disabled = true;
+        showStatus(`moving management AP to ${target}…`);
+        try {
+          const res = await postJSON("/settings/networking/mgmt-ap/move", { interface: target });
+          showStatus((res.messages || []).join(" / "), res.ok ? "ok" : "fail");
+          if (res.state) renderNetworkingState(res.state);
+        } finally {
+          apMoveBtn.disabled = false;
         }
       });
     }
