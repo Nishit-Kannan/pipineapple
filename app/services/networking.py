@@ -657,7 +657,31 @@ class NetworkingService:
         return ok, messages
 
 
+# Module-level singleton. NetworkingService stores live state on the
+# instance — specifically the JobManager job IDs of the running hostapd
+# and dnsmasq daemons (``_mgmt_hostapd_job_id``, ``_mgmt_dnsmasq_job_id``).
+# Returning a fresh instance per ``get_service()`` call would mean every
+# request sees ``None`` job IDs and the disable path's ``if jid: stop_job(jid)``
+# silently no-ops, leaving the previous daemons alive and blocking the new
+# ones (dnsmasq fails with "Address already in use" on port 53, hostapd
+# fails with "Could not configure driver mode").
+#
+# Other services (AdapterService, AuthService) get away with the non-singleton
+# pattern because all their state goes through JSON on disk — there's no
+# live state on the instance. NetworkingService can't do that for job IDs
+# because the JobManager itself only exists in process memory.
+_service: "NetworkingService | None" = None
+
+
 def get_service() -> NetworkingService:
-    """Lazy resolver against the current Flask app's DATA_DIR."""
-    from flask import current_app
-    return NetworkingService(current_app.config["DATA_DIR"])
+    """Lazy resolver against the current Flask app's DATA_DIR.
+
+    Returns the singleton; constructs it on first call. Subsequent calls
+    return the same instance so live state (running job IDs) persists
+    across requests.
+    """
+    global _service
+    if _service is None:
+        from flask import current_app
+        _service = NetworkingService(current_app.config["DATA_DIR"])
+    return _service

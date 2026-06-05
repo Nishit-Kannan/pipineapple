@@ -226,13 +226,23 @@ def _start_background_tasks(app: Flask) -> None:
     # Restore networking state (management AP if previously enabled,
     # or bootstrap AP if first boot) in a background thread so a slow
     # restore doesn't block app startup.
+    #
+    # Must go through ``get_service()`` and not direct instantiation —
+    # NetworkingService stores live JobManager job IDs on the instance.
+    # If restore created a separate instance from the one routes use,
+    # the route-side instance has None job IDs and the AP-reconfigure
+    # disable path can't stop the daemons restore spawned, leading to
+    # "Address already in use" on port 53 the next time we try to start
+    # dnsmasq. Pushing an app_context in the thread lets get_service()
+    # resolve current_app.config to seed the singleton.
     import threading
     def _restore():
-        try:
-            from app.services.networking import NetworkingService
-            svc = NetworkingService(app.config["DATA_DIR"])
-            auth_path = app.config["DATA_DIR"] / "auth.json"
-            svc.restore_on_startup(auth_path=auth_path)
-        except Exception:
-            app.logger.exception("networking restore failed")
+        with app.app_context():
+            try:
+                from app.services.networking import get_service
+                svc = get_service()
+                auth_path = app.config["DATA_DIR"] / "auth.json"
+                svc.restore_on_startup(auth_path=auth_path)
+            except Exception:
+                app.logger.exception("networking restore failed")
     threading.Thread(target=_restore, daemon=True, name="networking-restore").start()
