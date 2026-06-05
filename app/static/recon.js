@@ -143,6 +143,33 @@
     if (count) count.textContent = String(clients.length);
   }
 
+  // Scan duration — tick once per second from started_at. Cleared
+  // when the scan goes idle. We render even in starting/stopping
+  // states so the operator sees the running time during teardown.
+  let _scanStartedAt = null;          // unix seconds, server time
+  let _durationTimer = null;
+
+  function _fmtDuration(secs) {
+    if (secs < 0) secs = 0;
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = Math.floor(secs % 60);
+    return (h ? `${h}h ` : "") +
+           (h || m ? `${String(m).padStart(2, "0")}m ` : "") +
+           `${String(s).padStart(2, "0")}s`;
+  }
+
+  function _updateDurationLabel() {
+    const el = $("recon-duration");
+    if (!el) return;
+    if (_scanStartedAt == null) {
+      el.textContent = "";
+      return;
+    }
+    const elapsed = (Date.now() / 1000) - _scanStartedAt;
+    el.textContent = `running ${_fmtDuration(elapsed)}`;
+  }
+
   function setStatus(status) {
     const badge = $("recon-state-badge");
     if (badge) {
@@ -162,6 +189,23 @@
     const stopBtn = $("recon-stop");
     if (startBtn) startBtn.disabled = status.state !== "idle";
     if (stopBtn)  stopBtn.disabled  = status.state === "idle";
+
+    // Duration ticker
+    if (status.state === "idle" || status.started_at == null) {
+      _scanStartedAt = null;
+      if (_durationTimer) {
+        clearInterval(_durationTimer);
+        _durationTimer = null;
+      }
+      const el = $("recon-duration");
+      if (el) el.textContent = "";
+    } else {
+      _scanStartedAt = status.started_at;
+      _updateDurationLabel();
+      if (!_durationTimer) {
+        _durationTimer = setInterval(_updateDurationLabel, 1000);
+      }
+    }
   }
 
   // ---- Actions ----

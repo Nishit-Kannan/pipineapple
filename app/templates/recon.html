@@ -36,6 +36,10 @@
               data-state="{{ status.state }}">
           {{ status.state }}
         </span>
+        <span class="muted" id="recon-duration"
+              data-started-at="{{ status.started_at or '' }}">
+          {% if status.started_at %}—{% endif %}
+        </span>
         <span class="muted" id="recon-counts">
           {{ status.ap_count }} APs · {{ status.client_count }} clients
         </span>

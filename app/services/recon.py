@@ -135,8 +135,16 @@ class ReconService:
         return True, messages
 
     def stop_scan(self) -> tuple[bool, list[str]]:
-        """Stop both airodump jobs and the poller thread. Safe to call
-        when already idle.
+        """Kick off teardown asynchronously and return immediately.
+
+        Why async: the actual teardown (airodump SIGINT cleanup +
+        driver settle + interface bring-down + pcap deletion) can take
+        10+ seconds when pcaps are large. Running it synchronously
+        blocks the HTTP request handler for that entire window, making
+        the browser feel frozen and pinning a request thread on the
+        Pi. Background-thread it; the route returns instantly with
+        state=stopping; the poller already emitted the empty snapshot
+        as part of its shutdown.
 
         Teardown order matters for MT76/Realtek driver stability:
 
@@ -150,18 +158,29 @@ class ReconService:
            the Pi 5 also serves the SSD, locking the whole box.
         3. Wait a beat after SIGINT for the driver flush to complete
            before bringing the interface down.
-
-        Stop_signal needs to be SIGINT specifically; the JobManager
-        accepts it via the new first_signal parameter.
         """
-        import signal as _signal
-        import time as _time
-
-        messages: list[str] = []
         with self._lock:
             if self._state == STATE_IDLE:
                 return True, ["no scan running"]
             self._state = STATE_STOPPING
+
+        # Fire teardown in a daemon thread; return control to the
+        # caller immediately so the HTTP request doesn't hold a worker
+        # thread for the whole 10+ s teardown.
+        t = threading.Thread(
+            target=self._teardown_async,
+            daemon=True,
+            name="recon-stop",
+        )
+        t.start()
+        return True, ["stopping in background — UI will update when done"]
+
+    def _teardown_async(self) -> None:
+        """The actual stop work, invoked from a daemon thread."""
+        import signal as _signal
+        import time as _time
+
+        messages: list[str] = []
 
         # Stop poller first so we don't try to emit after the jobs die.
         self._stop_poller()
@@ -220,7 +239,7 @@ class ReconService:
 
         # Final emit with empty snapshot so the UI clears.
         self._emit_update(force=True)
-        return True, messages
+        log.info("recon teardown complete: %s", "; ".join(messages))
 
     def get_status(self) -> dict[str, Any]:
         with self._lock:
@@ -516,11 +535,19 @@ class ReconService:
                     pass
 
         cmd = airodump.build_cmd(iface, str(prefix), band=band)
+        # CRITICAL: redirect airodump's stdout to /dev/null, NOT a file.
+        # airodump's stdout is the live curses-style refreshing table
+        # (full redraw + ANSI escapes every --write-interval second).
+        # Capturing it to a file produced 2+ GB per band per 5 minutes
+        # of scan, filling /tmp (which is tmpfs / RAM-backed on Pi OS),
+        # triggering swap, and grinding the Pi to a halt. We never read
+        # this stdout anyway — the useful data is in the CSV + pcap files
+        # airodump writes via --write.
         job = job_manager.start_job(
             cmd,
             name=f"recon-{band}",
             tags=["recon", band],
-            stdout_path=f"/tmp/pipineapple-recon-{band}.log",
+            stdout_path="/dev/null",
         )
         if role == "wlan-mon-2g":
             self._job_id_2g = job.id
