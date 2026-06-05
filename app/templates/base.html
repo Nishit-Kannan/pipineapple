@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}PiPineapple{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" defer></script>
+  {# socket.io client served from the Pi itself — AP clients usually
+     have no upstream internet (or unreliable upstream) so we can't
+     depend on cdn.socket.io. File lives at app/static/vendor/. #}
+  <script src="{{ url_for('static', filename='vendor/socket.io.min.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   <script src="{{ url_for('static', filename='settings.js') }}" defer></script>
   <script src="{{ url_for('static', filename='recon.js') }}" defer></script>
