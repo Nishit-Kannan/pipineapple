@@ -110,6 +110,23 @@ def list_wireless_devices() -> list[dict[str, Any]]:
                 "txpower_dbm":   None,
             }
             continue
+
+        # ``iw dev`` also emits two kinds of section-starter line that
+        # are NOT named interfaces but DO have field lines underneath
+        # them (type, addr, txpower, etc.). If we don't recognise them
+        # as section breaks, those field lines bleed into the previous
+        # named interface — e.g. the brcmfmac P2P-device stub stanza
+        # would make whichever real adapter came right before it
+        # appear to be in "P2P-device" mode. Detect and finalise
+        # ``current`` so subsequent indented fields find no target.
+        stripped_for_section = line.strip()
+        if stripped_for_section.startswith("phy#") or \
+           stripped_for_section.startswith("Unnamed"):
+            if current is not None:
+                out.append(current)
+                current = None
+            continue
+
         if current is None:
             continue
 
