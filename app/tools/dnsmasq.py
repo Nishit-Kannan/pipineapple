@@ -28,12 +28,19 @@ def render_config(
     dhcp_lease: str = "12h",
     local_hostnames: dict[str, str] | None = None,
     log_queries: bool = False,
+    forward_dns: bool = False,
+    upstream_dns: tuple[str, ...] = ("1.1.1.1", "8.8.8.8"),
 ) -> str:
     """Render a minimal dnsmasq.conf bound to one interface.
 
     ``local_hostnames`` is a dict of {hostname: ip} mappings dnsmasq
     will resolve directly (without consulting upstream DNS). Useful for
     pointing 'pipineapple.local' at the management gateway.
+
+    ``forward_dns=True`` makes dnsmasq forward queries to upstream
+    resolvers (default Cloudflare + Google). Required when AP clients
+    need internet — without it, clients get IPs from DHCP but can't
+    resolve any hostnames.
     """
     lines = [
         f"interface={iface}",
@@ -41,11 +48,15 @@ def render_config(
         f"dhcp-range={dhcp_range_start},{dhcp_range_end},{dhcp_lease}",
         f"dhcp-option=3,{gateway_ip}",   # default route
         f"dhcp-option=6,{gateway_ip}",   # DNS server
-        # Don't forward queries upstream — management subnet is isolated.
-        "no-resolv",
         # Disable reading /etc/hosts so it doesn't conflict
         "no-hosts",
     ]
+    if forward_dns:
+        for dns in upstream_dns:
+            lines.append(f"server={dns}")
+    else:
+        # Don't forward queries upstream — isolated subnet
+        lines.append("no-resolv")
     if log_queries:
         lines += ["log-queries", "log-dhcp"]
     for hostname, ip in (local_hostnames or {}).items():

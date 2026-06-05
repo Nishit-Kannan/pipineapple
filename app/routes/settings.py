@@ -148,6 +148,18 @@ def mgmt_ap_move():
     return jsonify({"ok": ok, "messages": messages, "state": get_networking().get_state()})
 
 
+@bp.route("/networking/mgmt-ap/internet-sharing", methods=["POST"])
+def mgmt_ap_internet_sharing():
+    """Toggle NAT/forwarding for AP clients to reach upstream internet."""
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get("enabled", False))
+    ok, messages = get_networking().set_internet_sharing(enabled)
+    summary = "; ".join(messages)
+    notif = notifications.success if ok else notifications.error
+    notif(f"internet sharing {'enabled' if enabled else 'disabled'}: {summary}", source="networking")
+    return jsonify({"ok": ok, "messages": messages, "state": get_networking().get_state()})
+
+
 @bp.route("/networking/mgmt-ap/disable", methods=["POST"])
 def mgmt_ap_disable():
     ok, messages = get_networking().disable_mgmt_ap()

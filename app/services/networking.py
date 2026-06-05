@@ -32,7 +32,7 @@ from threading import Lock
 from typing import Any
 
 from app.services.job_manager import job_manager
-from app.tools import dnsmasq, hostapd, iproute, iw, nm, rfkill
+from app.tools import dnsmasq, hostapd, iproute, iptables, iw, nm, rfkill
 
 log = logging.getLogger(__name__)
 
@@ -186,6 +186,81 @@ class NetworkingService:
         return nm.forget_wifi(name)
 
     # ---------- Management AP ----------
+    def set_internet_sharing(self, enabled: bool) -> tuple[bool, list[str]]:
+        """Toggle internet sharing on/off for the management AP.
+
+        If the AP is currently running, also reapplies/removes NAT
+        rules immediately. Persists in mgmt_ap.internet_sharing so it's
+        re-applied on every AP start.
+        """
+        messages: list[str] = []
+        with self._lock:
+            state = self._load()
+            ap = state.get("mgmt_ap") or dict(DEFAULT_MGMT_AP)
+            ap["internet_sharing"] = bool(enabled)
+            state["mgmt_ap"] = ap
+
+            subnet = ap.get("subnet", "10.42.0.0/24")
+            if state.get("mgmt_ap_active"):
+                if enabled:
+                    ok, msg = iptables.enable_ip_forward()
+                    messages.append(msg)
+                    ok, msg = iptables.ensure_nat_masquerade(subnet)
+                    messages.append(msg)
+                    ok, msg = iptables.ensure_forward_rules(subnet)
+                    messages.append(msg)
+                    # Also regenerate dnsmasq config + restart so DNS
+                    # forwards upstream
+                    messages += self._restart_dnsmasq_with_current_config(ap)
+                else:
+                    ok, msg = iptables.remove_nat_and_forward(subnet)
+                    messages.append(msg)
+                    messages += self._restart_dnsmasq_with_current_config(ap)
+            self._save(state)
+        return True, messages
+
+    def _restart_dnsmasq_with_current_config(self, ap: dict) -> list[str]:
+        """Re-render dnsmasq config (reflecting current internet_sharing
+        flag) and bounce the dnsmasq job so the new config takes effect."""
+        messages: list[str] = []
+        iface = ap.get("interface", "wlan0")
+        gateway = ap.get("gateway_ip", "10.42.0.1")
+        subnet  = ap.get("subnet", "10.42.0.0/24")
+        share_internet = bool(ap.get("internet_sharing", False))
+
+        net = ipaddress.ip_network(subnet, strict=False)
+        all_hosts = list(net.hosts())
+        dhcp_start = str(all_hosts[9])
+        dhcp_end   = str(all_hosts[99]) if len(all_hosts) >= 100 else str(all_hosts[-2])
+        dnsmasq_path = CONF_DIR / "mgmt-ap-dnsmasq.conf"
+
+        ok, msg = dnsmasq.write_config(dnsmasq_path, dnsmasq.render_config(
+            iface=            iface,
+            gateway_ip=       gateway,
+            dhcp_range_start= dhcp_start,
+            dhcp_range_end=   dhcp_end,
+            forward_dns=      share_internet,
+            local_hostnames={
+                "pipineapple.local": gateway,
+                "pi-lab.local":       gateway,
+            },
+        ))
+        messages.append(msg)
+
+        # Stop the existing dnsmasq job, start a new one with new config
+        if self._mgmt_dnsmasq_job_id:
+            stopped, reason = job_manager.stop_job(self._mgmt_dnsmasq_job_id)
+            messages.append(f"stop dnsmasq: {reason}")
+        dn_job = job_manager.start_job(
+            ["dnsmasq", "-C", str(dnsmasq_path), "-k", "--log-facility=-"],
+            name="mgmt-ap-dnsmasq",
+            tags=["networking", "mgmt-ap"],
+            stdout_path="/tmp/pipineapple-mgmt-ap-dnsmasq.log",
+        )
+        self._mgmt_dnsmasq_job_id = dn_job.id
+        messages.append(f"restarted dnsmasq (job {dn_job.id})")
+        return messages
+
     def configure_mgmt_ap(self, ssid: str, password: str, channel: int = 6) -> tuple[bool, str]:
         if not ssid or len(ssid) < 1 or len(ssid) > 32:
             return False, "SSID must be 1-32 characters"
@@ -275,11 +350,13 @@ class NetworkingService:
         if not ok:
             return messages
 
+        share_internet = bool(ap.get("internet_sharing", False))
         ok, msg = dnsmasq.write_config(dnsmasq_path, dnsmasq.render_config(
             iface=            iface,
             gateway_ip=       gateway,
             dhcp_range_start= dhcp_start,
             dhcp_range_end=   dhcp_end,
+            forward_dns=      share_internet,
             local_hostnames={
                 "pipineapple.local": gateway,
                 "pi-lab.local":       gateway,
@@ -310,6 +387,17 @@ class NetworkingService:
         )
         self._mgmt_hostapd_job_id = ha_job.id
         messages.append(f"started hostapd (job {ha_job.id})")
+
+        # 5. Internet sharing (NAT + IP forwarding) — only if the
+        #    operator enabled it. Lets AP clients reach the internet
+        #    through whichever upstream the Pi has (wlan0 or eth0).
+        if share_internet:
+            ok, msg = iptables.enable_ip_forward()
+            messages.append(msg)
+            ok, msg = iptables.ensure_nat_masquerade(subnet)
+            messages.append(msg)
+            ok, msg = iptables.ensure_forward_rules(subnet)
+            messages.append(msg)
 
         # State bookkeeping:
         # - mgmt_ap_active is the single source of truth for "AP is running"
@@ -364,7 +452,15 @@ class NetworkingService:
     def _disable_mgmt_ap_unlocked(self, state: dict) -> list[str]:
         """Caller holds the lock. Mutates state; doesn't save (caller saves)."""
         messages: list[str] = []
-        iface = (state.get("mgmt_ap") or {}).get("interface", "wlan0")
+        ap = state.get("mgmt_ap") or {}
+        iface = ap.get("interface", "wlan0")
+        subnet = ap.get("subnet", "10.42.0.0/24")
+
+        # Remove NAT/FORWARD rules if they were set. Best-effort —
+        # silently ignores rules that weren't present.
+        if ap.get("internet_sharing"):
+            ok, msg = iptables.remove_nat_and_forward(subnet)
+            messages.append(msg)
 
         # Stop hostapd + dnsmasq (order matters less, but stop hostapd first
         # so clients see the SSID disappear cleanly).

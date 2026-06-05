@@ -323,6 +323,23 @@
           so you have a fallback path.
         </p>
 
+        <h3 class="subhead" style="margin-top:18px;">Internet sharing</h3>
+        <p class="muted" style="font-size:12px; margin:0 0 8px 0;">
+          Forward AP clients' traffic out to upstream (Pi's
+          <code>wlan0</code> or <code>eth0</code>) via NAT, and let
+          dnsmasq resolve DNS upstream too. Lets your phone browse the
+          internet while connected to the management AP. Requires
+          <code>iptables</code> installed (<code>sudo apt install -y
+          iptables</code>).
+        </p>
+        <div class="form-row">
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="internet-sharing-toggle"
+                   {% if networking.mgmt_ap.internet_sharing %}checked{% endif %}>
+            <span>Share upstream internet with AP clients</span>
+          </label>
+        </div>
+
         <h3 class="subhead" style="margin-top:18px;">Host AP on interface</h3>
         <p class="muted" style="font-size:12px; margin:0 0 8px 0;">
           Which physical radio hosts the management AP. Default is

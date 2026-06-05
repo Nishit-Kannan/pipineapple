@@ -293,6 +293,23 @@
       });
     }
 
+    // Internet-sharing toggle
+    const sharingToggle = $("#internet-sharing-toggle");
+    if (sharingToggle) {
+      sharingToggle.addEventListener("change", async () => {
+        const enabled = sharingToggle.checked;
+        sharingToggle.disabled = true;
+        showStatus(`${enabled ? "enabling" : "disabling"} internet sharing…`);
+        try {
+          const res = await postJSON("/settings/networking/mgmt-ap/internet-sharing", { enabled });
+          showStatus((res.messages || []).join(" / "), res.ok ? "ok" : "fail");
+          if (res.state) renderNetworkingState(res.state);
+        } finally {
+          sharingToggle.disabled = false;
+        }
+      });
+    }
+
     // Save & Apply (write config + restart AP with new credentials)
     const apApplyBtn = $("#mgmt-ap-apply-btn");
     if (apApplyBtn) {
