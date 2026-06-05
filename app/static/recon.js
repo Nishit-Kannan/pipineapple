@@ -96,15 +96,45 @@
       if (empty) empty.hidden = true;
       tbody.innerHTML = sorted.map((c) => {
         const sigVal = c.signal_dbm == null ? "—" : c.signal_dbm;
-        const probed = (c.probed_essids && c.probed_essids.length)
-          ? c.probed_essids.map(escapeHtml).join(", ")
-          : "—";
+
+        // Associated-AP cell: prefer SSID (reconciled from the APs table
+        // server-side as ap_ssid); fall back to raw BSSID; show muted
+        // "(not associated)" for clients with no association.
+        let apCell;
+        if (c.ap_ssid) {
+          apCell = `<strong>${escapeHtml(c.ap_ssid)}</strong>
+            <div class="muted" style="font-size:11px;"><code>${escapeHtml(c.bssid)}</code></div>`;
+        } else if (c.bssid && c.bssid !== "(not associated)") {
+          apCell = `<code>${escapeHtml(c.bssid)}</code>
+            <div class="muted" style="font-size:11px;">SSID not in range</div>`;
+        } else {
+          apCell = `<span class="muted">(not associated)</span>`;
+        }
+
+        // Probed-for cell: badge SSIDs whose AP is currently in range
+        // (cross-referenced server-side as probed_in_range). These are
+        // the most interesting names — the client is asking for a
+        // network we can see, which is the basis for Karma-style
+        // impersonation later in Phase D.
+        let probedCell;
+        if (c.probed_essids && c.probed_essids.length) {
+          const inRange = new Set(c.probed_in_range || []);
+          probedCell = c.probed_essids.map((s) => {
+            const safe = escapeHtml(s);
+            return inRange.has(s)
+              ? `<span class="badge badge-info" title="An AP with this SSID is in range">${safe}</span>`
+              : safe;
+          }).join(", ");
+        } else {
+          probedCell = "—";
+        }
+
         return `<tr data-mac="${escapeHtml(c.station_mac)}">
           <td><span class="sig-pill ${signalClass(c.signal_dbm)}">${escapeHtml(sigVal)}</span></td>
           <td><code>${escapeHtml(c.station_mac)}</code></td>
-          <td><code>${escapeHtml(c.bssid)}</code></td>
+          <td>${apCell}</td>
           <td>${escapeHtml(c.packets)}</td>
-          <td>${probed}</td>
+          <td>${probedCell}</td>
           <td class="muted">${escapeHtml(c.last_seen || "—")}</td>
         </tr>`;
       }).join("");

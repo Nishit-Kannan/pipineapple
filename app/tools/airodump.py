@@ -58,6 +58,7 @@ def build_cmd(
     channels: str | None = None,
     write_interval: int = 1,
     berlin_seconds: int = 60,
+    pcap: bool = True,
 ) -> list[str]:
     """Build the airodump-ng command line.
 
@@ -71,13 +72,19 @@ def build_cmd(
       table after we stop seeing it. The CSV always holds every station
       ever seen, but airodump's ``--berlin`` flag also controls the
       console display freshness window.
+    * ``pcap`` — also emit a libpcap file (``<prefix>-01.cap``) for
+      downstream tools to consume. Session 06 turns this on so the
+      beacon/probe parser can extract full IE data; Session 07 keeps
+      it on so EAPOL frames are available for handshake capture.
 
-    We emit CSV only (``--output-format csv``). Skipping the pcap saves
-    disk IO; Session 06 will add pcap when we need handshakes.
+    ``--output-format csv,pcap`` writes both files; we always parse
+    the CSV for the live table and read the pcap on demand for richer
+    detail (slide-out IEs, probe-request aggregation, handshakes).
     """
+    fmt = "csv,pcap" if pcap else "csv"
     cmd = [
         "airodump-ng",
-        "--output-format", "csv",
+        "--output-format", fmt,
         "--write", str(output_prefix),
         "--write-interval", str(write_interval),
         "--berlin", str(berlin_seconds),

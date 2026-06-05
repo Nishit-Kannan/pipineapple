@@ -111,7 +111,7 @@
         <tr>
           <th data-sort="signal_dbm" class="sortable">Signal</th>
           <th data-sort="station_mac">Station MAC</th>
-          <th data-sort="bssid">Associated AP</th>
+          <th data-sort="ap_ssid">Associated AP</th>
           <th data-sort="packets" class="sortable">Packets</th>
           <th data-sort="probed_essids">Probing for</th>
           <th data-sort="last_seen">Last seen</th>
@@ -124,9 +124,32 @@
               {{ c.signal_dbm if c.signal_dbm is not none else "—" }}
             </span></td>
             <td><code>{{ c.station_mac }}</code></td>
-            <td><code>{{ c.bssid }}</code></td>
+            <td>
+              {# Prefer SSID (resolved from APs section by reconciler in
+                 ReconService._tick). Fall back to BSSID when the client
+                 is associated to an AP we haven't seen the beacon of. #}
+              {% if c.ap_ssid %}
+                <strong>{{ c.ap_ssid }}</strong>
+                <div class="muted" style="font-size:11px;"><code>{{ c.bssid }}</code></div>
+              {% elif c.bssid and c.bssid != "(not associated)" %}
+                <code>{{ c.bssid }}</code>
+                <div class="muted" style="font-size:11px;">SSID not in range</div>
+              {% else %}
+                <span class="muted">(not associated)</span>
+              {% endif %}
+            </td>
             <td>{{ c.packets }}</td>
-            <td>{{ c.probed_essids|join(", ") if c.probed_essids else "—" }}</td>
+            <td>
+              {% if c.probed_essids %}
+                {% for ssid in c.probed_essids %}
+                  {% if ssid in (c.probed_in_range or []) %}
+                    <span class="badge badge-info" title="An AP with this SSID is in range">{{ ssid }}</span>
+                  {% else %}
+                    {{ ssid }}
+                  {% endif %}{% if not loop.last %}, {% endif %}
+                {% endfor %}
+              {% else %}—{% endif %}
+            </td>
             <td class="muted">{{ c.last_seen or "—" }}</td>
           </tr>
         {% endfor %}

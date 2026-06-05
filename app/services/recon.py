@@ -365,6 +365,30 @@ class ReconService:
                 else:
                     existing["probed_essids"] = merged_probed
 
+        # SSID enrichment — clients only carry the AP BSSID from airodump,
+        # which is a MAC and unreadable. Look up the BSSID in the merged
+        # AP table and stamp ap_ssid onto the client record. If the AP
+        # isn't in our scan (out of range / wrong band / hopper missed
+        # the beacon), ap_ssid stays empty and the UI falls back to
+        # showing the raw BSSID. Probed-ESSID lookups get the same
+        # treatment: per probed name, is there a known AP with that
+        # SSID in range? Useful signal for Karma-style impersonation
+        # judgements later.
+        #
+        # Casing trap: airodump emits BSSIDs uppercase; clients carry the
+        # same uppercase form for ``bssid``. Lowercase BOTH sides of the
+        # lookup so we don't depend on it.
+        bssid_to_ssid = {b.lower(): a.get("essid", "")
+                         for b, a in merged_aps.items()}
+        known_ssids = {a.get("essid", "") for a in merged_aps.values()
+                       if a.get("essid")}
+        for c in merged_clients.values():
+            ap_bssid = (c.get("bssid") or "").lower()
+            c["ap_ssid"] = bssid_to_ssid.get(ap_bssid, "")
+            # Per probed-SSID flag for downstream UI
+            probed = c.get("probed_essids", [])
+            c["probed_in_range"] = [s for s in probed if s in known_ssids]
+
         with self._lock:
             self._aps = merged_aps
             self._clients = merged_clients
