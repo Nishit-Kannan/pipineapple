@@ -1117,6 +1117,18 @@ table.data th.sortable:hover {
 /* Reusable right-side panel — JS toggles .open. Used for both AP and
    Client detail views from Recon. Same pattern will be reused for
    Handshakes (S08) and Modules later. */
+.slideout-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 999;          /* one less than the panel itself */
+  opacity: 0;
+  transition: opacity 180ms ease-out;
+  cursor: pointer;       /* hints "click to dismiss" */
+}
+.slideout-backdrop[hidden] { display: none; }
+.slideout-backdrop.open { opacity: 1; }
+
 .slideout {
   position: fixed;
   top: 0;
@@ -1124,9 +1136,9 @@ table.data th.sortable:hover {
   width: 480px;
   max-width: 100vw;
   height: 100vh;
-  background: var(--bg-elev-1);
-  border-left: 1px solid var(--border);
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+  background: var(--bg-elev);
+  border-left: 1px solid var(--border-2);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.65);
   display: flex;
   flex-direction: column;
   z-index: 1000;
@@ -1154,16 +1166,20 @@ table.data th.sortable:hover {
   font-weight: 600;
 }
 .slideout-close {
-  background: transparent;
-  border: none;
-  color: var(--fg-muted);
-  font-size: 24px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 18px;
   line-height: 1;
   cursor: pointer;
-  padding: 0 4px;
+  padding: 4px 10px;
+  font-weight: 600;
 }
 .slideout-close:hover {
-  color: var(--fg);
+  background: var(--danger);
+  color: #0a0e14;
+  border-color: var(--danger);
 }
 
 .slideout-tabs {
@@ -1240,7 +1256,7 @@ table.data th.sortable:hover {
   display: flex;
   gap: 8px;
   flex-shrink: 0;
-  background: var(--bg-elev-0);
+  background: var(--bg);
 }
 
 /* ---------- Modal --------------------------------------------------- */
@@ -1263,13 +1279,13 @@ table.data th.sortable:hover {
 }
 .modal-card {
   position: relative;
-  background: var(--bg-elev-1);
-  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-2);
   border-radius: 6px;
   padding: 20px 22px;
   max-width: 460px;
   width: 90%;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65);
 }
 .modal-card h3 {
   margin: 0 0 10px 0;

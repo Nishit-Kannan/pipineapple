@@ -228,18 +228,28 @@
 
   function openSlideout() {
     const el = $("slideout");
+    const bd = $("slideout-backdrop");
     if (!el) return;
+    if (bd) bd.hidden = false;
     el.hidden = false;
     // Force a reflow so the transition fires
-    requestAnimationFrame(() => el.classList.add("open"));
+    requestAnimationFrame(() => {
+      el.classList.add("open");
+      if (bd) bd.classList.add("open");
+    });
   }
 
   function closeSlideout() {
     const el = $("slideout");
+    const bd = $("slideout-backdrop");
     if (!el) return;
     el.classList.remove("open");
+    if (bd) bd.classList.remove("open");
     // Wait for the transition before re-hiding (matches CSS 180ms)
-    setTimeout(() => { el.hidden = true; }, 200);
+    setTimeout(() => {
+      el.hidden = true;
+      if (bd) bd.hidden = true;
+    }, 200);
     activeDetail = null;
     activeKind = null;
     activeTab = null;
@@ -474,7 +484,9 @@
 
   function attachSlideoutChrome() {
     const close = $("slideout-close");
+    const backdrop = $("slideout-backdrop");
     if (close) close.addEventListener("click", closeSlideout);
+    if (backdrop) backdrop.addEventListener("click", closeSlideout);
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         if (!$("ethics-modal").hidden) cancelEthicsModal();

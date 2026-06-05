@@ -164,11 +164,14 @@
   </div>
 
   {# ---------- Slide-out detail panel (reusable: AP or Client) ---------- #}
-  {# JS injects content into header/tabs/body/actions on row click. #}
+  {# JS injects content into header/tabs/body/actions on row click.
+     Closes via the × button, ESC key, or clicking the dimmed backdrop. #}
+  <div id="slideout-backdrop" class="slideout-backdrop" hidden></div>
   <aside id="slideout" class="slideout" hidden aria-labelledby="slideout-title">
     <header class="slideout-header">
       <h2 id="slideout-title" class="slideout-title">Detail</h2>
-      <button id="slideout-close" class="slideout-close" aria-label="Close detail panel">×</button>
+      <button id="slideout-close" class="slideout-close" title="Close (Esc)"
+              aria-label="Close detail panel">Close ×</button>
     </header>
     <nav class="slideout-tabs" id="slideout-tabs">
       {# tab buttons injected by JS #}
