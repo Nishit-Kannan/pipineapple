@@ -160,6 +160,31 @@ def set_type(iface: str, mode: str) -> tuple[bool, str]:
     return False, f"iw set type failed: {result.stderr.strip() or result.stdout.strip()}"
 
 
+def set_channel(iface: str, channel: int) -> tuple[bool, str]:
+    """Pin the interface to a specific channel.
+
+    Used before injection (deauth, etc.) — if you don't pin, the
+    interface stays on whatever channel it was last on (often the
+    monitor hopper's current dwell). Frames sent off-channel are
+    silently dropped by the AP.
+
+    The interface must be in monitor or managed mode; some drivers
+    refuse the call when the interface is in __ap mode or down.
+    """
+    if stub_mode():
+        return True, f"(stub) set {iface} channel {channel}"
+    if not (1 <= channel <= 196):
+        return False, f"channel {channel} out of range"
+    result = run(["iw", "dev", iface, "set", "channel", str(channel)],
+                 timeout=3.0)
+    if result.returncode == 0:
+        return True, f"set {iface} channel {channel}"
+    return False, (
+        f"iw set channel failed: "
+        f"{result.stderr.strip() or result.stdout.strip()}"
+    )
+
+
 def set_reg_domain(country_code: str) -> tuple[bool, str]:
     """Set the regulatory domain. Two-letter ISO 3166 country code."""
     if stub_mode():

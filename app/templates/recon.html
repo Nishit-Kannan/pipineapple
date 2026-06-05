@@ -162,4 +162,52 @@
       </p>
     {% endif %}
   </div>
+
+  {# ---------- Slide-out detail panel (reusable: AP or Client) ---------- #}
+  {# JS injects content into header/tabs/body/actions on row click. #}
+  <aside id="slideout" class="slideout" hidden aria-labelledby="slideout-title">
+    <header class="slideout-header">
+      <h2 id="slideout-title" class="slideout-title">Detail</h2>
+      <button id="slideout-close" class="slideout-close" aria-label="Close detail panel">×</button>
+    </header>
+    <nav class="slideout-tabs" id="slideout-tabs">
+      {# tab buttons injected by JS #}
+    </nav>
+    <div class="slideout-body" id="slideout-body">
+      {# tab panel content injected by JS #}
+    </div>
+    <footer class="slideout-actions" id="slideout-actions">
+      {# action buttons injected by JS #}
+    </footer>
+  </aside>
+
+  {# ---------- Ethics-confirm modal (deauth gating) ---------- #}
+  <div id="ethics-modal" class="modal" hidden role="dialog"
+       aria-labelledby="ethics-title" aria-modal="true">
+    <div class="modal-backdrop" id="ethics-backdrop"></div>
+    <div class="modal-card">
+      <h3 id="ethics-title">Confirm deauth</h3>
+      <p>
+        You're about to send deauthentication frames at
+        <code id="ethics-target">…</code>.
+      </p>
+      <p class="muted" style="margin-top:8px;">
+        This is an <strong>offensive</strong> action — it disrupts the
+        target's clients. In most jurisdictions, sending deauth frames
+        at equipment you don't own or have authorisation to test is
+        <strong>illegal</strong>. Lab equipment only.
+      </p>
+      <label for="ethics-input" class="muted" style="margin-top:12px; display:block;">
+        Type <code>deauth</code> to confirm:
+      </label>
+      <input type="text" id="ethics-input" autocomplete="off"
+             style="margin-top:4px; width:100%; padding:6px; font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace;">
+      <div class="modal-actions">
+        <button id="ethics-cancel" class="bigbtn actbtn-muted">Cancel</button>
+        <button id="ethics-confirm" class="bigbtn bigbtn-danger" disabled>
+          Send deauth
+        </button>
+      </div>
+    </div>
+  </div>
 {% endblock %}

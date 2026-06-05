@@ -43,6 +43,13 @@ CSV_PREFIX_2G = CSV_DIR / "pipineapple-recon-2g"
 CSV_PREFIX_5G = CSV_DIR / "pipineapple-recon-5g"
 CSV_PATH_2G = CSV_DIR / "pipineapple-recon-2g-01.csv"
 CSV_PATH_5G = CSV_DIR / "pipineapple-recon-5g-01.csv"
+# airodump auto-names the pcap with the same -01 prefix as the csv
+PCAP_PATH_2G = CSV_DIR / "pipineapple-recon-2g-01.cap"
+PCAP_PATH_5G = CSV_DIR / "pipineapple-recon-5g-01.cap"
+
+# Injection radio (Phase B/C). Resolved via the same role mechanism the
+# recon adapters use (udev name or explicit role assignment).
+INJECT_ROLE = "wlan-ap"
 
 # Bands recognised by the service.
 BAND_2G = "2.4GHz"
@@ -195,6 +202,172 @@ class ReconService:
                 "aps":     aps,
                 "clients": clients,
             }
+
+    # ---------- Detail views (slide-out backend) ----------
+    def get_ap_detail(self, bssid: str) -> dict[str, Any] | None:
+        """Snapshot record for one AP + parsed IEs from its pcap.
+
+        The pcap to read is determined by the AP's band: 2.4 GHz APs
+        live in PCAP_PATH_2G, 5 GHz in PCAP_PATH_5G. If the band is
+        unknown (channel didn't land), try both — beacon parser
+        returns None if there's no match.
+        """
+        from app.tools import beacon_parser
+        target = bssid.lower()
+        with self._lock:
+            ap = None
+            for b, rec in self._aps.items():
+                if b.lower() == target:
+                    ap = dict(rec)
+                    break
+        if ap is None:
+            return None
+
+        # Pick the right pcap based on the AP's band; fall back to
+        # whichever pcap exists if band is unknown.
+        band = ap.get("band")
+        candidates: list[Path] = []
+        if band == BAND_2G:
+            candidates = [PCAP_PATH_2G]
+        elif band == BAND_5G:
+            candidates = [PCAP_PATH_5G]
+        else:
+            candidates = [PCAP_PATH_2G, PCAP_PATH_5G]
+
+        parsed = None
+        for p in candidates:
+            parsed = beacon_parser.parse_latest_beacon(p, bssid)
+            if parsed is not None:
+                break
+
+        # Clients currently associated to this AP (handy for the slide-
+        # out's actions: "deauth all", per-client deauth in S07+).
+        with self._lock:
+            associated = [
+                dict(c) for c in self._clients.values()
+                if (c.get("bssid") or "").lower() == target
+            ]
+
+        return {
+            "ap":         ap,
+            "beacon":     parsed,         # None if pcap missing or BSSID not in it
+            "associated": associated,
+        }
+
+    def get_client_detail(self, station_mac: str) -> dict[str, Any] | None:
+        """Snapshot record for one client + full probe history.
+
+        Probe history is parsed from both pcaps (clients can be visible
+        on either band's monitor adapter depending on which channels
+        the client probes on) and filtered to the requested MAC.
+        """
+        from app.tools import beacon_parser
+        target = station_mac.lower()
+        with self._lock:
+            client = None
+            for m, rec in self._clients.items():
+                if m.lower() == target:
+                    client = dict(rec)
+                    break
+        if client is None:
+            return None
+
+        # Aggregate probes from both pcaps. The two pcaps cover different
+        # bands but a client probing for a given SSID may show up on
+        # either (probe requests aren't band-locked the way beacons are
+        # — clients probe their entire PNL on every channel they hop).
+        probes: list[dict[str, Any]] = []
+        seen_keys: set[tuple[str, str]] = set()
+        for p in (PCAP_PATH_2G, PCAP_PATH_5G):
+            for entry in beacon_parser.parse_probe_requests(p):
+                if entry["station_mac"].lower() != target:
+                    continue
+                key = (entry["station_mac"], entry["ssid"])
+                if key in seen_keys:
+                    # Same probe seen on both bands — merge counts +
+                    # widen the timing window.
+                    for existing in probes:
+                        if (existing["station_mac"], existing["ssid"]) == key:
+                            existing["count"] += entry["count"]
+                            existing["first_seen"] = min(
+                                existing["first_seen"], entry["first_seen"])
+                            existing["last_seen"] = max(
+                                existing["last_seen"], entry["last_seen"])
+                            break
+                else:
+                    probes.append(dict(entry))
+                    seen_keys.add(key)
+        probes.sort(key=lambda d: d["last_seen"], reverse=True)
+        return {"client": client, "probes": probes}
+
+    # ---------- Deauth (injection on wlan-ap) ----------
+    def deauth_ap(
+        self, bssid: str, client_mac: str | None = None, count: int = 10,
+    ) -> tuple[bool, list[str]]:
+        """Send deauth frames at ``bssid`` via the injection radio.
+
+        Orchestration:
+
+        1. Look up the AP in the current snapshot to get its channel
+           (we can't pin without knowing it).
+        2. Resolve the injection interface (role/iface ``wlan-ap``).
+        3. Drop NM management on the injection iface (idempotent).
+        4. Bring iface down → set monitor → bring up.
+        5. Pin to the target's channel via ``iw set channel``.
+        6. Run aireplay-ng --deauth.
+
+        Returns ``(ok, messages)``. Messages cover each step so the
+        UI can show what happened.
+        """
+        from app.services.adapters import get_service as get_adapter_service
+        from app.tools import aireplay, iw, iproute, nm
+
+        messages: list[str] = []
+        target_bssid = bssid.lower()
+
+        with self._lock:
+            ap = None
+            for b, rec in self._aps.items():
+                if b.lower() == target_bssid:
+                    ap = rec
+                    break
+        if ap is None:
+            return False, [f"BSSID {bssid} not in current scan"]
+        channel = ap.get("channel")
+        if channel is None:
+            return False, [f"BSSID {bssid} has no channel info — can't pin"]
+
+        iface = self._resolve_iface_for_role(INJECT_ROLE)
+        if not iface:
+            return False, [
+                f"no adapter assigned role {INJECT_ROLE!r}. "
+                "Assign one via Settings → Adapter Management or via "
+                "udev rules."
+            ]
+
+        # Drop NM (no-op if already unmanaged)
+        ok, msg = nm.set_managed(iface, managed=False)
+        messages.append(f"nm: {msg}")
+        if not ok:
+            return False, messages
+
+        # Monitor mode (down → set type → up)
+        ok, mode_msgs = get_adapter_service().set_mode(iface, "monitor")
+        messages += [f"set_mode: {m}" for m in mode_msgs]
+        if not ok:
+            return False, messages
+
+        # Pin channel
+        ok, msg = iw.set_channel(iface, int(channel))
+        messages.append(f"channel: {msg}")
+        if not ok:
+            return False, messages
+
+        # Fire
+        ok, msg = aireplay.send_deauth(
+            iface, bssid, client_mac=client_mac, count=count)
+        messages.append(f"deauth: {msg}")
+        return ok, messages
 
     # ---------- Internals ----------
     def _status_unlocked(self) -> dict[str, Any]:
