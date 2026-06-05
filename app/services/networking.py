@@ -407,19 +407,32 @@ class NetworkingService:
         with self._lock:
             # First-boot bootstrap path
             if auth_path is not None and self.is_first_boot(auth_path):
-                log.info("first boot detected (no auth.json + no networking.json) — "
-                         "enabling bootstrap management AP")
+                # Smart interface selection: if the operator has
+                # pre-configured udev rules so wlan-mgmt-ap exists as a
+                # named interface (Realtek or similar dedicated AP
+                # radio), use it. Otherwise fall back to wlan0 (Pi
+                # onboard) — only stable name on truly fresh boots.
+                wireless = [w["name"] for w in iw.list_wireless_devices()]
+                bootstrap_iface = "wlan-mgmt-ap" if "wlan-mgmt-ap" in wireless else "wlan0"
+
+                log.info("first boot detected — enabling bootstrap AP on %s "
+                         "(detected wireless: %s)", bootstrap_iface, wireless)
+
+                bootstrap_ap = dict(BOOTSTRAP_MGMT_AP)
+                bootstrap_ap["interface"] = bootstrap_iface
+
                 state = {
-                    "wlan0_mode": "ap",
-                    "mgmt_ap":    dict(BOOTSTRAP_MGMT_AP),
-                    "bootstrap":  True,
+                    "wlan0_mode":     "idle",
+                    "mgmt_ap_active": False,
+                    "mgmt_ap":        bootstrap_ap,
+                    "bootstrap":      True,
                 }
                 messages = self._enable_mgmt_ap_unlocked(state, state["mgmt_ap"])
                 for m in messages:
                     log.info("bootstrap-ap: %s", m)
-                if state.get("wlan0_mode") != "ap":
+                if not state.get("mgmt_ap_active"):
                     log.error("bootstrap-ap: enable sequence did not reach completion "
-                              "(wlan0_mode=%s, last messages above)", state.get("wlan0_mode"))
+                              "(last messages above)")
                 self._save(state)
                 return
 
