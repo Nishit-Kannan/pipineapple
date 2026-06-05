@@ -19,6 +19,14 @@ WorkingDirectory=/home/pi-lab/pipineapple
 Environment="PIPINEAPPLE_DATA_DIR=/var/lib/pipineapple"
 Environment="PIPINEAPPLE_CONFIG=dev"
 
+# Don't write .pyc files. Rsync/git deploys often preserve source mtimes
+# from the dev machine, which can be OLDER than an existing .pyc — Python
+# then trusts the cached bytecode and silently runs stale code. We've
+# already hit this twice (nm.set_managed fix appeared deployed but the
+# old .pyc kept aborting the AP enable sequence). Tiny startup cost for
+# a small app, completely eliminates the class of bug.
+Environment="PYTHONDONTWRITEBYTECODE=1"
+
 # Direct exec - no sudo wrapper needed since systemd already runs as root.
 ExecStart=/home/pi-lab/pipineapple/.venv/bin/python /home/pi-lab/pipineapple/run.py
 
