@@ -207,18 +207,39 @@ class ReconService:
         }
 
     def _resolve_iface_for_role(self, role: str) -> str | None:
-        """Look up the interface currently assigned to ``role`` in the
-        adapter service. Returns None if no adapter has that role."""
+        """Find the interface name for a recon role.
+
+        Two ways an adapter can claim a role:
+
+        1. Explicit role assignment in adapter_roles.json (Settings →
+           Adapter Management dropdown). Keyed by MAC.
+        2. Implicit via udev sticky name. Once udev renames an
+           interface to ``wlan-mon-2g``, the *name* IS the role —
+           no separate JSON entry needed. This is how the operator's
+           current setup works: udev rules are pre-configured by MAC
+           and the role-assignment UI was never used.
+
+        Try the explicit assignment first; fall back to the name match.
+        """
         # Late import to avoid a circular dep with adapter service.
         from app.services.adapters import get_service as get_adapter_service
-        roles = get_adapter_service().get_roles()
+        adapter_svc = get_adapter_service()
+        adapters = adapter_svc.list_adapters()
+
+        # 1. Role assignment by MAC
+        roles = adapter_svc.get_roles()
         for mac, assigned in roles.items():
             if assigned == role:
-                # adapter roles are stored by MAC; we need the iface
-                # name. Cross-reference with list_adapters.
-                for ad in get_adapter_service().list_adapters():
+                for ad in adapters:
                     if ad["mac"] == mac:
                         return ad["name"]
+
+        # 2. Direct interface name match — udev already gave it the
+        #    canonical role name.
+        for ad in adapters:
+            if ad["name"] == role:
+                return ad["name"]
+
         return None
 
     def _launch_band(
