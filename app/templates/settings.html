@@ -224,12 +224,42 @@
           </tbody>
         </table>
 
+        {% set wlan0_free = not (networking.mgmt_ap_active and networking.mgmt_ap.interface == "wlan0") %}
+
+        <h3 class="subhead" style="margin-top:18px;">Scan + add</h3>
+        {% if wlan0_free %}
+          <p class="muted" style="font-size:12px; margin:0 0 8px 0;">
+            <code>wlan0</code> is in managed/client mode — scan should
+            work. Click Scan to discover nearby networks on
+            <code>wlan0</code>, then click Connect (or Save) on the row
+            you want.
+          </p>
+        {% else %}
+          <p class="muted" style="font-size:12px; margin:0 0 8px 0;">
+            Scan is unavailable while <code>wlan0</code> hosts the
+            management AP (a radio can't simultaneously scan and host an
+            AP). Either move the management AP to <code>wlan-mgmt-ap</code>
+            first (see <strong>Host AP on interface</strong> above) or use
+            the manual-add form below.
+          </p>
+        {% endif %}
+        <div class="form-row">
+          <button id="wifi-scan-btn" class="actbtn" {% if not wlan0_free %}disabled{% endif %}>Scan for networks</button>
+          <button id="wifi-disconnect-btn" class="actbtn actbtn-muted">Disconnect wlan0</button>
+        </div>
+        <table class="data" id="wifi-scan-table" style="margin-top:8px;" hidden>
+          <thead>
+            <tr><th>SSID</th><th>Signal</th><th>Security</th><th>Freq</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+
         <h3 class="subhead" style="margin-top:18px;">Add network manually</h3>
         <p class="muted" style="font-size:12px; margin:0 0 8px 0;">
-          Save a Wi-Fi profile without scanning. Useful while
-          <code>wlan0</code> is busy hosting the management AP — credentials
-          get stashed in NetworkManager and auto-connect once
-          <code>wlan0</code> is freed (i.e. when you disable the management AP).
+          Fallback if the scan can't see the network you want
+          (hidden SSID, scan unavailable, etc.). Saves the profile;
+          activate it later via <strong>Connect</strong> in the Saved
+          Networks table.
         </p>
         <form id="wifi-manual-add" class="auth-form-inline">
           <div class="form-row">
@@ -246,24 +276,6 @@
             </label>
           </div>
         </form>
-
-        <h3 class="subhead" style="margin-top:18px;">Scan + add (wlan0 must be in client mode)</h3>
-        <p class="muted" style="font-size:12px; margin:0 0 8px 0;">
-          Scanning requires <code>wlan0</code> to be in managed/station
-          mode, which is incompatible with hosting the management AP on
-          the same radio. Disable the management AP first if you want to
-          scan.
-        </p>
-        <div class="form-row">
-          <button id="wifi-scan-btn" class="actbtn">Scan for networks</button>
-          <button id="wifi-disconnect-btn" class="actbtn actbtn-muted">Disconnect wlan0</button>
-        </div>
-        <table class="data" id="wifi-scan-table" style="margin-top:8px;" hidden>
-          <thead>
-            <tr><th>SSID</th><th>Signal</th><th>Security</th><th>Freq</th><th></th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
       </section>
 
       {# Management AP #}
