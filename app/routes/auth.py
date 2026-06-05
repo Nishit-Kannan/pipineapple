@@ -26,12 +26,12 @@ bp = Blueprint("auth", __name__)
 def setup():
     """First-run setup wizard.
 
-    Configures both the platform admin password AND the operator's
-    permanent management AP credentials in a single form. If the Pi
-    is currently running the bootstrap AP, the new credentials replace
-    the bootstrap values and the AP restarts in the background so the
-    operator sees a clear "reconnect to new SSID" message before losing
-    their connection.
+    Sets the platform admin password only. Management AP credentials
+    are left on bootstrap defaults so the operator's current connection
+    doesn't drop mid-setup. The operator changes AP credentials later
+    via Settings → Networking → Management AP, ideally after they've
+    configured upstream Wi-Fi for wlan0 (so they have a fallback path
+    if the AP restart drops them).
     """
     svc = get_service()
     if svc.is_configured():
@@ -40,25 +40,15 @@ def setup():
     net = get_networking()
     bootstrap_active = net.is_running_bootstrap()
     error: str | None = None
-    success_info: dict | None = None
 
     if request.method == "POST":
         pw1 = (request.form.get("password") or "").strip()
         pw2 = (request.form.get("password_confirm") or "").strip()
-        ap_ssid = (request.form.get("ap_ssid") or "").strip()
-        ap_pw1  = (request.form.get("ap_password") or "").strip()
-        ap_pw2  = (request.form.get("ap_password_confirm") or "").strip()
 
         if pw1 != pw2:
             error = "platform passwords do not match"
-        elif ap_pw1 != ap_pw2:
-            error = "AP passwords do not match"
-        elif len(ap_ssid) < 1 or len(ap_ssid) > 32:
-            error = "AP SSID must be 1–32 characters"
-        elif len(ap_pw1) < 8:
-            error = "AP WPA2 password must be at least 8 characters"
-        elif ap_pw1 == BOOTSTRAP_MGMT_AP["password"]:
-            error = "please pick a new AP password — leaving the bootstrap default isn't safe"
+        elif len(pw1) < 4:
+            error = "platform password must be at least 4 characters"
         else:
             ok, msg = svc.set_password(pw1)
             if not ok:
@@ -66,40 +56,17 @@ def setup():
             else:
                 svc.login(session)
                 notifications.success("PiPineapple initialised — password set", source="auth")
-
-                # Save the operator's AP credentials and restart the AP
-                # in the background so the success page can render before
-                # the operator's connection drops.
-                import threading
-                import time as _time
-
-                def _reconfigure_and_restart():
-                    _time.sleep(3)  # give the response time to land
-                    try:
-                        net.reconfigure_and_restart_ap(ap_ssid, ap_pw1, channel=6)
-                    except Exception:
-                        from flask import current_app
-                        current_app.logger.exception("AP reconfigure failed")
-
-                threading.Thread(
-                    target=_reconfigure_and_restart,
-                    daemon=True,
-                    name="setup-ap-restart",
-                ).start()
-
-                success_info = {
-                    "new_ssid":   ap_ssid,
-                    "gateway_ip": (DEFAULT_MGMT_AP.get("gateway_ip") or "10.42.0.1"),
-                    "bootstrap":  bootstrap_active,
-                }
+                # Drop them straight at the dashboard. Management AP keeps
+                # broadcasting bootstrap credentials; the operator changes
+                # them later from Settings → Networking once they've
+                # configured upstream Wi-Fi.
+                return redirect(url_for("dashboard.index"))
 
     return render_template(
         "auth/setup.html",
         error=error,
         bootstrap_active=bootstrap_active,
         bootstrap=BOOTSTRAP_MGMT_AP,
-        default_ssid=DEFAULT_MGMT_AP["ssid"],
-        success_info=success_info,
     )
 
 

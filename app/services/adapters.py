@@ -135,14 +135,41 @@ class AdapterService:
 
     # ---------- Apply udev rules from current role assignments ----------
     def apply_udev_rules(self) -> tuple[bool, str]:
+        """Write udev rules for reboot-persistence AND immediately
+        rename live interfaces so the new names are usable right now
+        without rebooting the Pi.
+
+        The udev file ensures the assignment survives a reboot; the
+        runtime rename means we don't have to wait for one.
+        """
         roles = self.get_roles()
         if not roles:
             return False, "no role assignments to write — assign at least one first"
+
+        # 1. Write the persistence file (udev rules)
         ok, write_msg = udev.write_rules(roles)
         if not ok:
             return False, write_msg
         ok, reload_msg = udev.reload_rules()
-        return ok, f"{write_msg}; {reload_msg}"
+
+        # 2. Find current names for each MAC and rename live
+        all_ifaces = {i["mac"].lower(): i["name"]
+                      for i in iproute.list_interfaces()
+                      if i.get("mac")}
+        rename_messages: list[str] = []
+        for mac, role_name in roles.items():
+            current_name = all_ifaces.get(mac.lower())
+            if not current_name:
+                rename_messages.append(f"no live interface found for {mac}")
+                continue
+            if current_name == role_name:
+                rename_messages.append(f"{role_name} already named correctly")
+                continue
+            rok, rmsg = iproute.rename_interface(current_name, role_name)
+            rename_messages.append(rmsg)
+
+        all_msgs = [write_msg, reload_msg] + rename_messages
+        return True, "; ".join(all_msgs)
 
     # ---------- Apply NetworkManager unmanaging config ----------
     def apply_nm_unmanaging(self) -> tuple[bool, str]:

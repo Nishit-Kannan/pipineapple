@@ -92,12 +92,37 @@ def wifi_forget():
 
 @bp.route("/networking/mgmt-ap/configure", methods=["POST"])
 def mgmt_ap_configure():
+    """Save AP config only — doesn't apply if AP is running."""
     data = request.get_json(silent=True) or {}
     ssid = (data.get("ssid") or "").strip()
     pw = (data.get("password") or "").strip()
     channel = int(data.get("channel") or 6)
     ok, msg = get_networking().configure_mgmt_ap(ssid, pw, channel)
     return jsonify({"ok": ok, "msg": msg, "state": get_networking().get_state()})
+
+
+@bp.route("/networking/mgmt-ap/apply", methods=["POST"])
+def mgmt_ap_apply():
+    """Save AP config AND restart the AP with the new credentials.
+
+    Single click for "I want to change my SSID/password right now."
+    Replaces the old two-step save-then-enable flow. Causes a brief
+    AP disconnect (your device sees the SSID change); reconnect using
+    the new credentials.
+    """
+    data = request.get_json(silent=True) or {}
+    ssid = (data.get("ssid") or "").strip()
+    pw = (data.get("password") or "").strip()
+    channel = int(data.get("channel") or 6)
+    if not ssid or len(ssid) < 1 or len(ssid) > 32:
+        return jsonify({"ok": False, "msg": "SSID must be 1-32 chars"}), 400
+    if pw and len(pw) < 8:
+        return jsonify({"ok": False, "msg": "WPA2 password must be at least 8 chars"}), 400
+    ok, messages = get_networking().reconfigure_and_restart_ap(ssid, pw, channel)
+    summary = "; ".join(messages)
+    notif = notifications.success if ok else notifications.error
+    notif(f"AP applied (ssid={ssid}): {summary}", source="networking")
+    return jsonify({"ok": ok, "messages": messages, "state": get_networking().get_state()})
 
 
 @bp.route("/networking/mgmt-ap/enable", methods=["POST"])

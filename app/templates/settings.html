@@ -308,8 +308,20 @@
               <input type="number" name="channel" value="{{ networking.mgmt_ap.channel }}" min="1" max="14">
             </label>
           </div>
-          <button type="submit" class="actbtn">Save config</button>
+          <div style="display:flex; gap:8px; margin-top:8px;">
+            <button type="submit" class="actbtn">Save (no restart)</button>
+            <button type="button" id="mgmt-ap-apply-btn" class="bigbtn">Save & Apply (restarts AP)</button>
+          </div>
         </form>
+        <p class="muted" style="font-size:12px; margin:8px 0 0 0;">
+          <strong>Save (no restart)</strong> only writes the config —
+          changes take effect next time the AP is enabled.
+          <strong>Save & Apply</strong> writes the config and restarts
+          the AP now with the new credentials. Your device sees the
+          SSID change and you'll need to reconnect using the new
+          password — make sure you've configured upstream Wi-Fi first
+          so you have a fallback path.
+        </p>
 
         <h3 class="subhead" style="margin-top:18px;">Host AP on interface</h3>
         <p class="muted" style="font-size:12px; margin:0 0 8px 0;">

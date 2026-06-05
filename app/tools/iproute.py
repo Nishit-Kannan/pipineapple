@@ -66,6 +66,37 @@ _STUB_INTERFACES = [
 ]
 
 
+def rename_interface(old_name: str, new_name: str) -> tuple[bool, str]:
+    """Atomically rename a network interface at runtime.
+
+    Bypasses the udev-reload-+-reboot requirement when the operator
+    wants the new name to take effect immediately. The interface must
+    be DOWN before rename, which we handle here. udev rules should be
+    written separately for persistence across reboots; this function
+    handles the live-rename half.
+    """
+    if stub_mode():
+        return True, f"(stub) renamed {old_name} -> {new_name}"
+    if old_name == new_name:
+        return True, f"{old_name} already named {new_name}"
+
+    r = run(["ip", "link", "set", old_name, "down"], timeout=3.0)
+    if r.returncode != 0:
+        return False, f"failed to bring {old_name} down: {r.stderr.strip()}"
+
+    r = run(["ip", "link", "set", old_name, "name", new_name], timeout=3.0)
+    if r.returncode != 0:
+        # Bring it back up under old name so we don't leave it stranded
+        run(["ip", "link", "set", old_name, "up"], timeout=3.0)
+        return False, f"rename failed: {r.stderr.strip() or 'unknown'}"
+
+    r = run(["ip", "link", "set", new_name, "up"], timeout=3.0)
+    if r.returncode != 0:
+        return False, f"renamed but couldn't bring {new_name} up: {r.stderr.strip()}"
+
+    return True, f"renamed {old_name} -> {new_name}"
+
+
 def add_address(iface: str, cidr: str) -> tuple[bool, str]:
     """``ip addr add <cidr> dev <iface>``. Required for static IP on AP mode."""
     if stub_mode():

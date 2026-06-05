@@ -293,6 +293,39 @@
       });
     }
 
+    // Save & Apply (write config + restart AP with new credentials)
+    const apApplyBtn = $("#mgmt-ap-apply-btn");
+    if (apApplyBtn) {
+      apApplyBtn.addEventListener("click", async () => {
+        const form = $("#mgmt-ap-form");
+        if (!form) return;
+        const f = new FormData(form);
+        const body = {
+          ssid: f.get("ssid"),
+          password: f.get("password"),
+          channel: parseInt(f.get("channel"), 10),
+        };
+        if (!body.password) {
+          alert("Save & Apply needs a password. Either enter one (≥8 chars) or use Save (no restart) to update other fields without restarting.");
+          return;
+        }
+        if (!confirm(
+          `Save and restart AP with SSID "${body.ssid}"?\n` +
+          `The AP will briefly drop. Your device sees the SSID change and you'll need to reconnect using the new password. ` +
+          `Make sure you have a fallback (Ethernet or upstream Wi-Fi via wlan0) before proceeding.`
+        )) return;
+        apApplyBtn.disabled = true;
+        showStatus(`saving + restarting AP with new credentials…`);
+        try {
+          const res = await postJSON("/settings/networking/mgmt-ap/apply", body);
+          showStatus((res.messages || [res.msg]).join(" / "), res.ok ? "ok" : "fail");
+          if (res.state) renderNetworkingState(res.state);
+        } finally {
+          apApplyBtn.disabled = false;
+        }
+      });
+    }
+
     // Move AP from one interface to another (atomic swap)
     const apMoveBtn = $("#mgmt-ap-move-btn");
     if (apMoveBtn) {
