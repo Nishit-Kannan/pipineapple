@@ -1209,6 +1209,167 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 05 — Recon (airodump-ng, CSV polling, dual-band parallel)
+    # ------------------------------------------------------------------
+    {
+        "id": "recon-airodump",
+        "title": "Recon — airodump-ng",
+        "added_in_session": 5,
+        "intro": (
+            "Passive 802.11 scan via airodump-ng. The Recon page runs "
+            "two airodump processes in parallel — one per monitor "
+            "adapter, one per band — and polls each airodump's CSV "
+            "output once per second to populate the AP + Client tables "
+            "live. The first session that consumes the JobManager as a "
+            "data source rather than just a daemon launcher."
+        ),
+        "ui_reference": (
+            "Recon page → Start scan / Stop scan + live AP and Client tables"
+        ),
+        "wrapper_modules": [
+            "app/tools/airodump.py",
+            "app/services/recon.py",
+            "app/routes/recon.py",
+        ],
+        "commands": [
+            # ---- airodump fundamentals ----
+            {
+                "command": "sudo iw dev wlan-mon-2g info",
+                "description": (
+                    "Confirm an interface is in monitor mode before "
+                    "running airodump. 'type AP', 'type managed', or "
+                    "'type monitor'. airodump-ng requires monitor; the "
+                    "Recon page calls adapter_svc.set_mode(iface, "
+                    "'monitor') as the first step of Start scan."
+                ),
+            },
+            {
+                "command": "sudo airodump-ng --output-format csv --write /tmp/recon-test --band bg wlan-mon-2g",
+                "description": (
+                    "Run airodump-ng manually on the 2.4 GHz monitor "
+                    "adapter. Writes /tmp/recon-test-01.csv (auto-"
+                    "increment suffix). Ctrl-C to stop. Use --band a "
+                    "for 5 GHz, --band abg for both."
+                ),
+                "notes": (
+                    "We skip pcap output (--output-format csv only) for "
+                    "the live scan to save disk IO. Session 06 will add "
+                    "pcap for handshake capture."
+                ),
+            },
+            {
+                "command": "sudo airodump-ng --channel 1,6,11 --write /tmp/recon-test wlan-mon-2g",
+                "description": (
+                    "Pin channel hopping to specific channels instead "
+                    "of airodump's default cycle. Useful when you know "
+                    "the target AP's channel and want maximum dwell "
+                    "time on it."
+                ),
+            },
+            {
+                "command": "sudo airodump-ng --write-interval 1 --berlin 60 ...",
+                "description": (
+                    "Tune CSV refresh rate (--write-interval, seconds) "
+                    "and the 'stale entry' display window (--berlin, "
+                    "seconds). The platform uses both: write-interval=1 "
+                    "for snappy UI, berlin=60 so transient stations "
+                    "don't churn the table every second."
+                ),
+            },
+
+            # ---- CSV parsing ----
+            {
+                "command": "head -30 /tmp/recon-test-01.csv",
+                "description": (
+                    "Inspect the CSV airodump writes. Two sections "
+                    "separated by a blank line: APs first (15 fields), "
+                    "Clients second (6 fixed fields + variable trailing "
+                    "fields for probed ESSIDs). The parser in "
+                    "app/tools/airodump.py walks the file line by line, "
+                    "uses the blank line as the section boundary."
+                ),
+                "example_output": (
+                    "BSSID, First time seen, Last time seen, channel, "
+                    "Speed, Privacy, Cipher, Authentication, Power, "
+                    "# beacons, # IV, LAN IP, ID-length, ESSID, Key\n"
+                    "AA:BB:CC:DD:EE:01, 2026-06-05 14:00:00, ...,  6,  "
+                    "54, WPA2, CCMP, PSK,  -52,  1240,  842, ...\n"
+                    "\n"
+                    "Station MAC, First time seen, ..., Probed ESSIDs\n"
+                    "11:22:33:44:55:01, ..., AA:BB:CC:DD:EE:01, HomeWiFi"
+                ),
+            },
+            {
+                "command": "awk -F, '/^Station MAC/{exit} NR>1 && $1~/^[0-9A-Fa-f]/' /tmp/recon-test-01.csv | wc -l",
+                "description": (
+                    "Count APs in a CSV by stopping at the Station MAC "
+                    "header. Useful for sanity-checking parser output "
+                    "against ground truth."
+                ),
+            },
+
+            # ---- Two-adapter parallel ----
+            {
+                "command": "sudo airodump-ng --band bg --write /tmp/recon-2g wlan-mon-2g &\nsudo airodump-ng --band a --write /tmp/recon-5g wlan-mon-5g &",
+                "description": (
+                    "Run both bands in parallel — exactly what the "
+                    "Recon service does via the JobManager. Two "
+                    "separate processes, two separate CSVs, merged "
+                    "by BSSID/MAC in the service layer."
+                ),
+                "notes": (
+                    "Don't forget to bring both monitor adapters up "
+                    "first (`sudo ip link set wlan-mon-2g up`) — "
+                    "airodump-ng won't error helpfully if they're "
+                    "down."
+                ),
+            },
+
+            # ---- Lifecycle ----
+            {
+                "command": "pgrep -af airodump-ng",
+                "description": (
+                    "Check what airodump-ng processes are running. "
+                    "When the Recon UI shows 'running', expect two "
+                    "processes — one per band. Stuck processes after "
+                    "a crash: `sudo pkill -9 airodump-ng`."
+                ),
+            },
+            {
+                "command": "sudo iw dev wlan-mon-2g set type managed",
+                "description": (
+                    "Return a monitor adapter to managed mode. Stop "
+                    "the recon scan first, then either flip mode via "
+                    "Settings → Adapter Management or run this "
+                    "directly. The Recon Stop scan button deliberately "
+                    "does NOT restore managed mode — recon often runs "
+                    "in cycles and the down/up dance is wasteful."
+                ),
+            },
+            {
+                "command": "rm /tmp/pipineapple-recon-*-*.csv /tmp/pipineapple-recon-*.cap /tmp/pipineapple-recon-*.log.csv",
+                "description": (
+                    "Wipe any leftover airodump output files. The "
+                    "recon service does this before each scan start "
+                    "so airodump always lands on the -01 suffix; "
+                    "manual cleanup is rarely needed."
+                ),
+            },
+
+            # ---- Snapshot inspection ----
+            {
+                "command": "curl -s http://localhost:5000/recon/snapshot | python3 -m json.tool | head -30",
+                "description": (
+                    "Hit the JSON API directly to inspect the merged "
+                    "snapshot the UI renders. Use it to confirm the "
+                    "service is producing data before assuming the JS "
+                    "is broken."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 01 — Driver detection
     # ------------------------------------------------------------------
     {
