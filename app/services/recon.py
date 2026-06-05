@@ -164,14 +164,33 @@ class ReconService:
                 return True, ["no scan running"]
             self._state = STATE_STOPPING
 
-        # Fire teardown in a daemon thread; return control to the
-        # caller immediately so the HTTP request doesn't hold a worker
-        # thread for the whole 10+ s teardown.
-        t = threading.Thread(
-            target=self._teardown_async,
-            daemon=True,
-            name="recon-stop",
-        )
+        # Capture the Flask app object so the background thread can push
+        # an app context. Without it, _resolve_iface_for_role (which uses
+        # current_app via the adapter service) raises RuntimeError mid-
+        # teardown — exception swallowed by the thread runner, state
+        # stays at STOPPING forever, UI badge stuck.
+        from flask import current_app
+        app = current_app._get_current_object()
+
+        def _run() -> None:
+            try:
+                with app.app_context():
+                    self._teardown_async()
+            except Exception:
+                log.exception("recon teardown crashed")
+            finally:
+                # ALWAYS land on IDLE so the UI doesn't stay stuck at
+                # STOPPING if something inside teardown blew up. The
+                # background-thread runner is the last guarantee.
+                with self._lock:
+                    self._state = STATE_IDLE
+                    self._started_at = None
+                try:
+                    self._emit_update(force=True)
+                except Exception:
+                    log.exception("recon final emit failed")
+
+        t = threading.Thread(target=_run, daemon=True, name="recon-stop")
         t.start()
         return True, ["stopping in background — UI will update when done"]
 
