@@ -75,13 +75,38 @@ class NetworkingService:
 
     # ---------- State persistence ----------
     def _load(self) -> dict[str, Any]:
+        """Read networking.json with auto-migration from legacy schemas.
+
+        Legacy schema (S04.6): single field ``wlan0_mode`` conflated
+        AP state with wlan0 state. With the multi-radio mgmt AP from
+        S04.7, those decouple — AP can be on a non-wlan0 radio while
+        wlan0 does its own thing. New schema introduces
+        ``mgmt_ap_active`` (bool) as the single source of truth for
+        "is the AP running"; ``wlan0_mode`` reverts to meaning
+        wlan0's actual mode (idle / client / ap).
+        """
         try:
-            return json.loads(self._state_path.read_text())
+            state = json.loads(self._state_path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
             return {
-                "wlan0_mode": "idle",
-                "mgmt_ap": dict(DEFAULT_MGMT_AP),
+                "wlan0_mode":     "idle",
+                "mgmt_ap_active": False,
+                "mgmt_ap":        dict(DEFAULT_MGMT_AP),
             }
+
+        # Migration: if mgmt_ap_active is absent, derive it from the
+        # legacy wlan0_mode field, then correct wlan0_mode if AP is on
+        # a non-wlan0 interface.
+        if "mgmt_ap_active" not in state:
+            legacy_mode = state.get("wlan0_mode", "idle")
+            state["mgmt_ap_active"] = (legacy_mode == "ap")
+            ap_iface = (state.get("mgmt_ap") or {}).get("interface", "wlan0")
+            if legacy_mode == "ap" and ap_iface != "wlan0":
+                # AP was on a non-wlan0 interface; wlan0 itself was idle
+                state["wlan0_mode"] = "idle"
+            log.info("migrated networking.json: mgmt_ap_active=%s wlan0_mode=%s",
+                     state["mgmt_ap_active"], state["wlan0_mode"])
+        return state
 
     def _save(self, state: dict[str, Any]) -> None:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,9 +124,10 @@ class NetworkingService:
         ap["password_set"] = bool(ap.get("password"))
         ap.pop("password", None)
         return {
-            "wlan0_mode":     state.get("wlan0_mode", "idle"),
-            "mgmt_ap":        ap,
-            "saved_wifi":     nm.list_saved_wifi(),
+            "wlan0_mode":      state.get("wlan0_mode", "idle"),
+            "mgmt_ap_active":  bool(state.get("mgmt_ap_active", False)),
+            "mgmt_ap":         ap,
+            "saved_wifi":      nm.list_saved_wifi(),
             "wireless_ifaces": [w["name"] for w in iw.list_wireless_devices()],
         }
 
@@ -112,16 +138,21 @@ class NetworkingService:
     def connect_wifi(self, ssid: str, password: str | None) -> tuple[bool, str]:
         """Save (if needed) + connect to a Wi-Fi network on wlan0.
 
-        Disables the management AP first if it's currently active.
+        Only disables the management AP if it's currently hosted on
+        wlan0 (the interface we're about to use as a client). If the
+        AP is on a different radio (e.g. wlan-mgmt-ap), it stays up —
+        the radios are physically independent.
         """
         with self._lock:
             state = self._load()
-            if state.get("wlan0_mode") == "ap":
-                log.info("disabling management AP before connecting to %s", ssid)
+            ap_iface = (state.get("mgmt_ap") or {}).get("interface", "wlan0")
+            if state.get("mgmt_ap_active") and ap_iface == "wlan0":
+                log.info("AP is on wlan0; disabling before client connect to %s", ssid)
                 self._disable_mgmt_ap_unlocked(state)
 
             ok, msg = nm.wifi_connect(ssid, password, iface="wlan0")
             if not ok:
+                self._save(state)
                 return False, msg
             state["wlan0_mode"] = "client"
             self._save(state)
@@ -175,7 +206,7 @@ class NetworkingService:
             if not ap.get("password"):
                 return False, ["password not configured (WPA2 required for management AP)"]
             messages = self._enable_mgmt_ap_unlocked(state, ap)
-            ok = state.get("wlan0_mode") == "ap"
+            ok = state.get("mgmt_ap_active", False)
             return ok, messages
 
     def _enable_mgmt_ap_unlocked(self, state: dict, ap: dict) -> list[str]:
@@ -275,7 +306,12 @@ class NetworkingService:
         self._mgmt_hostapd_job_id = ha_job.id
         messages.append(f"started hostapd (job {ha_job.id})")
 
-        state["wlan0_mode"] = "ap"
+        # State bookkeeping:
+        # - mgmt_ap_active is the single source of truth for "AP is running"
+        # - wlan0_mode reflects wlan0's actual mode; only "ap" when hosting it
+        state["mgmt_ap_active"] = True
+        if iface == "wlan0":
+            state["wlan0_mode"] = "ap"
         self._save(state)
         return messages
 
@@ -298,7 +334,7 @@ class NetworkingService:
             if current_iface == new_iface and state.get("wlan0_mode") == "ap":
                 return False, [f"already running on {new_iface}"]
             # Tear down on current interface (if active)
-            if state.get("wlan0_mode") == "ap":
+            if state.get("mgmt_ap_active"):
                 messages += self._disable_mgmt_ap_unlocked(state)
             # Update config
             ap["interface"] = new_iface
@@ -307,7 +343,7 @@ class NetworkingService:
             if ap.get("ssid") and ap.get("password"):
                 messages += self._enable_mgmt_ap_unlocked(state, ap)
                 self._save(state)
-                ok = state.get("wlan0_mode") == "ap"
+                ok = state.get("mgmt_ap_active", False)
                 return ok, messages
             # No credentials yet — just save the chosen interface
             self._save(state)
@@ -343,7 +379,11 @@ class NetworkingService:
         ok, msg = nm.set_managed(iface, managed=True)
         messages.append(msg)
 
-        state["wlan0_mode"] = "idle"
+        state["mgmt_ap_active"] = False
+        # Only reset wlan0_mode if wlan0 was actually hosting the AP.
+        # If AP was on a different interface, wlan0 is untouched.
+        if iface == "wlan0":
+            state["wlan0_mode"] = "idle"
         return messages
 
     # ---------- Startup restore ----------
@@ -384,16 +424,16 @@ class NetworkingService:
                 return
 
             state = self._load()
-            mode = state.get("wlan0_mode", "idle")
-            if mode == "ap":
+            if state.get("mgmt_ap_active"):
                 ap = state.get("mgmt_ap") or {}
                 if ap.get("ssid") and ap.get("password"):
-                    log.info("restoring management AP from saved state")
+                    log.info("restoring management AP from saved state (iface=%s)",
+                             ap.get("interface", "wlan0"))
                     self._enable_mgmt_ap_unlocked(state, ap)
                     self._save(state)
                 else:
-                    log.warning("saved mode is 'ap' but mgmt_ap config incomplete; staying idle")
-                    state["wlan0_mode"] = "idle"
+                    log.warning("mgmt_ap_active=True but config incomplete; staying down")
+                    state["mgmt_ap_active"] = False
                     self._save(state)
 
     # ---------- Bootstrap-to-permanent transition ----------
@@ -414,7 +454,7 @@ class NetworkingService:
         with self._lock:
             state = self._load()
             # 1. Stop the bootstrap AP if it's running
-            if state.get("wlan0_mode") == "ap":
+            if state.get("mgmt_ap_active"):
                 messages += self._disable_mgmt_ap_unlocked(state)
 
             # 2. Save the operator's new config

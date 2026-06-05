@@ -170,15 +170,16 @@
       <div class="statcard">
         <div class="statcard-label">wlan0 mode</div>
         <div class="statcard-value" data-field="wlan0-mode">{{ networking.wlan0_mode }}</div>
-        <div class="statcard-sub muted">idle / client / ap</div>
+        <div class="statcard-sub muted">Pi onboard radio · idle / client / ap</div>
       </div>
       <div class="statcard">
         <div class="statcard-label">Management AP</div>
         <div class="statcard-value" data-field="mgmt-ap-status">
-          {% if networking.wlan0_mode == "ap" %}active{% else %}inactive{% endif %}
+          {% if networking.mgmt_ap_active %}active{% else %}inactive{% endif %}
         </div>
         <div class="statcard-sub muted">
-          SSID: <code data-field="mgmt-ap-ssid">{{ networking.mgmt_ap.ssid }}</code>
+          on <code data-field="mgmt-ap-iface">{{ networking.mgmt_ap.interface }}</code>
+          · SSID <code data-field="mgmt-ap-ssid">{{ networking.mgmt_ap.ssid }}</code>
         </div>
       </div>
       <div class="statcard">

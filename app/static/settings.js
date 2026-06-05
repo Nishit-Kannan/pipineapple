@@ -96,7 +96,9 @@
     const modeEl = document.querySelector('[data-field="wlan0-mode"]');
     if (modeEl) modeEl.textContent = state.wlan0_mode || "idle";
     const apStatusEl = document.querySelector('[data-field="mgmt-ap-status"]');
-    if (apStatusEl) apStatusEl.textContent = state.wlan0_mode === "ap" ? "active" : "inactive";
+    if (apStatusEl) apStatusEl.textContent = state.mgmt_ap_active ? "active" : "inactive";
+    const apIfaceEl = document.querySelector('[data-field="mgmt-ap-iface"]');
+    if (apIfaceEl) apIfaceEl.textContent = (state.mgmt_ap && state.mgmt_ap.interface) || "—";
     const apSsidEls = document.querySelectorAll('[data-field="mgmt-ap-ssid"], [data-field="mgmt-ap-ssid-2"]');
     apSsidEls.forEach(el => el.textContent = (state.mgmt_ap && state.mgmt_ap.ssid) || "—");
     const savedCountEl = document.querySelector('[data-field="saved-count"]');
