@@ -918,6 +918,297 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 04.9 — Internet sharing, persistent state, hands-off boot
+    # ------------------------------------------------------------------
+    {
+        "id": "internet-sharing-and-boot",
+        "title": "Internet sharing & hands-off boot",
+        "added_in_session": 4.9,
+        "intro": (
+            "Letting management AP clients reach the internet through "
+            "whatever upstream the Pi has (home Wi-Fi via wlan0, or "
+            "Ethernet via eth0): NAT, IP forwarding, and dnsmasq as a "
+            "DNS forwarder. Plus the operational glue — persistent "
+            "state directory, systemd unit so the platform boots itself "
+            "after power-on, and the Python bytecode flag that defeats "
+            "a class of stale-deploy bugs."
+        ),
+        "ui_reference": (
+            "Settings → Networking → Management AP → 'Share upstream "
+            "internet with AP clients' toggle"
+        ),
+        "wrapper_modules": [
+            "app/tools/iptables.py",
+            "app/tools/dnsmasq.py",
+            "app/services/networking.py",
+            "deploy/pipineapple.service",
+            "deploy/install-service.sh",
+        ],
+        "commands": [
+            # ---- NAT + IP forwarding ----
+            {
+                "command": "sudo sysctl -w net.ipv4.ip_forward=1",
+                "description": (
+                    "Enable IPv4 forwarding so the Pi will route packets "
+                    "between interfaces. Without this, packets arriving "
+                    "on wlan-mgmt-ap from clients are dropped instead of "
+                    "being forwarded out wlan0/eth0. The platform "
+                    "re-applies this on every AP enable; iptables and "
+                    "this sysctl both reset on reboot."
+                ),
+                "notes": (
+                    "Make it survive reboots by also adding "
+                    "`net.ipv4.ip_forward=1` to /etc/sysctl.conf — but "
+                    "we don't bother because the platform sets it on "
+                    "every enable anyway."
+                ),
+            },
+            {
+                "command": "sudo iptables -t nat -A POSTROUTING -s 10.42.0.0/24 -j MASQUERADE",
+                "description": (
+                    "NAT rule: rewrite the source address of any packet "
+                    "from the AP subnet (10.42.0.0/24) to the Pi's "
+                    "outbound interface IP. Without this, return packets "
+                    "from the internet have no way back to 10.42.0.x."
+                ),
+                "notes": (
+                    "We deliberately use -s subnet (not -o iface). The "
+                    "first manual fix used `-o wlan0` and broke when the "
+                    "Pi's default route was actually via eth0 — packets "
+                    "left out eth0 un-NAT'd, ISP dropped them, browser "
+                    "showed 'page keeps loading'. Subnet-based rules "
+                    "work regardless of which interface egress picks."
+                ),
+            },
+            {
+                "command": "sudo iptables -A FORWARD -s 10.42.0.0/24 -j ACCEPT",
+                "description": (
+                    "Explicit accept for outbound forwarded packets from "
+                    "the AP subnet. Pair it with the conntrack rule for "
+                    "return traffic. Often redundant when the FORWARD "
+                    "chain default policy is ACCEPT, but defensive — if "
+                    "you ever tighten the firewall, these rules ensure "
+                    "AP clients still reach the internet."
+                ),
+            },
+            {
+                "command": "sudo iptables -A FORWARD -d 10.42.0.0/24 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+                "description": (
+                    "Accept return traffic destined for the AP subnet, "
+                    "but only for connections that were initiated from "
+                    "inside. Standard stateful-firewall pattern."
+                ),
+            },
+            {
+                "command": "sudo iptables -t nat -S POSTROUTING",
+                "description": "List NAT POSTROUTING rules in iptables-save format. Confirms the MASQUERADE rule landed.",
+                "example_output": (
+                    "-P POSTROUTING ACCEPT\n"
+                    "-A POSTROUTING -s 10.42.0.0/24 -j MASQUERADE"
+                ),
+            },
+            {
+                "command": "sudo iptables -t nat -L POSTROUTING -n -v",
+                "description": (
+                    "Same data with packet counters. The 'pkts' column "
+                    "tells you whether traffic is hitting your rules — "
+                    "if it's zero, packets aren't reaching this chain "
+                    "(usually because the client's gateway is wrong, or "
+                    "the egress interface bypasses NAT)."
+                ),
+            },
+            {
+                "command": "sudo iptables -t nat -D POSTROUTING -s 10.42.0.0/24 -j MASQUERADE",
+                "description": "Delete the MASQUERADE rule. Used when internet sharing is toggled off.",
+            },
+
+            # ---- DNS forwarding via dnsmasq ----
+            {
+                "command": "grep -E '^server=|^no-resolv' /etc/pipineapple/mgmt-ap-dnsmasq.conf",
+                "description": (
+                    "Inspect dnsmasq's upstream-DNS config. With "
+                    "internet-sharing OFF, expect `no-resolv` (DNS "
+                    "queries from clients go nowhere). With it ON, "
+                    "expect `server=1.1.1.1` + `server=8.8.8.8` and NO "
+                    "`no-resolv` line — dnsmasq forwards client queries "
+                    "to those upstream resolvers."
+                ),
+            },
+            {
+                "command": "dig @10.42.0.1 google.com +short",
+                "description": (
+                    "Test DNS resolution through the Pi's dnsmasq. Run "
+                    "from the Pi itself or any AP client. Returning IPs "
+                    "means forwarding works end to end. 'no servers "
+                    "could be reached' means dnsmasq isn't forwarding "
+                    "(check server= lines)."
+                ),
+                "notes": (
+                    "Install with `sudo apt install -y dnsutils` — Pi "
+                    "OS Lite ships without dig/nslookup."
+                ),
+            },
+
+            # ---- dnsmasq port race ----
+            {
+                "command": "sudo ss -tulnp | grep ':53'",
+                "description": (
+                    "Find what's bound to port 53. Useful when "
+                    "restarting dnsmasq fails with 'Address already in "
+                    "use' — usually a lingering dnsmasq the kernel "
+                    "hasn't fully reaped, occasionally systemd-resolved."
+                ),
+            },
+            {
+                "command": "sudo pkill -9 dnsmasq",
+                "description": (
+                    "Hard-kill all dnsmasq processes. Use only when "
+                    "the platform's JobManager has lost track of one "
+                    "(e.g. a previous restart raced on port 53 and the "
+                    "new instance failed silently)."
+                ),
+                "notes": (
+                    "The platform now waits for port 10.42.0.1:53 to "
+                    "be bindable (with SO_REUSEADDR) before starting "
+                    "the new dnsmasq — see _wait_for_port_free in "
+                    "networking.py. Manual cleanup should rarely be "
+                    "needed."
+                ),
+            },
+
+            # ---- Phone-side DHCP cache ----
+            {
+                "command": "(phone) forget Wi-Fi network, rejoin",
+                "description": (
+                    "Modern phones aggressively cache DHCP leases. If "
+                    "the AP came up before you configured internet "
+                    "sharing, the phone's lease may not have the right "
+                    "gateway/DNS. Forgetting + rejoining forces a fresh "
+                    "lease. Symptom: page loads forever, or 'wrong "
+                    "password' error on iOS when the password is "
+                    "correct (iOS reports 'no DHCP' as a credential "
+                    "error)."
+                ),
+            },
+
+            # ---- Persistent DATA_DIR ----
+            {
+                "command": "echo $PIPINEAPPLE_DATA_DIR; ls -la /var/lib/pipineapple/",
+                "description": (
+                    "The DATA_DIR holds auth.json, networking.json, "
+                    "adapter_roles.json, and the deny-list. Default is "
+                    "/tmp/pipineapple which is wiped on every reboot. "
+                    "The systemd unit pins it to /var/lib/pipineapple "
+                    "(FHS-correct for runtime state) so credentials and "
+                    "AP config survive reboots. If you launch Flask "
+                    "manually, run-as-root.sh exports the same path."
+                ),
+            },
+            {
+                "command": "sudo cat /var/lib/pipineapple/networking.json | python3 -m json.tool",
+                "description": (
+                    "Inspect the persisted networking state. "
+                    "mgmt_ap_active=true + ssid+password present is "
+                    "what restore_on_startup needs to bring the AP up "
+                    "automatically. internet_sharing=true means the "
+                    "NAT + DNS-forwarding rules get re-applied on "
+                    "every enable."
+                ),
+            },
+
+            # ---- systemd unit ----
+            {
+                "command": "sudo ./deploy/install-service.sh",
+                "description": (
+                    "Idempotent installer that copies "
+                    "deploy/pipineapple.service into "
+                    "/etc/systemd/system/, runs daemon-reload, enables "
+                    "auto-start, and restarts the service. Run once "
+                    "per Pi — re-runs just refresh the unit file."
+                ),
+            },
+            {
+                "command": "sudo systemctl status pipineapple",
+                "description": "Service health: active/inactive, PID, recent log lines.",
+            },
+            {
+                "command": "sudo systemctl restart pipineapple",
+                "description": (
+                    "Pick up new code without rebooting. Triggers "
+                    "atexit cleanup of the JobManager's children "
+                    "(hostapd/dnsmasq), then the new process re-runs "
+                    "restore_on_startup."
+                ),
+            },
+            {
+                "command": "sudo journalctl -u pipineapple -f",
+                "description": (
+                    "Live log tail for the platform. Filter with grep "
+                    "to find specific things, e.g. "
+                    "`sudo journalctl -u pipineapple -f | grep -iE "
+                    "'restoring|hostapd|dnsmasq'`."
+                ),
+            },
+            {
+                "command": "sudo journalctl -u pipineapple -b --no-pager | head -100",
+                "description": (
+                    "First 100 lines of logs from this boot. Use to "
+                    "diagnose why the AP didn't come up on startup — "
+                    "the relevant lines are usually within the first "
+                    "10 seconds of the process starting."
+                ),
+            },
+            {
+                "command": "sudo cat /proc/$(pgrep -f 'python.*run.py')/environ | tr '\\0' '\\n' | grep PIPINEAPPLE",
+                "description": (
+                    "Ground truth for what environment variables the "
+                    "running Flask process actually sees. Critical "
+                    "when DATA_DIR seems wrong — confirms whether the "
+                    "systemd unit's Environment= line is reaching "
+                    "Python, or whether something else launched Flask "
+                    "without the env var."
+                ),
+            },
+
+            # ---- Python bytecode caching ----
+            {
+                "command": "sudo find /home/pi-lab/pipineapple -name '__pycache__' -type d -exec rm -rf {} +",
+                "description": (
+                    "Nuke all .pyc cache directories. Necessary when "
+                    "Python loads stale bytecode after a deploy — "
+                    "happens when the deploy method (rsync -a, git "
+                    "checkout) sets source mtimes older than the .pyc, "
+                    "and Python trusts the cache. The systemd unit "
+                    "sets PYTHONDONTWRITEBYTECODE=1 to prevent this "
+                    "permanently, so manual cache clears should be a "
+                    "last-resort diagnostic, not part of normal deploy."
+                ),
+            },
+            {
+                "command": "ls -la app/tools/nm.py app/tools/__pycache__/nm.cpython-*.pyc",
+                "description": (
+                    "Compare source vs cached bytecode timestamps. If "
+                    ".pyc mtime > .py mtime AND the .pyc was compiled "
+                    "from an old version of .py (rare, requires "
+                    "specific deploy ordering), Python may run the old "
+                    "code. Definitive test is to inspect what Python "
+                    "actually loaded — see next command."
+                ),
+            },
+            {
+                "command": "cd /home/pi-lab/pipineapple && sudo .venv/bin/python -c \"import inspect; from app.tools import nm; print(inspect.getsource(nm.set_managed)[:400])\"",
+                "description": (
+                    "Print the actual source code Python loaded for a "
+                    "function. Bypasses any guessing about cache "
+                    "validity — if the printed code doesn't match what "
+                    "you expect, Python isn't loading the file you "
+                    "think it is."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 01 — Driver detection
     # ------------------------------------------------------------------
     {
