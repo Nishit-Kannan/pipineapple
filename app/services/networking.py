@@ -247,10 +247,19 @@ class NetworkingService:
         ))
         messages.append(msg)
 
-        # Stop the existing dnsmasq job, start a new one with new config
+        # Stop the existing dnsmasq job, then wait briefly for the kernel
+        # to release port 53. dnsmasq binds with bind-interfaces; even after
+        # the process exits, the socket can linger in TIME_WAIT for a moment
+        # and the next dnsmasq fails with "Address already in use", leaving
+        # the AP with no DHCP server (clients then show "incorrect password"
+        # because they can't get an IP). Poll the port with SO_REUSEADDR set
+        # so we don't block on TIME_WAIT itself — just on the kernel actually
+        # being ready to let someone bind again.
         if self._mgmt_dnsmasq_job_id:
             stopped, reason = job_manager.stop_job(self._mgmt_dnsmasq_job_id)
             messages.append(f"stop dnsmasq: {reason}")
+            messages.append(self._wait_for_port_free(gateway, 53))
+
         dn_job = job_manager.start_job(
             ["dnsmasq", "-C", str(dnsmasq_path), "-k", "--log-facility=-"],
             name="mgmt-ap-dnsmasq",
@@ -260,6 +269,35 @@ class NetworkingService:
         self._mgmt_dnsmasq_job_id = dn_job.id
         messages.append(f"restarted dnsmasq (job {dn_job.id})")
         return messages
+
+    @staticmethod
+    def _wait_for_port_free(addr: str, port: int, timeout: float = 3.0) -> str:
+        """Poll until ``addr:port`` is bindable, up to ``timeout`` seconds.
+
+        Used between a daemon stop and the next start to defeat the
+        "Address already in use" race when the kernel hasn't released
+        the socket yet. Returns a status string for the messages log.
+        """
+        import socket
+        import time
+        deadline = time.monotonic() + timeout
+        last_err: str = ""
+        while time.monotonic() < deadline:
+            for stype in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+                s = socket.socket(socket.AF_INET, stype)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    s.bind((addr, port))
+                    s.close()
+                except OSError as e:
+                    last_err = f"{stype.name}: {e}"
+                    s.close()
+                    break
+            else:
+                # Both TCP and UDP succeeded
+                return f"port {addr}:{port} free"
+            time.sleep(0.1)
+        return f"port {addr}:{port} still busy after {timeout}s ({last_err})"
 
     def configure_mgmt_ap(self, ssid: str, password: str, channel: int = 6) -> tuple[bool, str]:
         if not ssid or len(ssid) < 1 or len(ssid) > 32:
