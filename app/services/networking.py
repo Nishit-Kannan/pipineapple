@@ -379,6 +379,14 @@ class NetworkingService:
         ok, msg = nm.set_managed(iface, managed=True)
         messages.append(msg)
 
+        # Explicitly bring the interface back up. NM takes ownership but
+        # doesn't auto-bring it up — without this, wlan0 stays DOWN in
+        # "unavailable" state and the scan returns nothing. Only matters
+        # for wlan0 (Alfas would stay unmanaged by NM anyway).
+        if iface == "wlan0":
+            ok, msg = iproute.set_link_state("wlan0", "up")
+            messages.append(msg)
+
         state["mgmt_ap_active"] = False
         # Only reset wlan0_mode if wlan0 was actually hosting the AP.
         # If AP was on a different interface, wlan0 is untouched.
