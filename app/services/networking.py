@@ -514,17 +514,39 @@ class NetworkingService:
         iproute.flush_address(iface)
         messages.append(f"flushed {iface} IP")
 
+        # CRITICAL for AP reconfigure: fully reset the nl80211 state on the
+        # iface between hostapd runs. After hostapd exits, the driver
+        # leaves the iface in ``type AP`` with leftover nl80211 socket
+        # bindings/filters. The NEXT hostapd start then fails with:
+        #
+        #     nl80211: kernel reports: Match already configured
+        #     nl80211: Could not configure driver mode
+        #     wlan-mgmt-ap: AP-DISABLED
+        #
+        # The standard fix is the bring-down → set-type-managed → bring-up
+        # dance, which forces the driver to drop all nl80211 state for
+        # the iface. Most pronounced on the Realtek rtw_8821cu driver
+        # (mgmt AP host on this hardware); mt76 chipsets are gentler
+        # but the same reset is safe.
+        ok, msg = iproute.set_link_state(iface, "down")
+        messages.append(f"link down {iface}: {msg}")
+        ok, msg = iw.set_type(iface, "managed")
+        messages.append(f"reset type managed {iface}: {msg}")
+
         # Return interface to NM (no-op for Alfas; they're always unmanaged)
         ok, msg = nm.set_managed(iface, managed=True)
         messages.append(msg)
 
-        # Explicitly bring the interface back up. NM takes ownership but
-        # doesn't auto-bring it up — without this, wlan0 stays DOWN in
-        # "unavailable" state and the scan returns nothing. Only matters
-        # for wlan0 (Alfas would stay unmanaged by NM anyway).
-        if iface == "wlan0":
-            ok, msg = iproute.set_link_state("wlan0", "up")
-            messages.append(msg)
+        # Bring the interface back up. For wlan0, NM needs it up to manage
+        # it (otherwise it shows "unavailable" and scan returns nothing).
+        # For wlan-mgmt-ap or other Alfas, we ALSO bring it up because
+        # the next AP enable needs a UP iface to bind hostapd to — without
+        # this, ``_enable_mgmt_ap_unlocked``'s ``ip addr add`` step works
+        # (addr can be assigned to DOWN ifaces) but the subsequent hostapd
+        # has to do the bring-up itself, racing with our explicit ``ip
+        # link set up`` later in the enable path.
+        ok, msg = iproute.set_link_state(iface, "up")
+        messages.append(f"link up {iface}: {msg}")
 
         state["mgmt_ap_active"] = False
         # Only reset wlan0_mode if wlan0 was actually hosting the AP.
