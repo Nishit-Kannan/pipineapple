@@ -167,6 +167,19 @@
     {% endif %}
   </div>
 
+  {# ---------- Saved handshake captures (grouped by AP) ----------------- #}
+  {# Loaded async from /handshakes/list on page load + refreshed when any
+     capture finishes (capture:status with ended=true). #}
+  <div class="card" style="margin-top:16px;">
+    <div class="card-head">
+      <h2>Captures</h2>
+      <span class="muted" id="captures-count">0</span>
+    </div>
+    <div id="captures-card-body" style="padding:8px 12px;">
+      <p class="muted">Loading…</p>
+    </div>
+  </div>
+
   {# ---------- Slide-out detail panel (reusable: AP or Client) ---------- #}
   {# JS injects content into header/tabs/body/actions on row click.
      Closes via the × button, ESC key, or clicking the dimmed backdrop. #}

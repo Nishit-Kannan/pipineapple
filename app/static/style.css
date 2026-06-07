@@ -1376,3 +1376,41 @@ table.data th.sortable:hover {
   color: #0a0e14;
   border-color: var(--danger);
 }
+
+/* Top-level Captures card on the Recon page — grouped by BSSID */
+.capture-group {
+  margin: 8px 0 14px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.capture-group:last-child {
+  border-bottom: none;
+}
+.capture-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.capture-bulk-del {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--fg-muted);
+  font-size: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.capture-bulk-del:hover {
+  background: var(--danger);
+  color: #0a0e14;
+  border-color: var(--danger);
+}
+.capture-group-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 12px;
+}
