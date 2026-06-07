@@ -272,55 +272,85 @@ class HandshakesService:
         return True, msgs
 
     def stop_capture(self, bssid: str) -> tuple[bool, list[str]]:
-        """Stop the capture for ``bssid``. Idempotent."""
+        """Kick off teardown asynchronously; return immediately.
+
+        Synchronous stop used to: (1) wait up to 5 s for airodump's
+        SIGINT-driven flush, (2) re-walk the entire pcap with scapy to
+        get a final M1-M4 count, (3) write index.json. On a big pcap
+        the scapy walk could take 10+ seconds. Combined with Werkzeug's
+        limited worker thread pool, the stuck HTTP request starved
+        SocketIO polls and the browser showed "offline".
+
+        Now: route handler returns instantly. A daemon thread does the
+        actual stop work, then emits a ``capture:status`` SocketIO event
+        with ``ended=True`` so the UI flips. The redundant final pcap
+        parse is also removed — the per-second poller has been keeping
+        ``capture.last_status`` fresh all along; we just snapshot that
+        value as the index entry.
+        """
         bssid_norm = bssid.lower()
         with self._lock:
             capture = self._active.get(bssid_norm)
         if capture is None:
             return True, ["no capture running for that BSSID"]
 
-        msgs: list[str] = []
+        # Mark "stopping" immediately so a second click is a no-op.
         capture._stop_event.set()
         capture.ended_at = time.time()
 
+        # Capture the Flask app for the background thread's app_context
+        # (same fix recon's stop uses).
+        from flask import current_app
+        app = current_app._get_current_object()
+
+        def _run() -> None:
+            try:
+                with app.app_context():
+                    self._teardown_capture(capture)
+            except Exception:
+                log.exception("capture teardown crashed for %s", bssid_norm)
+            finally:
+                # Always drop from active + emit ended, even on crash,
+                # so the UI doesn't get stuck in a stopping state.
+                with self._lock:
+                    self._active.pop(bssid_norm, None)
+                try:
+                    self._emit_capture_status(capture, ended=True)
+                except Exception:
+                    log.exception("capture final emit failed")
+
+        t = threading.Thread(target=_run, daemon=True,
+                             name=f"capture-stop-{bssid_norm[:8]}")
+        t.start()
+        return True, ["stopping in background — UI will update when done"]
+
+    def _teardown_capture(self, capture: _Capture) -> None:
+        """Synchronous body of stop_capture; runs in a daemon thread."""
         # Stop airodump. SIGINT for the same reason recon does — aircrack
         # tools install a SIGINT handler that flushes the pcap cleanly.
         if capture.job_id and not airodump.is_stub():
             stopped, reason = job_manager.stop_job(
                 capture.job_id, grace=5.0, first_signal=signal.SIGINT,
             )
-            msgs.append(f"stop airodump (SIGINT): {reason}")
+            log.info("capture %s: stop airodump (SIGINT): %s",
+                     capture.bssid, reason)
 
         # Join the threads (best-effort, brief timeout).
         for t in (capture.deauth_thread, capture.poller_thread):
             if t is not None and t.is_alive():
                 t.join(timeout=2.0)
 
-        # Final status read so the index entry is accurate.
-        if not airodump.is_stub():
-            try:
-                summary = handshake_detector.summarize_for_capture(
-                    capture.pcap_path, capture.bssid,
-                )
-                capture.last_status = summary
-            except Exception:
-                log.exception("final pcap parse failed")
+        # Skip the final full-pcap re-parse — the poller has been
+        # updating capture.last_status every second; just use that.
+        # The redundant final parse on a multi-MB pcap was a major
+        # source of stop-time slowness.
 
         # Persist to index.json
         try:
             self._append_to_index(capture)
-            msgs.append(f"persisted to {self._index_path.name}")
-        except Exception as e:
-            log.exception("index write failed")
-            msgs.append(f"index write failed: {e}")
-
-        # Drop from active map
-        with self._lock:
-            self._active.pop(bssid_norm, None)
-
-        # Final SocketIO emit so the UI updates immediately
-        self._emit_capture_status(capture, ended=True)
-        return True, msgs
+            log.info("capture %s: persisted to index.json", capture.bssid)
+        except Exception:
+            log.exception("index write failed for %s", capture.bssid)
 
     def get_capture_status(self, bssid: str) -> dict[str, Any] | None:
         """Live status for a running capture. None if not capturing."""
