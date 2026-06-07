@@ -141,6 +141,8 @@ h2 {
   animation: live-pulse 2s ease-in-out infinite;
 }
 .live-down { color: var(--fg-muted); }
+.live-connecting { color: var(--accent); }
+.live-connecting .live-dot { animation: live-pulse 1s ease-in-out infinite; }
 @keyframes live-pulse {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.4; }

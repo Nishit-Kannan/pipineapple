@@ -29,6 +29,17 @@ class BaseConfig:
     # without a wireless adapter handy.
     USE_REAL_TOOLS: bool = True
 
+    # Browser-cache lifetime for /static/* files. Werkzeug's default
+    # sends Cache-Control: no-cache, which makes the browser do an
+    # ETag round trip on every request. Fine over Ethernet (304s are
+    # tiny + fast). Painful over the slow Realtek mgmt AP where every
+    # round trip adds visible latency. 300 s (5 min) is short enough
+    # that a deploy of static assets is noticed quickly, long enough
+    # that navigating between pages within one session skips the
+    # round trip entirely. Hard-refresh (Cmd-Shift-R / Ctrl-Shift-R)
+    # always bypasses this — that's by design in every browser.
+    SEND_FILE_MAX_AGE_DEFAULT = 300
+
 
 class DevConfig(BaseConfig):
     """Local development / on-Pi runtime."""

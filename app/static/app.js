@@ -70,17 +70,39 @@
   }
 
   // ---------- Live indicator ----------
+  // Three states: "up" (connected), "connecting" (initial / mid-reconnect),
+  // "down" (disconnect_error or socket.io client absent). We use
+  // "connecting" instead of "down" during the initial page load so the
+  // badge doesn't flash "OFFLINE" for the brief window before the first
+  // SocketIO poll lands — which looked broken to operators.
+  let _lastLiveState = "connecting";
+  let _connectingSince = Date.now();
   function setLive(state) {
+    _lastLiveState = state;
+    if (state === "connecting") _connectingSince = Date.now();
     const ind = $("#live-indicator");
     if (!ind) return;
-    ind.classList.remove("live-up", "live-down");
-    ind.classList.add(state === "up" ? "live-up" : "live-down");
-    ind.title = state === "up"
-      ? "WebSocket connected — live updates active"
-      : "WebSocket disconnected";
+    ind.classList.remove("live-up", "live-down", "live-connecting");
+    if (state === "up") {
+      ind.classList.add("live-up");
+      ind.title = "WebSocket connected — live updates active";
+    } else if (state === "connecting") {
+      ind.classList.add("live-connecting");
+      ind.title = "Connecting to server…";
+    } else {
+      ind.classList.add("live-down");
+      ind.title = "WebSocket disconnected";
+    }
     const label = ind.querySelector(".live-label");
-    if (label) label.textContent = state === "up" ? "live" : "offline";
+    if (label) {
+      label.textContent =
+        state === "up" ? "live" :
+        state === "connecting" ? "connecting" :
+        "offline";
+    }
   }
+  // Initial state — show "connecting" until the first connect event lands
+  setLive("connecting");
 
   // ---------- Dashboard updates ----------
   function applySysinfo(status) {
@@ -399,8 +421,17 @@
     const socket = io({ transports: ["polling"], upgrade: false });
 
     socket.on("connect", () => { setLive("up"); });
-    socket.on("disconnect", () => { setLive("down"); });
-    socket.on("connect_error", () => { setLive("down"); });
+    socket.on("disconnect", () => { setLive("connecting"); });
+    socket.on("connect_error", () => {
+      // Only flip to "down" if connect_error keeps firing for a few
+      // seconds. A single error during initial connect or transport
+      // upgrade isn't worth shouting OFFLINE about.
+      if (_lastLiveState === "up" || Date.now() - _connectingSince > 5000) {
+        setLive("down");
+      } else {
+        setLive("connecting");
+      }
+    });
 
     socket.on("sysinfo", (data) => {
       try { applySysinfo(data); }
