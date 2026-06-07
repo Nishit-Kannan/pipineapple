@@ -29,15 +29,19 @@ def start():
         {
           "bssid":   "aa:bb:cc:dd:ee:ff",
           "channel": 6,
-          "essid":   "HomeWiFi",      (optional, just stored as metadata)
-          "deauth":  true             (optional, default true)
+          "essid":   "HomeWiFi",        (optional metadata)
+          "deauth":  false,             (optional, default false)
+          "tool":    "hcxdumptool"      (optional, default hcxdumptool;
+                                         supported: "hcxdumptool",
+                                         "airodump-ng")
         }
     """
     data = request.get_json(silent=True) or {}
     bssid = (data.get("bssid") or "").strip()
     channel = data.get("channel")
     essid = (data.get("essid") or "").strip()
-    deauth = bool(data.get("deauth", True))
+    deauth = bool(data.get("deauth", False))
+    tool = (data.get("tool") or "hcxdumptool").strip()
 
     if not bssid:
         return jsonify({"ok": False, "messages": ["bssid is required"]}), 400
@@ -49,7 +53,7 @@ def start():
         return jsonify({"ok": False, "messages": [f"channel {channel} out of range"]}), 400
 
     ok, messages = get_service().start_capture(
-        bssid, channel, essid, deauth=deauth,
+        bssid, channel, essid, deauth=deauth, tool=tool,
     )
     summary = "; ".join(messages)
     notif = notifications.success if ok else notifications.error

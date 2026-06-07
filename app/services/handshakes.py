@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.job_manager import job_manager
-from app.tools import airodump, handshake_detector
+from app.tools import airodump, handshake_detector, hcxdumptool
 
 log = logging.getLogger(__name__)
 
@@ -62,19 +62,29 @@ INJECT_ROLE = "wlan-ap"       # role/name of the injection + focused-capture rad
 
 # ---------- State (per-capture record) ------------------------------------
 
+TOOL_HCXDUMPTOOL = "hcxdumptool"
+TOOL_AIRODUMP = "airodump-ng"
+SUPPORTED_TOOLS = (TOOL_HCXDUMPTOOL, TOOL_AIRODUMP)
+
+
 class _Capture:
     """In-memory state for one in-flight capture. Threads, file paths,
     accumulated status. Persisted to index.json on stop."""
 
     def __init__(self, bssid: str, channel: int, essid: str,
-                 *, deauth: bool, prefix: Path) -> None:
+                 *, deauth: bool, pcap_path: Path,
+                 tool: str = TOOL_HCXDUMPTOOL) -> None:
         self.id = uuid.uuid4().hex
         self.bssid = bssid.lower()
         self.channel = channel
         self.essid_at_capture = essid
         self.deauth_used = deauth
-        self.prefix = prefix                          # without -01.cap suffix
-        self.pcap_path = Path(f"{prefix}-01.cap")     # what airodump will write
+        self.tool = tool
+        # File the parser will read. hcxdumptool writes pcapng; airodump
+        # writes <prefix>-01.cap (plus a CSV we ignore for handshake
+        # captures since the detector reads the pcap directly). The
+        # service is responsible for constructing the right path per tool.
+        self.pcap_path = pcap_path
         self.started_at = time.time()
         self.ended_at: float | None = None
         self.job_id: str | None = None
@@ -87,6 +97,7 @@ class _Capture:
         self.deauth_count = 0                         # number of bursts fired
         self.last_status: dict[str, Any] = {
             "messages_seen": [],
+            "has_pmkid":     False,
             "is_complete":   False,
             "is_partial":    False,
             "complete_pairs": 0,
@@ -111,7 +122,7 @@ class HandshakesService:
     # ---------- Public API ----------
     def start_capture(
         self, bssid: str, channel: int, essid: str,
-        *, deauth: bool = True,
+        *, deauth: bool = False, tool: str = TOOL_HCXDUMPTOOL,
     ) -> tuple[bool, list[str]]:
         """Begin a focused capture. Returns ``(ok, messages)``.
 
@@ -123,6 +134,11 @@ class HandshakesService:
         """
         bssid_norm = bssid.lower()
         msgs: list[str] = []
+
+        if tool not in SUPPORTED_TOOLS:
+            return False, [
+                f"unknown tool {tool!r}; supported: {', '.join(SUPPORTED_TOOLS)}"
+            ]
 
         with self._lock:
             if bssid_norm in self._active:
@@ -142,17 +158,27 @@ class HandshakesService:
                 "Configure one via Settings → Adapter Management."
             ]
 
-        # Set up the capture record + per-handshake directory
+        # Set up the capture record + per-handshake directory.
+        # File extension reflects the tool:
+        #   hcxdumptool -> <timestamp>.pcapng (modern, hashcat-friendly)
+        #   airodump-ng -> <timestamp>-01.cap (classic, airodump's
+        #                   auto-incremented suffix; we use the
+        #                   prefix in --write and parse the -01.cap)
         per_ap_dir = self._dir / _bssid_fs(bssid_norm)
         try:
             per_ap_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             return False, [f"could not create {per_ap_dir}: {e}"]
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        prefix = per_ap_dir / timestamp
+        if tool == TOOL_HCXDUMPTOOL:
+            pcap_path = per_ap_dir / f"{timestamp}.pcapng"
+            airodump_prefix: Path | None = None
+        else:
+            airodump_prefix = per_ap_dir / timestamp
+            pcap_path = Path(f"{airodump_prefix}-01.cap")
 
         capture = _Capture(bssid_norm, channel, essid,
-                           deauth=deauth, prefix=prefix)
+                           deauth=deauth, pcap_path=pcap_path, tool=tool)
         capture.iface = iface
 
         # Move the injection iface into monitor mode + pin to channel.
@@ -208,41 +234,60 @@ class HandshakesService:
                     f"or AP is on a wide channel; continuing anyway"
                 )
 
-        # Wipe any leftover files matching this prefix (shouldn't exist
-        # since timestamp is fresh, but be defensive).
-        for old in per_ap_dir.glob(f"{prefix.name}-*"):
-            try:
-                old.unlink()
-            except OSError:
-                pass
+        # Wipe any leftover files at the target path / prefix (shouldn't
+        # happen since timestamp is fresh, but be defensive).
+        try:
+            if pcap_path.is_file():
+                pcap_path.unlink()
+        except OSError:
+            pass
+        if airodump_prefix is not None:
+            for old in per_ap_dir.glob(f"{airodump_prefix.name}-*"):
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
 
-        # Build the focused airodump command. Note --output-format pcap
-        # only — we don't need the CSV summary; the EAPOL detector reads
-        # the pcap directly.
-        cmd = airodump.build_cmd(
-            iface, str(prefix),
-            channels=str(channel),         # pin channel
-            write_interval=1,
-        )
-        # Inject --bssid to lock to one AP. Insert before the iface
-        # (last element of build_cmd's output).
-        cmd = cmd[:-1] + ["--bssid", bssid_norm] + [cmd[-1]]
+        # Build the capture command per chosen tool.
+        if tool == TOOL_HCXDUMPTOOL:
+            # Single channel, all traffic. BSSID filtering happens in
+            # handshake_detector (hcxdumptool's --bpfc takes bytecode,
+            # not human BPF expressions). Active-scan default extracts
+            # PMKID directly from the AP — works without any client.
+            cmd = hcxdumptool.build_cmd(
+                iface, str(pcap_path), channel=int(channel),
+            )
+            tool_stub = hcxdumptool.is_stub()
+            launch_label = "hcxdumptool"
+        else:
+            # airodump-ng: classic capture. We use --bssid to lock to
+            # one AP (airodump's filter actually works for pcap output
+            # unlike hcxdumptool's). Caller-side --bssid means the
+            # pcap is already focused on the target.
+            cmd = airodump.build_cmd(
+                iface, str(airodump_prefix),
+                channels=str(channel),
+                write_interval=1,
+            )
+            cmd = cmd[:-1] + ["--bssid", bssid_norm] + [cmd[-1]]
+            tool_stub = airodump.is_stub()
+            launch_label = "airodump-ng (focused)"
 
-        if airodump.is_stub():
+        if tool_stub:
             capture.job_id = f"stub-capture-{int(time.time())}"
             msgs.append(f"(stub) would launch: {' '.join(cmd)}")
         else:
-            # /dev/null for stdout — same reason recon does: airodump's
-            # stdout is the curses-style refresh table, gigabytes per
-            # minute if captured. Useful data is in the pcap.
+            # /dev/null for stdout — both tools print refresh-table
+            # output that would balloon if captured to a file (S07
+            # bug we hit, fixed for both). Useful data is in the pcap.
             job = job_manager.start_job(
                 cmd,
                 name=f"capture-{bssid_norm[:8]}",
-                tags=["handshakes", "capture"],
+                tags=["handshakes", "capture", tool],
                 stdout_path="/dev/null",
             )
             capture.job_id = job.id
-            msgs.append(f"started focused airodump (job {job.id})")
+            msgs.append(f"started {launch_label} (job {job.id})")
 
         with self._lock:
             self._active[bssid_norm] = capture
@@ -267,7 +312,12 @@ class HandshakesService:
                 f"deauth burst loop active (every {int(DEAUTH_INTERVAL)}s)"
             )
         else:
-            msgs.append("passive capture (no deauth)")
+            if tool == TOOL_HCXDUMPTOOL:
+                msgs.append("PMKID-via-active-scan (no deauth; "
+                            "hcxdumptool pulls PMKID from the AP directly)")
+            else:
+                msgs.append("passive airodump capture (no deauth; "
+                            "waits for natural EAPOL associations)")
 
         return True, msgs
 
@@ -539,6 +589,7 @@ class HandshakesService:
             "essid":            capture.essid_at_capture,
             "channel":          capture.channel,
             "iface":            capture.iface,
+            "tool":             capture.tool,
             "deauth_used":      capture.deauth_used,
             "deauth_count":     capture.deauth_count,
             "started_at":       capture.started_at,
@@ -569,8 +620,11 @@ class HandshakesService:
                                      - capture.started_at),
             "deauth_used":       capture.deauth_used,
             "deauth_count":      capture.deauth_count,
+            "tool":              capture.tool,
+            "pcap_format":       "pcapng" if capture.tool == TOOL_HCXDUMPTOOL else "pcap",
             "pcap_relative_path": str(capture.pcap_path.relative_to(self._dir)),
             "messages_seen":     list(capture.last_status.get("messages_seen") or []),
+            "has_pmkid":         bool(capture.last_status.get("has_pmkid")),
             "is_complete":       bool(capture.last_status.get("is_complete")),
             "is_partial":        bool(capture.last_status.get("is_partial")),
             "complete_pairs":    int(capture.last_status.get("complete_pairs") or 0),

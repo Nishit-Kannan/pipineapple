@@ -740,9 +740,12 @@
     } else {
       label = `<span class="capture-pill capture-progress">waiting</span>`;
     }
+    const pmkid = inner.has_pmkid
+      ? ` <span class="capture-pill capture-complete" title="PMKID captured — crackable via hashcat 22000 even without M2/M3/M4">PMKID</span>`
+      : "";
     const deauth = s.deauth_used
       ? ` · deauth ×${s.deauth_count || 0}` : "";
-    return `${label} ${dots}${deauth}`;
+    return `${label}${pmkid} ${dots}${deauth}`;
   }
 
   async function _refreshCaptureStatus(bssid) {
@@ -788,18 +791,42 @@
       <div class="modal-card">
         <h3>Capture handshakes — ${escapeHtml(ap.essid || ap.bssid)}</h3>
         <p>
-          Locks an airodump on <code>wlan-ap</code> to channel
-          <strong>${escapeHtml(ap.channel)}</strong>, BSSID
-          <code>${escapeHtml(ap.bssid)}</code>, watching for the WPA
-          4-way EAPOL exchange (M1/M2/M3/M4).
+          Runs the chosen capture tool on <code>wlan-ap</code>, locked
+          to channel <strong>${escapeHtml(ap.channel)}</strong>, BSSID
+          <code>${escapeHtml(ap.bssid)}</code>.
         </p>
+        <fieldset style="border:1px solid var(--border); border-radius:4px; padding:8px 12px; margin-top:12px;">
+          <legend class="muted" style="padding:0 6px;">Capture tool</legend>
+          <label style="display:block; margin:6px 0;">
+            <input type="radio" name="capture-tool" value="hcxdumptool" checked>
+            <strong>hcxdumptool</strong> <span class="muted">— PMKID + EAPOL</span>
+            <div class="muted" style="font-size:11px; margin-left:22px;">
+              Active scan extracts PMKID from the AP directly (hashcat
+              mode 22000 — crackable on its own, no client needed). Also
+              captures natural EAPOL 4-ways when they happen. Recommended.
+            </div>
+          </label>
+          <label style="display:block; margin:6px 0;">
+            <input type="radio" name="capture-tool" value="airodump-ng">
+            <strong>airodump-ng</strong> <span class="muted">— EAPOL only (legacy)</span>
+            <div class="muted" style="font-size:11px; margin-left:22px;">
+              Classic capture, BSSID-filtered at the tool level so the
+              pcap is tighter. Only catches EAPOL frames when clients
+              (re)associate — usually needs deauth to be useful, and
+              PMK caching often produces M3-only captures.
+            </div>
+          </label>
+        </fieldset>
         <label style="display:flex; align-items:center; gap:8px; margin-top:12px;">
-          <input type="checkbox" id="capture-deauth-toggle" checked>
+          <input type="checkbox" id="capture-deauth-toggle">
           <span>Also send periodic deauth bursts to force fresh
-                handshakes (recommended for faster capture)</span>
+                4-way handshakes from associated clients</span>
         </label>
         <p class="muted" style="margin-top:8px; font-size:11px;">
-          Deauth frames are <strong>offensive</strong>. Lab equipment only.
+          Deauth default off. With hcxdumptool, PMKID is enough for
+          most cases. Enable deauth to also grab full 4-way captures
+          (it's <strong>offensive</strong>, lab equipment only,
+          noisier on the air).
         </p>
         <div class="modal-actions">
           <button class="bigbtn actbtn-muted" data-act="cancel">Cancel</button>
@@ -812,6 +839,8 @@
     overlay.querySelector("[data-act=cancel]").addEventListener("click", dismiss);
     overlay.querySelector("[data-act=start]").addEventListener("click", async () => {
       const deauth = overlay.querySelector("#capture-deauth-toggle").checked;
+      const toolEl = overlay.querySelector("input[name=capture-tool]:checked");
+      const tool = toolEl ? toolEl.value : "hcxdumptool";
       overlay.querySelector("[data-act=start]").disabled = true;
       overlay.querySelector("[data-act=start]").textContent = "Starting…";
       const res = await postJson("/handshakes/start", {
@@ -819,6 +848,7 @@
         channel: ap.channel,
         essid:   ap.essid,
         deauth:  deauth,
+        tool:    tool,
       });
       dismiss();
       if (res.ok && res.status) {
@@ -906,20 +936,23 @@
       if (c.is_complete)      pill = `<span class="capture-pill capture-complete">complete</span>`;
       else if (c.is_partial)  pill = `<span class="capture-pill capture-partial">partial</span>`;
       else                     pill = `<span class="capture-pill capture-progress">no handshake</span>`;
+      const pmkidBadge = c.has_pmkid
+        ? ` <span class="capture-pill capture-complete" title="PMKID captured">PMKID</span>` : "";
       const deauthBit = c.deauth_used
         ? ` · deauth ×${c.deauth_count || 0}` : ` · passive`;
+      const toolBit = c.tool ? ` · ${escapeHtml(c.tool)}` : "";
       const sizeBit = c.pcap_size_bytes != null
         ? _fmtBytes(c.pcap_size_bytes) : "missing";
       return `<div class="capture-row" data-id="${escapeHtml(c.id)}">
         <div class="capture-row-head">
-          ${pill} ${dots}
+          ${pill}${pmkidBadge} ${dots}
           <button class="capture-del" data-id="${escapeHtml(c.id)}"
                   title="Delete this capture">×</button>
         </div>
         <div class="capture-row-meta muted">
           ${escapeHtml(_fmtTs(c.started_at))} ·
           ${escapeHtml(c.duration_secs)}s ·
-          ${escapeHtml(sizeBit)}${deauthBit}
+          ${escapeHtml(sizeBit)}${deauthBit}${toolBit}
         </div>
         <div class="capture-row-meta muted" style="font-size:10px;">
           <code>${escapeHtml(c.pcap_relative_path || "")}</code>
@@ -996,16 +1029,17 @@
         else if (c.is_partial)  pill = `<span class="capture-pill capture-partial">partial</span>`;
         else                     pill = `<span class="capture-pill capture-progress">no hs</span>`;
         const deauthBit = c.deauth_used ? `deauth ×${c.deauth_count || 0}` : "passive";
+      const toolBit = c.tool ? ` · ${c.tool}` : "";
         const sizeBit = c.pcap_size_bytes != null ? _fmtBytes(c.pcap_size_bytes) : "missing";
         return `<div class="capture-row" data-id="${escapeHtml(c.id)}">
           <div class="capture-row-head">
-            ${pill} ${dots}
+            ${pill}${pmkidBadge} ${dots}
             <button class="capture-del" data-act="del" data-id="${escapeHtml(c.id)}"
                     title="Delete this capture">×</button>
           </div>
           <div class="capture-row-meta muted">
             ${escapeHtml(_fmtTs(c.started_at))} · ${escapeHtml(c.duration_secs)}s ·
-            ${escapeHtml(sizeBit)} · ${escapeHtml(deauthBit)}
+            ${escapeHtml(sizeBit)} · ${escapeHtml(deauthBit)}${toolBit}
           </div>
         </div>`;
       }).join("");

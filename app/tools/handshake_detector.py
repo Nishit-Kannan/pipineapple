@@ -174,6 +174,15 @@ def detect_handshakes(pcap_path: str | Path) -> list[dict[str, Any]]:
                 if msg is None:
                     continue
 
+                # PMKID detection — only on M1. PMKID lives in M1's
+                # Key Data field as a vendor-specific KDE (00-0F-AC:4).
+                # Modern APs include it in every M1 unless explicitly
+                # disabled. PMKID alone is enough for hashcat mode
+                # 22000 — the entire reason hcxdumptool's active-scan
+                # mode is useful: it provokes M1 from APs without
+                # needing a client to associate.
+                has_pmkid = (msg == 1) and _m1_has_pmkid(raw)
+
                 ts = float(pkt.time) if hasattr(pkt, "time") else 0.0
                 pkey = (bssid, sta)
                 entry = pairs.get(pkey)
@@ -182,11 +191,14 @@ def detect_handshakes(pcap_path: str | Path) -> list[dict[str, Any]]:
                         "bssid":         bssid,
                         "station_mac":   sta,
                         "messages_seen": {msg},
+                        "has_pmkid":     has_pmkid,
                         "first_seen":    ts,
                         "last_seen":     ts,
                     }
                 else:
                     entry["messages_seen"].add(msg)
+                    if has_pmkid:
+                        entry["has_pmkid"] = True
                     if ts < entry["first_seen"]:
                         entry["first_seen"] = ts
                     if ts > entry["last_seen"]:
@@ -210,10 +222,20 @@ def detect_handshakes(pcap_path: str | Path) -> list[dict[str, Any]]:
     for entry in pairs.values():
         msgs = entry["messages_seen"]
         is_complete = msgs >= {1, 2, 3, 4}
-        is_partial = (({1, 2} <= msgs) or ({2, 3} <= msgs)) and not is_complete
+        # Partial crackability: M1+M2 (MIC available), M2+M3 (less
+        # common), OR a captured PMKID alone (hashcat 22000 handles
+        # this; doesn't need any other 4-way frames). PMKID is the
+        # killer feature of hcxdumptool's active scan — works without
+        # the client doing anything.
+        is_partial = (
+            ({1, 2} <= msgs) or
+            ({2, 3} <= msgs) or
+            entry.get("has_pmkid", False)
+        ) and not is_complete
         entry["messages_seen"] = sorted(msgs)
         entry["is_complete"] = is_complete
         entry["is_partial"] = is_partial
+        entry.setdefault("has_pmkid", False)
         out.append(entry)
     out.sort(key=lambda d: d["last_seen"], reverse=True)
 
@@ -240,20 +262,26 @@ def summarize_for_capture(
     msgs_seen: set[int] = set()
     complete_pairs = 0
     partial_pairs = 0
+    any_pmkid = False
     for h in hs:
         msgs_seen.update(h["messages_seen"])
+        if h.get("has_pmkid"):
+            any_pmkid = True
         if h["is_complete"]:
             complete_pairs += 1
         elif h["is_partial"]:
             partial_pairs += 1
 
     union_complete = msgs_seen >= {1, 2, 3, 4}
-    union_partial = ({1, 2} <= msgs_seen or {2, 3} <= msgs_seen) and not union_complete
+    union_partial = (
+        ({1, 2} <= msgs_seen) or ({2, 3} <= msgs_seen) or any_pmkid
+    ) and not union_complete
 
     return {
         "target_bssid":    target_bssid.lower() if target_bssid else None,
         "pairs":           hs,                # per-(bssid, sta) detail
         "messages_seen":   sorted(msgs_seen), # union across pairs
+        "has_pmkid":       any_pmkid,         # AP-level: PMKID captured?
         "is_complete":     union_complete,
         "is_partial":      union_partial,
         "complete_pairs":  complete_pairs,
@@ -277,24 +305,93 @@ def _classify(install: bool, ack: bool, mic: bool, secure: bool) -> int | None:
     return None
 
 
+# PMKID KDE marker: vendor OUI 00-0F-AC + type 0x04. Per IEEE 802.11-2020
+# §12.7.2 KDE table. The whole KDE looks like:
+#     0xDD <kde_len> 00 0F AC 04 <16-byte PMKID>
+# where kde_len = 0x14 = 20 (4 bytes of OUI+type header + 16-byte PMKID).
+_PMKID_KDE_PREFIX = b"\xdd\x14\x00\x0f\xac\x04"
+
+
+def _m1_has_pmkid(eapol_bytes: bytes) -> bool:
+    """True if this EAPOL-Key M1 frame contains the PMKID KDE in Key Data.
+
+    EAPOL-Key descriptor layout (after the 4-byte EAPOL header):
+        offset  0  : Descriptor Type (1 byte)
+        offset  1  : Key Information (2 bytes, big-endian)
+        offset  3  : Key Length (2)
+        offset  5  : Replay Counter (8)
+        offset 13  : Key Nonce (32)
+        offset 45  : EAPOL Key IV (16)
+        offset 61  : Key RSC (8)
+        offset 69  : Reserved (8)
+        offset 77  : Key MIC (16)  -- size varies in newer AKMs; common 16
+        offset 93  : Key Data Length (2 bytes, big-endian)
+        offset 95  : Key Data (Key Data Length bytes)
+
+    The full EAPOL frame in scapy's bytes() output prepends a 4-byte
+    EAPOL header (version, type, length), so the descriptor starts at
+    raw[4]. The KDL field is at raw[4+93+4 .. 4+95+4] = raw[97:99],
+    Key Data at raw[99:99+kdl].
+
+    For PMKID specifically: scan the Key Data for the marker
+    DD 14 00 0F AC 04 ...
+    Returns True if found.
+    """
+    # Need enough bytes to even have a Key Data Length field
+    # Minimum descriptor body size is 95 octets + 2 for KDL = 97;
+    # plus EAPOL header (4) = 101.
+    if len(eapol_bytes) < 101:
+        return False
+    try:
+        # EAPOL header is 4 bytes; Key Data Length is at descriptor byte 93
+        kdl_off = 4 + 93
+        kdl = int.from_bytes(eapol_bytes[kdl_off:kdl_off + 2], "big")
+        if kdl == 0:
+            return False
+        key_data_start = kdl_off + 2
+        key_data_end = key_data_start + kdl
+        if key_data_end > len(eapol_bytes):
+            # Truncated frame — be conservative
+            key_data_end = len(eapol_bytes)
+        key_data = eapol_bytes[key_data_start:key_data_end]
+        return _PMKID_KDE_PREFIX in key_data
+    except (IndexError, ValueError):
+        return False
+
+
 # ---------- Stub data for Mac dev -----------------------------------------
 
 def _stub_handshakes() -> list[dict[str, Any]]:
-    """Synthetic data: one complete handshake + one partial."""
+    """Synthetic data: one full 4-way + one M1+PMKID + one M3-only."""
     return [
         {
             "bssid":         "aa:bb:cc:dd:ee:01",
             "station_mac":   "11:22:33:44:55:01",
             "messages_seen": [1, 2, 3, 4],
+            "has_pmkid":     True,
             "is_complete":   True,
             "is_partial":    False,
             "first_seen":    1717603200.0,
             "last_seen":     1717603200.5,
         },
         {
+            # The hcxdumptool active-scan signature: M1 from the AP
+            # in response to our probe, containing PMKID. No client
+            # involved.
+            "bssid":         "aa:bb:cc:dd:ee:01",
+            "station_mac":   "00:c0:ca:b9:65:4a",   # our wlan-ap MAC
+            "messages_seen": [1],
+            "has_pmkid":     True,
+            "is_complete":   False,
+            "is_partial":    True,
+            "first_seen":    1717603300.0,
+            "last_seen":     1717603300.1,
+        },
+        {
             "bssid":         "aa:bb:cc:dd:ee:01",
             "station_mac":   "11:22:33:44:55:02",
             "messages_seen": [1, 2],
+            "has_pmkid":     False,
             "is_complete":   False,
             "is_partial":    True,
             "first_seen":    1717603310.0,

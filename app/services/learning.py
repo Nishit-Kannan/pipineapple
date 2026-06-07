@@ -1644,6 +1644,247 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 07 / 07.5 — Handshake capture: EAPOL 4-way + PMKID via hcxdumptool
+    # ------------------------------------------------------------------
+    {
+        "id": "handshake-capture",
+        "title": "Handshake capture — EAPOL 4-way + PMKID",
+        "added_in_session": 7,
+        "intro": (
+            "Capturing the cryptographic material needed to crack a "
+            "WPA2/WPA3-Personal pre-shared key offline. Two distinct "
+            "signals we can target:\n"
+            " * The EAPOL 4-way handshake (M1-M4) that happens during "
+            "client association. Needs a client to associate (or "
+            "deauth + reassociate). The MIC in M2 is what hashcat "
+            "tries to recreate by guessing the PSK.\n"
+            " * The PMKID, which the AP includes in M1 of its own "
+            "accord. hcxdumptool's active-scan mode triggers M1 from "
+            "the AP by sending a fake association — **no client "
+            "involvement at all**. PMKID alone is enough for hashcat "
+            "mode 22000. This is the real-pen-test approach.\n"
+            "Session 07 originally built this with airodump-ng; "
+            "Session 07.5 swapped to hcxdumptool because in actual "
+            "engagements you can't ask the client to forget the "
+            "network, and modern devices cache PMK aggressively, "
+            "skipping M1/M2 on reconnect."
+        ),
+        "ui_reference": (
+            "Recon page → click an AP row → AP slide-out → "
+            "'Capture handshakes' button + 'Captures' tab. "
+            "Top-level Captures card lists everything across all APs."
+        ),
+        "wrapper_modules": [
+            "app/tools/hcxdumptool.py",
+            "app/tools/handshake_detector.py",
+            "app/services/handshakes.py",
+            "app/routes/handshakes.py",
+        ],
+        "commands": [
+            # ---- Install ----
+            {
+                "command": "sudo apt install -y hcxtools",
+                "description": (
+                    "Provides hcxdumptool (capture) + hcxpcapngtool "
+                    "(format conversion to hashcat .22000). Modern "
+                    "successor to the airodump-ng-based workflow. "
+                    "Pi OS Trixie has it in the default repos."
+                ),
+            },
+
+            # ---- The EAPOL 4-way handshake ----
+            {
+                "command": "(reference) EAPOL 4-way message identification",
+                "description": (
+                    "All four are EAPOL-Key frames (type 3) with "
+                    "Pairwise=1 in Key Information. The (Install, Ack, "
+                    "MIC, Secure) tuple distinguishes them:\n"
+                    "  M1 : (0, 1, 0, 0)  AP→STA  ANonce, no MIC yet\n"
+                    "  M2 : (0, 0, 1, 0)  STA→AP  SNonce + first MIC ← what hashcat needs\n"
+                    "  M3 : (1, 1, 1, 1)  AP→STA  ANonce again + MIC + key install\n"
+                    "  M4 : (0, 0, 1, 1)  STA→AP  final ack\n"
+                    "Frame direction (FromDS/ToDS bits) tells you "
+                    "which address is the BSSID vs the station. "
+                    "Group-key handshakes (GTK rekeys) have "
+                    "Pairwise=0 and are ignored."
+                ),
+            },
+            {
+                "command": "(reference) What constitutes a usable capture",
+                "description": (
+                    "For hashcat mode 22000 (the universal WPA "
+                    "format):\n"
+                    "  * Full 4-way (M1+M2+M3+M4) — best. "
+                    "aircrack-ng calls this '1 handshake'.\n"
+                    "  * Partial (M1+M2 OR M2+M3) — also crackable. "
+                    "Aircrack labels '0 handshakes' but hashcat 22000 "
+                    "accepts it.\n"
+                    "  * PMKID alone — crackable on its own. No "
+                    "client interaction required. Modern best practice."
+                ),
+            },
+
+            # ---- PMKID ----
+            {
+                "command": "(reference) Where PMKID lives in the frame",
+                "description": (
+                    "PMKID is a vendor-specific KDE inside M1's Key "
+                    "Data field. KDE format:\n"
+                    "  type=0xDD (vendor)\n"
+                    "  length=0x14 (20 bytes total)\n"
+                    "  OUI=00-0F-AC (IEEE)\n"
+                    "  subtype=0x04 (PMKID)\n"
+                    "  data=16-byte PMKID (HMAC-SHA1 of PMK + "
+                    "  'PMK Name' + AA + SPA)\n"
+                    "Most APs include PMKID in every M1 by default. "
+                    "Some can be configured to omit it ('PMK caching "
+                    "disabled' in the RSN advertisement)."
+                ),
+            },
+
+            # ---- hcxdumptool ----
+            {
+                "command": "sudo hcxdumptool -i wlan-ap -w /tmp/test.pcapng -c 6",
+                "description": (
+                    "Capture on channel 6, write to pcapng. Default "
+                    "is active mode — sends fake association requests "
+                    "to APs on this channel, extracts PMKID from "
+                    "their M1 responses. No client needs to be "
+                    "associated. This is what makes hcxdumptool the "
+                    "right tool for pen-testing handshake capture vs "
+                    "airodump's wait-for-client approach."
+                ),
+                "notes": (
+                    "Caller is responsible for putting the interface "
+                    "in monitor mode + on the right channel first. "
+                    "hcxdumptool doesn't manage interface state."
+                ),
+            },
+            {
+                "command": "sudo hcxdumptool -i wlan-ap -w /tmp/test.pcapng -c 6 --disable_active_scan",
+                "description": (
+                    "Passive mode — captures EAPOL when a client "
+                    "happens to (re)associate, but does NOT extract "
+                    "PMKID without a client. Quieter on the air, much "
+                    "less effective. Useful when stealth is required."
+                ),
+            },
+
+            # ---- Verification / conversion ----
+            {
+                "command": "aircrack-ng /var/lib/pipineapple/handshakes/<bssid>/<file>.pcapng",
+                "description": (
+                    "Quick check — does the pcap contain a full "
+                    "4-way? '1 handshake' = yes. '0 handshakes' "
+                    "doesn't mean 'nothing crackable' — aircrack-ng "
+                    "is strict and ignores PMKID-only captures. "
+                    "Always check with hcxpcapngtool too."
+                ),
+            },
+            {
+                "command": "sudo hcxpcapngtool -o /tmp/out.22000 /var/lib/pipineapple/handshakes/<bssid>/<file>.pcapng",
+                "description": (
+                    "Convert pcapng to hashcat mode 22000 format "
+                    "(also called .hc22000). Each line is one "
+                    "crackable target — either a PMKID hash or an "
+                    "EAPOL 4-way hash. The output's first column "
+                    "tells you which type:\n"
+                    "  WPA*01 = PMKID\n"
+                    "  WPA*02 = EAPOL handshake\n"
+                    "Counts in the tool's stdout reveal what was "
+                    "actually captured (e.g. 'PMKIDs written: 3, "
+                    "EAPOL pairs written: 1')."
+                ),
+            },
+            {
+                "command": "hashcat -m 22000 /tmp/out.22000 /path/to/wordlist.txt",
+                "description": (
+                    "Mode 22000 cracks both PMKID and EAPOL formats "
+                    "from the same .22000 file. Session 09 will "
+                    "automate this off-Pi (the Pi 5's CPU/GPU is "
+                    "way too slow for serious cracking; we dispatch "
+                    "to a Mac/Jetson over SSH)."
+                ),
+            },
+
+            # ---- Deauth as a complement (not requirement) ----
+            {
+                "command": "sudo aireplay-ng --deauth 10 -a <BSSID> wlan-ap",
+                "description": (
+                    "Force a fresh 4-way handshake from associated "
+                    "clients. NOT needed for PMKID — that comes "
+                    "from active scan. Useful when you also want "
+                    "the full 4-way from a specific client. The "
+                    "platform's capture-modal deauth checkbox runs "
+                    "this in a loop every few seconds while "
+                    "hcxdumptool is capturing."
+                ),
+                "notes": (
+                    "Lab equipment only. Modern devices cache PMK "
+                    "and often skip M1/M2 even after deauth, "
+                    "producing only M3-only captures. PMKID via "
+                    "active scan is more reliable."
+                ),
+            },
+
+            # ---- Gotchas from the build ----
+            {
+                "command": "(gotcha) PMK caching defeats deauth-and-wait",
+                "description": (
+                    "iOS / macOS / modern Android cache the PMK "
+                    "after a successful association — often for "
+                    "hours. When deauth fires and the client "
+                    "reconnects, both sides skip M1/M2 (PMKSA "
+                    "cache hit) and jump straight to M3. The user "
+                    "sees 'M3 only' captures, aircrack-ng says "
+                    "'0 handshakes'. The fix is hcxdumptool's "
+                    "active scan + PMKID — works regardless of "
+                    "client cache state."
+                ),
+            },
+            {
+                "command": "(gotcha) hcxdumptool stdout to /dev/null, same as airodump",
+                "description": (
+                    "hcxdumptool prints status updates to stdout. "
+                    "We don't read them — the pcap is the data "
+                    "path. JobManager's stdout_path must be "
+                    "/dev/null for the same reason airodump's was "
+                    "(captured stdout balloons over time, fills "
+                    "tmpfs, swap thrashes the Pi)."
+                ),
+            },
+            {
+                "command": "(gotcha) Orphan processes if Flask gets SIGKILLed",
+                "description": (
+                    "If systemd SIGKILLs pipineapple before its "
+                    "atexit handler fires, JobManager-spawned "
+                    "children (airodump, hcxdumptool, aireplay) "
+                    "survive and get reparented to init. They "
+                    "keep writing pcap and holding the radio. "
+                    "Recovery: sudo killall -9 airodump-ng "
+                    "aireplay-ng hcxdumptool. Long-term fix on "
+                    "the to-do: process groups + startup orphan "
+                    "scan in JobManager."
+                ),
+            },
+            {
+                "command": "(gotcha) AP reconfigure + JobManager child shutdown timing",
+                "description": (
+                    "Stopping a capture used to be synchronous on "
+                    "the HTTP request thread: SIGINT airodump (up "
+                    "to 5s) + scapy re-parse of the pcap (10s+) + "
+                    "index write. The blocking starved werkzeug's "
+                    "worker pool, SocketIO polls dropped, browser "
+                    "saw 'offline'. Fix: stop_capture spawns a "
+                    "daemon thread with app_context, returns "
+                    "instantly. UI sees 'stopping' then 'idle' "
+                    "via the capture:status SocketIO event."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 01 — Driver detection
     # ------------------------------------------------------------------
     {
