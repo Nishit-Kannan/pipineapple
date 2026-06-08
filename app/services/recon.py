@@ -707,19 +707,27 @@ class ReconService:
                          for b, a in merged_aps.items()}
         known_ssids = {a.get("essid", "") for a in merged_aps.values()
                        if a.get("essid")}
+        # Reverse direction: count clients per BSSID so the APs table
+        # can show "5 clients" instead of forcing the operator to filter
+        # the Clients table by BSSID to figure it out. "(not associated)"
+        # clients are intentionally excluded — they belong to no AP.
+        client_count_per_bssid: dict[str, int] = {}
         for c in merged_clients.values():
             ap_bssid = (c.get("bssid") or "").lower()
             c["ap_ssid"] = bssid_to_ssid.get(ap_bssid, "")
-            # Split probes into in-range vs not-in-range. The
-            # not-in-range list is the privacy-interesting one — those
-            # are SSIDs the device remembers from elsewhere and is
-            # actively asking about ("MyOldOfficeWifi", "JoesCoffee",
-            # "Hotel-Vegas"). Operator's own devices probing for old
-            # networks they no longer use = PNL hygiene problem worth
-            # surfacing.
             probed = c.get("probed_essids", [])
             c["probed_in_range"]     = [s for s in probed if s in known_ssids]
             c["probed_not_in_range"] = [s for s in probed if s and s not in known_ssids]
+            if ap_bssid and not ap_bssid.startswith("(") and ap_bssid != "":
+                client_count_per_bssid[ap_bssid] = \
+                    client_count_per_bssid.get(ap_bssid, 0) + 1
+
+        # Stamp the count on each AP record. Defaults to 0 for APs with
+        # no observed clients (which is fine — most beacons-only APs
+        # will show 0 most of the time).
+        for ap in merged_aps.values():
+            b = (ap.get("bssid") or "").lower()
+            ap["client_count"] = client_count_per_bssid.get(b, 0)
 
         with self._lock:
             self._aps = merged_aps

@@ -222,13 +222,20 @@ def detect_handshakes(pcap_path: str | Path) -> list[dict[str, Any]]:
     for entry in pairs.values():
         msgs = entry["messages_seen"]
         is_complete = msgs >= {1, 2, 3, 4}
-        # Partial crackability: M1+M2 (MIC available), M2+M3 (less
-        # common), OR a captured PMKID alone (hashcat 22000 handles
-        # this; doesn't need any other 4-way frames). PMKID is the
-        # killer feature of hcxdumptool's active scan — works without
-        # the client doing anything.
+        # Partial crackability — any of these is enough for hashcat
+        # mode 22000:
+        #   * PMKID alone (hcxdumptool active-scan signature)
+        #   * M1+M2 — most common, M2 carries the crackable MIC
+        #   * M1+M3 — happens with PMK caching: client uses cached
+        #             PMK, both sides skip to M3. M3's MIC + M1's
+        #             ANonce is hashcat's "EAPOL pair M1M3" target.
+        #   * M2+M3 — uncommon but valid: M3's MIC + M2's EAPOL bytes
+        # M3 alone OR M2 alone OR M1 alone don't have enough material.
+        # hcxpcapngtool reports M1M2 / M1M3 / M2M3 pair counts
+        # separately for exactly this reason.
         is_partial = (
             ({1, 2} <= msgs) or
+            ({1, 3} <= msgs) or
             ({2, 3} <= msgs) or
             entry.get("has_pmkid", False)
         ) and not is_complete
@@ -273,8 +280,13 @@ def summarize_for_capture(
             partial_pairs += 1
 
     union_complete = msgs_seen >= {1, 2, 3, 4}
+    # Same M1M2 / M1M3 / M2M3 / PMKID logic as detect_handshakes —
+    # see comment there for which combinations hashcat 22000 cracks.
     union_partial = (
-        ({1, 2} <= msgs_seen) or ({2, 3} <= msgs_seen) or any_pmkid
+        ({1, 2} <= msgs_seen)
+        or ({1, 3} <= msgs_seen)
+        or ({2, 3} <= msgs_seen)
+        or any_pmkid
     ) and not union_complete
 
     return {

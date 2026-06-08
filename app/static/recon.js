@@ -66,6 +66,12 @@
       tbody.innerHTML = sorted.map((ap) => {
         const sec = ap.encryption + (ap.auth ? "/" + ap.auth : "");
         const sigVal = ap.signal_dbm == null ? "—" : ap.signal_dbm;
+        // Highlight client count when >0 — visually distinguishes APs
+        // with active clients (interesting targets) from beacon-only ones.
+        const clientCount = ap.client_count || 0;
+        const clientCell = clientCount > 0
+          ? `<strong>${clientCount}</strong>`
+          : `<span class="muted">0</span>`;
         return `<tr data-bssid="${escapeHtml(ap.bssid)}">
           <td><span class="sig-pill ${signalClass(ap.signal_dbm)}">${escapeHtml(sigVal)}</span></td>
           <td>${escapeHtml(ap.band || "—")}</td>
@@ -73,6 +79,7 @@
           <td>${ap.essid ? escapeHtml(ap.essid) : "<em class=\"muted\">&lt;hidden&gt;</em>"}</td>
           <td><code>${escapeHtml(ap.bssid)}</code></td>
           <td>${escapeHtml(sec)}</td>
+          <td>${clientCell}</td>
           <td>${escapeHtml(ap.beacons)}</td>
           <td>${escapeHtml(ap.data_packets)}</td>
           <td class="muted">${escapeHtml(ap.last_seen || "—")}</td>
@@ -985,98 +992,10 @@
     });
   }
 
-  // ---- Top-level Captures card (grouped by BSSID, on the Recon page) ----
-  async function loadCapturesCard() {
-    const body = $("captures-card-body");
-    const count = $("captures-count");
-    if (!body) return;   // page doesn't have the card (other pages)
-    let captures = [];
-    try {
-      const r = await fetch("/handshakes/list");
-      if (r.ok) {
-        const data = await r.json();
-        captures = data.captures || [];
-      }
-    } catch (e) { /* render empty */ }
-
-    if (count) count.textContent = String(captures.length);
-    if (!captures.length) {
-      body.innerHTML = `<p class="muted">No saved captures yet. Use the
-        "Capture handshakes" button in an AP's slide-out to record one.</p>`;
-      return;
-    }
-
-    // Group by BSSID — same AP's captures stay together. Use most-recent
-    // essid_at_capture as the group header.
-    const groups = {};
-    for (const c of captures) {
-      const b = (c.bssid || "").toLowerCase();
-      if (!groups[b]) groups[b] = [];
-      groups[b].push(c);
-    }
-    const groupKeys = Object.keys(groups).sort((a, b) => {
-      // Sort groups by most recent capture in each, desc
-      const aMax = Math.max(...groups[a].map((c) => c.started_at || 0));
-      const bMax = Math.max(...groups[b].map((c) => c.started_at || 0));
-      return bMax - aMax;
-    });
-
-    const html = groupKeys.map((b) => {
-      const cs = groups[b].slice().sort((x, y) => (y.started_at || 0) - (x.started_at || 0));
-      const headerEssid = cs[0].essid_at_capture || "<unknown SSID>";
-      const rows = cs.map((c) => {
-        const dots = _fmtMsgDots(c.messages_seen);
-        let pill;
-        if (c.is_complete)      pill = `<span class="capture-pill capture-complete">complete</span>`;
-        else if (c.is_partial)  pill = `<span class="capture-pill capture-partial">partial</span>`;
-        else                     pill = `<span class="capture-pill capture-progress">no hs</span>`;
-        const deauthBit = c.deauth_used ? `deauth ×${c.deauth_count || 0}` : "passive";
-      const toolBit = c.tool ? ` · ${c.tool}` : "";
-        const sizeBit = c.pcap_size_bytes != null ? _fmtBytes(c.pcap_size_bytes) : "missing";
-        return `<div class="capture-row" data-id="${escapeHtml(c.id)}">
-          <div class="capture-row-head">
-            ${pill}${pmkidBadge} ${dots}
-            <button class="capture-del" data-act="del" data-id="${escapeHtml(c.id)}"
-                    title="Delete this capture">×</button>
-          </div>
-          <div class="capture-row-meta muted">
-            ${escapeHtml(_fmtTs(c.started_at))} · ${escapeHtml(c.duration_secs)}s ·
-            ${escapeHtml(sizeBit)} · ${escapeHtml(deauthBit)}${toolBit}
-          </div>
-        </div>`;
-      }).join("");
-      return `<div class="capture-group" data-bssid="${escapeHtml(b)}">
-        <div class="capture-group-head">
-          <strong>${escapeHtml(headerEssid)}</strong>
-          <code class="muted">${escapeHtml(b)}</code>
-          <span class="muted">· ${cs.length} capture${cs.length === 1 ? "" : "s"}</span>
-          <button class="capture-bulk-del" data-act="del-bssid" data-bssid="${escapeHtml(b)}"
-                  title="Delete all captures for this AP">Delete all</button>
-        </div>
-        <div class="capture-group-rows">${rows}</div>
-      </div>`;
-    }).join("");
-
-    body.innerHTML = html;
-
-    // Single delegated handler for both per-row and per-group deletes
-    body.addEventListener("click", async (e) => {
-      const delBtn = e.target.closest("[data-act=del]");
-      const bulkBtn = e.target.closest("[data-act=del-bssid]");
-      if (delBtn) {
-        e.stopPropagation();
-        if (!confirm("Delete this capture? The pcap file will be removed.")) return;
-        await postJson("/handshakes/delete", { id: delBtn.dataset.id });
-        loadCapturesCard();
-      } else if (bulkBtn) {
-        e.stopPropagation();
-        const b = bulkBtn.dataset.bssid;
-        if (!confirm(`Delete ALL captures for ${b}? pcap files will be removed.`)) return;
-        await postJson("/handshakes/delete-by-bssid", { bssid: b });
-        loadCapturesCard();
-      }
-    }, { once: false });
-  }
+  // The Recon-page Captures card was removed in S08.1 cleanup. The
+  // dedicated /handshakes page (sidebar entry) is the canonical
+  // cross-AP captures view. Per-AP captures still live in the AP
+  // slide-out's "Captures" tab for in-flow visibility.
 
   function attachCaptureSocketHandler() {
     const tryWire = () => {
@@ -1103,9 +1022,8 @@
             _loadCapturesTab(activeDetail.ap.bssid);
           }
         }
-        // ALWAYS refresh the top-level Captures card on ended,
-        // regardless of which slide-out (if any) is open.
-        if (payload.ended) loadCapturesCard();
+        // (Recon-page Captures card removed in S08.1; the Handshakes
+        // page does its own capture:status refresh via handshakes.js.)
       });
     };
     tryWire();
@@ -1122,7 +1040,6 @@
     attachSlideoutChrome();
     attachEthicsHandlers();
     attachCaptureSocketHandler();
-    loadCapturesCard();
 
     // Fetch one snapshot immediately so we don't wait up to POLL_INTERVAL
     // for the first SocketIO event after page load.

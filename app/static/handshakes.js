@@ -14,12 +14,27 @@
 
 (function () {
   "use strict";
+  console.log("[handshakes.js] script loaded, document.readyState=", document.readyState);
 
-  // Only run on the handshakes page
-  document.addEventListener("DOMContentLoaded", () => {
-    if (!document.getElementById("hs-tbody")) return;
+  // The defer attribute on the script tag means this runs AFTER the
+  // DOM is parsed but BEFORE DOMContentLoaded fires. Most of the time
+  // addEventListener is fine. But if for some reason readyState is
+  // already "complete" (e.g., script re-injected later, cached weirdly),
+  // the listener never fires. Belt-and-suspenders: run init directly
+  // if the DOM is already done parsing.
+  function bootstrap() {
+    if (!document.getElementById("hs-tbody")) {
+      console.log("[handshakes.js] hs-tbody not found, skipping init (not on Handshakes page)");
+      return;
+    }
+    console.log("[handshakes.js] init firing");
     init();
-  });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bootstrap);
+  } else {
+    bootstrap();   // DOM already parsed
+  }
 
   const $ = (id) => document.getElementById(id);
   const escapeHtml = (s) =>
