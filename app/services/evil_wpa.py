@@ -200,18 +200,14 @@ class EvilWpaService:
                 "stopped_at":         None,
             })
 
-        # Bring the sniffer radio fully into monitor mode + UP + locked to
-        # the rogue AP's channel. Recon's stop leaves the monitor adapters
-        # DOWN, and `iw set channel` is refused on a down iface — so a bare
-        # set_channel() silently no-ops and the sniffer ends up bound to a
-        # down, channel-less interface capturing nothing. Order matters:
-        # down -> set type monitor -> up -> set channel.
-        if not stub_mode():
-            ok, msgs = self._prep_monitor_iface(iface, self._channel)
-            if not ok:
-                log.warning("evil_wpa: sniffer iface prep on %s ch%d "
-                            "incomplete: %s", iface, self._channel,
-                            "; ".join(msgs))
+        # NOTE: the sniffer radio is prepped (monitor + up + channel) and
+        # re-asserted INSIDE the sniffer thread (_sniff_loop), not here.
+        # Prepping in start() loses a race on hardware: pausing recon (a
+        # few lines up in pineap._start_broadcast) tears airodump down in
+        # a BACKGROUND thread, which can down this radio a beat after we
+        # prep it — leaving the sniffer bound to a dead, channel-less
+        # iface (observed: wlan-mon-5g down, zero EAPOL). Prepping in the
+        # sniff loop with rebind-on-drop wins that race and self-heals.
 
         try:
             from flask import current_app
@@ -380,19 +376,48 @@ class EvilWpaService:
             are the M1, M2, M3, M4 frames we actually want.
         """
         from scapy.sendrecv import sniff
-        try:
-            sniff(
-                iface=self._iface,
-                prn=self._on_frame,
-                store=False,
-                stop_filter=lambda _pkt: self._stop_event.is_set(),
-                lfilter=lambda pkt: self._is_relevant(pkt),
-            )
-        except OSError as e:
-            log.error("evil_wpa sniff bind failed on %s: %s",
-                      self._iface, e)
-        except Exception:
-            log.exception("evil_wpa sniff loop")
+
+        # Self-healing bind loop. Before each bind we re-assert the radio
+        # is monitor + UP + locked to the AP's channel — recon's async
+        # teardown (triggered when we paused it at start) can down this
+        # radio just after start(), and a sniffer bound to a down iface
+        # captures nothing. If sniff() errors (iface gone) or returns
+        # while we're still running, we re-prep and rebind. Beacons from
+        # our own BSSID keep arriving ~10/s, so stop_filter stays
+        # responsive and we exit promptly on stop.
+        while not self._stop_event.is_set():
+            ok, msgs = self._prep_monitor_iface(self._iface, self._channel)
+            if not ok:
+                log.warning("evil_wpa: %s not ready for ch%d (%s) — "
+                            "retry in 2s", self._iface, self._channel,
+                            "; ".join(msgs))
+                self._stop_event.wait(2.0)
+                continue
+            log.info("evil_wpa: sniffer bound on %s ch%d",
+                     self._iface, self._channel)
+            try:
+                sniff(
+                    iface=self._iface,
+                    prn=self._on_frame,
+                    store=False,
+                    stop_filter=lambda _pkt: self._stop_event.is_set(),
+                    lfilter=lambda pkt: self._is_relevant(pkt),
+                )
+            except OSError as e:
+                log.error("evil_wpa sniff bind failed on %s: %s — "
+                          "rebinding in 2s", self._iface, e)
+                self._stop_event.wait(2.0)
+                continue
+            except Exception:
+                log.exception("evil_wpa sniff loop")
+                self._stop_event.wait(2.0)
+                continue
+            # sniff() returned: stop requested, or the iface vanished
+            # under us. Loop re-preps and rebinds unless we're stopping.
+            if not self._stop_event.is_set():
+                log.warning("evil_wpa: sniff on %s ended unexpectedly — "
+                            "rebinding", self._iface)
+                self._stop_event.wait(1.0)
 
     def _is_relevant(self, pkt) -> bool:
         try:

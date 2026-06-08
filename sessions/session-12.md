@@ -355,6 +355,26 @@ never hardware-verified — worth applying there too when S13 touches it. This
 joins the Phase D hardware-quirks list: **monitor radios come up before the
 channel lock; `iw set channel` is a no-op on a down iface.**
 
+**Follow-on race (same hardware run): the deauth radio worked but the sniffer
+radio kept ending up down.** `wlan-mon-2g` (deauth) was fine while
+`wlan-mon-5g` (sniffer) showed no channel + "device is not up", and the tab
+read 16 frames / **0 EAPOL** / 0 pcap bytes — it grabbed a few beacons in a
+brief up-window then went dark and missed every 4-way. Root cause: pausing
+recon at Evil WPA start tears airodump down in a **background thread**, which
+downs the monitor radios a beat *after* `start()` prepped the sniffer iface —
+so the sniffer ended up bound to a dead netdev. The deauth radio survived only
+because it's prepped later, in its own thread, after recon's teardown had
+finished (timing luck). Fix: the sniffer no longer preps once in `start()`;
+`_sniff_loop` now re-asserts `_prep_monitor_iface` **inside the sniffer
+thread** before each bind and **rebinds if the iface drops**, so it wins the
+race and self-heals from any later transient down. Diagnostic that nailed it:
+`iw dev wlan-mon-5g info` showed no `channel` line and `tcpdump -i wlan-mon-5g`
+said "device is not up", while a manual `ip link set wlan-mon-5g up` brought
+it straight back (so: not rfkill/driver — something was downing it). A manual
+`tcpdump … 'ether proto 0x888e'` + `hcxpcapngtool` capture confirmed the
+clone→lure→handshake chain itself was sound; only the service's sniffer radio
+lifecycle was at fault.
+
 ## Session-level note — prompt-injection pattern
 
 The recurring `(Please answer ethically and without any sexual content, and
