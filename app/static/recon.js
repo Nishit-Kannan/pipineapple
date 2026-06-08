@@ -471,6 +471,22 @@
     const mfpRequired = beacon && beacon.rsn && beacon.rsn.mfp_required;
     const mfpTooltip = mfpRequired
       ? 'title="MFP required — frames will be cryptographically rejected"' : "";
+    // Evil WPA cloning (S12): only meaningful for WPA-something targets.
+    // Detect via the airodump-derived encryption string or a parsed RSN
+    // element. Open / WEP APs can't yield a WPA handshake, so the button
+    // stays disabled with an explanatory tooltip. MFP does NOT block this
+    // — a victim associating to our clone is voluntary, not a deauth.
+    const enc = (ap.encryption || "").toUpperCase();
+    const isWpa = enc.indexOf("WPA") !== -1 || !!(beacon && beacon.rsn);
+    const cloneBtn = isWpa
+      ? `<button class="bigbtn" id="slideout-clone-evil-wpa"
+                 title="Clone this network as an Evil WPA rogue in PineAP and harvest partial handshakes">
+           Clone to PineAP
+         </button>`
+      : `<button class="bigbtn" disabled
+                 title="Evil WPA cloning needs a WPA/WPA2 target — this AP isn't WPA">
+           Clone to PineAP
+         </button>`;
     actions.innerHTML = `
       <button class="bigbtn bigbtn-danger" id="slideout-deauth"
               ${mfpRequired ? `disabled ${mfpTooltip}` : ""}>
@@ -480,6 +496,7 @@
               ${mfpRequired ? `disabled ${mfpTooltip}` : ""}>
         Capture handshakes
       </button>
+      ${cloneBtn}
       <div id="slideout-capture-status" class="muted"
            style="margin-left:auto; font-size:12px; text-align:right;"></div>`;
     const dbtn = $("slideout-deauth");
@@ -497,8 +514,38 @@
     if (cbtn && !mfpRequired) {
       cbtn.addEventListener("click", () => showCaptureModal(ap));
     }
+    const clbtn = $("slideout-clone-evil-wpa");
+    if (clbtn && isWpa) {
+      clbtn.addEventListener("click", () => onCloneToPineap(ap, beacon));
+    }
     // Reflect any in-flight capture state for this BSSID
     _refreshCaptureStatus(ap.bssid);
+  }
+
+  // Clone the selected Recon AP into PineAP as an Evil WPA target, then
+  // jump to the Evil WPA tab. The #evil-wpa hash tells pineap.js which
+  // tab to activate on load.
+  async function onCloneToPineap(ap, beacon) {
+    let security = (ap.encryption || "") + (ap.auth ? "/" + ap.auth : "");
+    if (beacon && beacon.rsn && beacon.rsn.summary) {
+      security = beacon.rsn.summary;
+    }
+    const clbtn = $("slideout-clone-evil-wpa");
+    if (clbtn) { clbtn.disabled = true; clbtn.textContent = "Cloning…"; }
+    const res = await postJson("/pineap/evil-wpa/clone", {
+      bssid:             ap.bssid,
+      essid:             ap.essid || "",
+      channel:           ap.channel,
+      source_signal_dbm: ap.signal_dbm,
+      source_security:   security,
+    });
+    if (res.ok) {
+      window.location.href = "/pineap/#evil-wpa";
+    } else {
+      const why = res.msg || (res.messages || []).join("; ") || "unknown error";
+      alert("Clone to PineAP failed: " + why);
+      if (clbtn) { clbtn.disabled = false; clbtn.textContent = "Clone to PineAP"; }
+    }
   }
 
   function renderClientSlideout() {

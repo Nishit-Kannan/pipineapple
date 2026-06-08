@@ -218,7 +218,7 @@
                 data-bssid="${escapeHtml(c.bssid)}"
                 style="font-size:11px;"
                 title="Dispatch to a remote and run hashcat"
-                ${(c.is_complete || c.has_pmkid) ? "" : "disabled"}>Crack</button>
+                ${(c.is_complete || c.has_pmkid || c.crackable) ? "" : "disabled"}>Crack</button>
         <button class="actbtn actbtn-muted" data-act="del" data-id="${escapeHtml(c.id)}"
                 style="font-size:11px;" title="Delete">×</button>
       </td>

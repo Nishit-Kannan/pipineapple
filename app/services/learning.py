@@ -2815,6 +2815,205 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
             },
         ],
     },
+
+    # ------------------------------------------------------------------
+    # Session 12 — PineAP Evil WPA (partial-handshake harvest)
+    # ------------------------------------------------------------------
+    {
+        "id": "pineap-evil-wpa",
+        "title": "PineAP — Evil WPA (partial-handshake harvest)",
+        "added_in_session": 12,
+        "intro": (
+            "Evil WPA clones a WPA2-PSK network — same SSID, same channel "
+            "— but stands it up with a fresh random passphrase. A device "
+            "that has the real network saved will try to auto-join and "
+            "begins the 4-way handshake. We capture M1+M2, which already "
+            "contains a MIC computed from the PMK; the client then fails "
+            "at M3 against our wrong PSK and gives up. We never learn the "
+            "real PSK on the air — but the captured M1+M2 is a crackable "
+            "hashcat 22000 target, so the PSK can be recovered offline. "
+            "This is the higher-value sibling of S11's Karma: instead of "
+            "just luring opens, it harvests crackable WPA material."
+        ),
+        "ui_reference": (
+            "PineAP page → Evil WPA tab (config, live EAPOL-sniffer stats, "
+            "harvested-partials table). Recon AP slide-out → 'Clone to "
+            "PineAP' button (WPA targets only). Harvested partials appear "
+            "on the Handshakes page tagged source='Evil WPA' and dispatch "
+            "to Crack through the same flow as recon captures."
+        ),
+        "wrapper_modules": [
+            "app/services/evil_wpa.py (EAPOL sniffer + extractor)",
+            "app/services/pineap.py (security_mode=wpa2, random PSK, clone)",
+            "app/services/handshakes.py (register_external_capture)",
+            "app/tools/hcxpcapngtool.py (pcap → .22000)",
+            "app/routes/pineap.py (/pineap/evil-wpa/*)",
+        ],
+        "commands": [
+            # ---- why M1+M2 is enough ----
+            {
+                "command": "(concept) WPA2 4-way handshake — what each message leaks",
+                "description": (
+                    "M1 (AP→STA): ANonce, in the clear.\n"
+                    "M2 (STA→AP): SNonce + a MIC over M2, keyed by the "
+                    "PTK. The PTK is derived from PMK + ANonce + SNonce + "
+                    "both MACs — everything except the PMK is now known to "
+                    "a sniffer. The MIC is the verifier.\n"
+                    "M3/M4: install + confirm; not needed to crack.\n"
+                    "So with M1+M2 a cracker can, for each candidate "
+                    "passphrase, derive PMK = PBKDF2-SHA1(psk, ssid, 4096, "
+                    "256), then PTK, recompute the MIC, and compare. A "
+                    "match means the guess is the real PSK. That's exactly "
+                    "what `hashcat -m 22000` does."
+                ),
+                "notes": (
+                    "Our rogue AP's random PSK is irrelevant to this — the "
+                    "client computes M2's MIC with the REAL PMK it derived "
+                    "from the saved password, before it ever checks whether "
+                    "our M3 verifies. We grab M2 and discard the failed "
+                    "association."
+                ),
+            },
+            # ---- the rogue hostapd config ----
+            {
+                "command": "(reference) WPA2-PSK rogue hostapd.conf",
+                "description": (
+                    "Same renderer as the Open SSID tab, but with a "
+                    "passphrase. The platform generates a fresh "
+                    "secrets.token_urlsafe(16) PSK at every Start "
+                    "(persisted to pineap_state.json as last_rogue_psk and "
+                    "echoed to the notification drawer). Randomising it "
+                    "guarantees we never accidentally complete a real "
+                    "association — we only ever want M1+M2."
+                ),
+                "example_output": (
+                    "interface=wlan-ap\n"
+                    "driver=nl80211\n"
+                    "ssid=HomeNet\n"
+                    "bssid=8e:59:82:71:a3:0b\n"
+                    "hw_mode=g\n"
+                    "channel=6\n"
+                    "auth_algs=1\n"
+                    "wpa=2\n"
+                    "wpa_key_mgmt=WPA-PSK\n"
+                    "rsn_pairwise=CCMP\n"
+                    "wpa_passphrase=Hf8xK2-qVxN7pLrZ9aQ1bw"
+                ),
+                "notes": (
+                    "Cloning sets the SSID + channel from the Recon target "
+                    "so the beacon looks like home. The BSSID is our "
+                    "deterministic salted MAC (bssid_for_ssid), not the "
+                    "real AP's — a returning victim sees a familiar SSID, "
+                    "and the Handshakes page records our rogue BSSID so "
+                    "you can tell captures apart."
+                ),
+            },
+            # ---- the EAPOL sniffer ----
+            {
+                "command": "(reference) Scapy EAPOL filter on wlan-mon-5g",
+                "description": (
+                    "evil_wpa.py runs a Scapy sniff() on the monitor radio "
+                    "(the same wlan-mon-5g Karma uses — only one at a "
+                    "time), locked to hostapd's channel. lfilter keeps:\n"
+                    "  • mgmt frames (type 0) involving our BSSID — auth/"
+                    "assoc give hcxpcapngtool the SSID context;\n"
+                    "  • data frames (type 2) carrying EAPOL (the M1-M4 "
+                    "frames).\n"
+                    "Everything kept is written to a per-session "
+                    "pcapng (RadioTap linktype 127). An extractor thread "
+                    "converts the pcap to .22000 every 30s and registers "
+                    "any new partials."
+                ),
+            },
+            {
+                "command": "sudo iw dev wlan-mon-5g set channel 6",
+                "description": (
+                    "Pin the monitor radio to the rogue AP's channel "
+                    "before sniffing — a client's 4-way only happens on "
+                    "the AP's channel, so an unpinned hopping monitor "
+                    "would miss most of it. The service does this via "
+                    "iw.set_channel() at start."
+                ),
+            },
+            # ---- manual reproduction on the Pi ----
+            {
+                "command": "sudo hostapd /tmp/pipineapple-pineap-hostapd.conf",
+                "description": (
+                    "Run the rogue WPA2 AP by hand (foreground). Watch the "
+                    "association attempts scroll past — a victim that has "
+                    "the SSID saved will show 'authenticated' → "
+                    "'associated' → EAPOL 1/4, 2/4, then a 4-way timeout "
+                    "as M3 fails against the random PSK."
+                ),
+                "notes": (
+                    "The platform launches this via the JobManager; "
+                    "running it by hand is the way to see the handshake "
+                    "progression live."
+                ),
+            },
+            {
+                "command": "sudo tcpdump -i wlan-mon-5g -w /tmp/evil.pcapng "
+                           "'wlan type mgt or (wlan type data and ether proto 0x888e)'",
+                "description": (
+                    "Capture the same frames the service captures, by "
+                    "hand. ether proto 0x888e is EAPOL. -w writes pcapng. "
+                    "Ctrl-C to stop. This is the audit-trail file the UI "
+                    "lets you download from the Handshakes page."
+                ),
+                "notes": (
+                    "tcpdump's BPF runs in-kernel (cheaper than Scapy's "
+                    "Python lfilter); we use Scapy in the service for "
+                    "consistency with Karma's injector and easy per-frame "
+                    "bookkeeping, but tcpdump is the faster manual tool."
+                ),
+            },
+            {
+                "command": "hcxpcapngtool -o /tmp/evil.22000 /tmp/evil.pcapng",
+                "description": (
+                    "Convert the capture to hashcat 22000 format. "
+                    "hcxpcapngtool writes one line per crackable target — "
+                    "it only emits a WPA*02 (EAPOL) line if it found a "
+                    "usable M1+M2 (or M2+M3) pair with a MIC, so a line "
+                    "appearing IS the signal that you have a crackable "
+                    "partial. The service runs exactly this under the "
+                    "hood every 30s."
+                ),
+                "example_output": (
+                    "WPA*02*<mic>*<ap_mac>*<sta_mac>*<essid_hex>*"
+                    "<anonce>*<eapol>*<flags>"
+                ),
+                "notes": (
+                    "Field 2 is the type: 01 = PMKID, 02 = EAPOL handshake "
+                    "(what Evil WPA produces). Field 6 is the ESSID in hex "
+                    "— `echo 486f6d654e6574 | xxd -r -p` → HomeNet."
+                ),
+            },
+            {
+                "command": "hashcat -m 22000 /tmp/evil.22000 /path/to/wordlist.txt",
+                "description": (
+                    "Crack the partial offline. mode 22000 (WPA-PBKDF2-"
+                    "PMKID+EAPOL) handles both PMKID and EAPOL lines. The "
+                    "Crack button on the Handshakes page dispatches this "
+                    "to a configured remote (Mac/Jetson) over SSH — the "
+                    "Pi 5 itself is too slow and previously segfaulted (see "
+                    "S09 notes). The partial harvested by Evil WPA is the "
+                    "same kind of 22000 line a full capture produces, so "
+                    "it cracks identically."
+                ),
+            },
+            {
+                "command": "cat $PIPINEAPPLE_DATA_DIR/handshakes/index.json | python3 -m json.tool",
+                "description": (
+                    "Inspect the persisted capture index. Evil WPA "
+                    "partials are registered here with source='Evil WPA', "
+                    "a pcap_relative_path pointing back into evil_wpa/<"
+                    "session>/, a single-line hash_22000_relative_path, "
+                    "and crackable=true. That's what makes them show up "
+                    "on the Handshakes page and enables their Crack button."
+                ),
+            },
+        ],
+    },
 ]
 
 

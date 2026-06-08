@@ -6,9 +6,9 @@
   <div class="page-header">
     <h1>PineAP</h1>
     <p class="muted">
-      The rogue-AP engine. Settings tab below is live (Session 10);
-      Open SSID, Evil WPA, Impersonation, Filtering, Clients, and
-      Access Points tabs unlock in Sessions 11–13.
+      The rogue-AP engine. Settings (S10), Open SSID (S11), and Evil WPA
+      (S12) tabs are live; Impersonation, Filtering, Clients, and Access
+      Points tabs unlock in Session 13.
     </p>
   </div>
 
@@ -16,7 +16,7 @@
   <div class="tabs">
     <button class="tab active" data-tab="settings">Settings</button>
     <button class="tab" data-tab="open">Open SSID</button>
-    <button class="tab disabled" disabled title="Session 12">Evil WPA</button>
+    <button class="tab" data-tab="evil-wpa">Evil WPA</button>
     <button class="tab disabled" disabled title="Session 13">Impersonation</button>
     <button class="tab disabled" disabled title="Session 13">Filtering</button>
     <button class="tab disabled" disabled title="Session 13">Clients</button>
@@ -282,6 +282,146 @@
           </thead>
           <tbody id="open-clients-tbody">
             <tr><td colspan="7" class="muted">No clients yet. Once a device associates and DHCPs, it'll appear here.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+    </div>
+  </section>
+
+  {# ---------- Evil WPA tab (S12) ---------- #}
+  <section id="tab-evil-wpa" class="tab-panel" hidden>
+    <div class="dash-grid">
+
+      {# Clone-target banner — shown only when a Recon AP has been cloned
+         via the slide-out's "Clone to PineAP" button. Read-only display
+         of the real target so the operator can correlate harvested
+         handshakes back to the network they came from. #}
+      <section class="card span-2" id="ew-clone-banner"
+               {% if not state.evil_wpa_target %}hidden{% endif %}>
+        <div class="card-head">
+          <h2>Cloned target</h2>
+          <span class="muted">from Recon → "Clone to PineAP"</span>
+        </div>
+        {% if state.evil_wpa_target %}
+        <dl style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:0; font-size:13px;">
+          <dt class="muted">Cloned SSID</dt>
+          <dd><strong>{{ state.evil_wpa_target.source_essid }}</strong></dd>
+          <dt class="muted">Real BSSID</dt>
+          <dd><code>{{ state.evil_wpa_target.source_bssid }}</code></dd>
+          <dt class="muted">Channel</dt>
+          <dd>{{ state.evil_wpa_target.source_channel }}</dd>
+          <dt class="muted">Source signal</dt>
+          <dd>{% if state.evil_wpa_target.source_signal_dbm is not none %}{{ state.evil_wpa_target.source_signal_dbm }} dBm{% else %}—{% endif %}</dd>
+          <dt class="muted">Source security</dt>
+          <dd>{{ state.evil_wpa_target.source_security or "—" }}</dd>
+        </dl>
+        {% endif %}
+        <p class="muted" style="font-size:12px; margin-top:10px;">
+          The rogue AP advertises this SSID as WPA2-PSK with a fresh
+          <strong>random passphrase generated at every Start</strong>. A
+          device with the real network saved will attempt to associate;
+          we capture <strong>M1+M2</strong> (the crackable partial) and the
+          client then fails at M3 against our random PSK. We never learn —
+          or need — the real PSK to harvest the handshake.
+        </p>
+      </section>
+
+      {# WPA AP config form — drives the clone or a from-scratch WPA SSID #}
+      <section class="card">
+        <div class="card-head">
+          <h2>Evil WPA configuration</h2>
+          <span class="muted">WPA2-PSK rogue (security_mode=wpa2)</span>
+        </div>
+        <p class="muted" style="font-size:13px;">
+          Saving sets <code>security_mode=wpa2</code> so hostapd renders
+          <code>wpa=2</code> with a random passphrase at Start (shown in the
+          notification drawer). Cloning from Recon pre-fills these. Stop
+          PineAP before changing them.
+        </p>
+        <div class="form-row" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;">
+          <label style="flex:2; min-width:200px;">
+            <span class="auth-label">Primary SSID (target name)</span>
+            <input id="ew-primary-ssid" type="text" value="{{ state.primary_ssid }}"
+                   placeholder="SSID to clone / advertise">
+          </label>
+          <label style="flex:1; min-width:90px;">
+            <span class="auth-label">Channel</span>
+            <input id="ew-channel" type="number" min="1" max="196"
+                   value="{{ state.channel }}">
+          </label>
+          <label style="flex:1; min-width:80px;">
+            <span class="auth-label">Band</span>
+            <select id="ew-hw-mode">
+              <option value="g" {% if state.hw_mode == "g" %}selected{% endif %}>2.4 GHz (g)</option>
+              <option value="a" {% if state.hw_mode == "a" %}selected{% endif %}>5 GHz (a)</option>
+            </select>
+          </label>
+        </div>
+        <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+          <button id="ew-save" class="bigbtn">Save WPA config</button>
+          <span style="margin-left:auto; display:flex; gap:8px;">
+            <button id="ew-start" class="bigbtn bigbtn-danger">Start Evil WPA</button>
+            <button id="ew-stop"  class="bigbtn actbtn-muted">Stop</button>
+          </span>
+        </div>
+        <p class="muted" style="font-size:11px; margin-top:8px;">
+          Start brings the engine up in <strong>active</strong> mode with
+          WPA2 security, which routes the monitor radio (<code>wlan-mon-5g</code>)
+          to the EAPOL sniffer instead of Karma — the two can't run at once
+          on this hardware.
+        </p>
+      </section>
+
+      {# Live sniffer status #}
+      <section class="card">
+        <div class="card-head">
+          <h2>EAPOL sniffer</h2>
+          <span class="badge" id="ew-running-pill">—</span>
+          <span style="margin-left:auto;">
+            <button id="ew-refresh" class="bigbtn actbtn-muted"
+                    style="font-size:11px;">Refresh</button>
+          </span>
+        </div>
+        <dl style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:0; font-size:13px;">
+          <dt class="muted">Security mode</dt><dd id="ew-security">{{ state.security_mode }}</dd>
+          <dt class="muted">Last rogue PSK</dt><dd><code id="ew-psk">{{ state.last_rogue_psk or "—" }}</code></dd>
+          <dt class="muted">Frames seen</dt><dd id="ew-frames">0</dd>
+          <dt class="muted">EAPOL frames</dt><dd id="ew-eapol">0</dd>
+          <dt class="muted">Partials extracted</dt><dd id="ew-partials-count">0</dd>
+          <dt class="muted">pcap size</dt><dd id="ew-pcap-bytes">0 B</dd>
+          <dt class="muted">Session</dt><dd><code id="ew-session">—</code></dd>
+        </dl>
+      </section>
+
+      {# Harvested partials table #}
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Harvested partial handshakes</h2>
+          <span class="muted" id="ew-partials-total">0</span>
+          <span style="margin-left:auto;">
+            <a href="/handshakes/" class="bigbtn actbtn-muted"
+               style="font-size:11px; text-decoration:none;">Open Handshakes →</a>
+          </span>
+        </div>
+        <p class="muted" style="font-size:12px;">
+          Each partial is converted with <code>hcxpcapngtool</code> and
+          auto-registered on the Handshakes page with source
+          <strong>Evil WPA</strong>, where it can be dispatched to Crack
+          through the same flow as recon captures.
+        </p>
+        <table class="data" id="ew-partials-table" style="font-size:11px;">
+          <thead>
+            <tr>
+              <th>Extracted</th>
+              <th>ESSID</th>
+              <th>Rogue BSSID</th>
+              <th>Client (STA)</th>
+              <th>22000 line</th>
+            </tr>
+          </thead>
+          <tbody id="ew-partials-tbody">
+            <tr><td colspan="5" class="muted">No partials harvested yet. Start the engine and have a device with the cloned SSID saved attempt to join.</td></tr>
           </tbody>
         </table>
       </section>

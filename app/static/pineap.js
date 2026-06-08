@@ -28,6 +28,13 @@
     return new Date(u * 1000).toLocaleString();
   }
 
+  function fmtBytes(n) {
+    if (n == null) return "—";
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   function showStatus(msg, kind = "info") {
     const el = $("pineap-status");
     if (!el) return;
@@ -182,6 +189,50 @@
       };
       tryWire();
     }
+
+    // ---------- Evil WPA tab (S12) ----------
+    if ($("ew-partials-tbody")) {
+      if ($("ew-save"))    $("ew-save").addEventListener("click", onSaveEvilWpaConfig);
+      if ($("ew-start"))   $("ew-start").addEventListener("click", onEvilWpaStart);
+      if ($("ew-stop"))    $("ew-stop").addEventListener("click", onStop);
+      if ($("ew-refresh")) $("ew-refresh").addEventListener("click", () => {
+        reloadEvilWpaState();
+        reloadEvilWpaPartials();
+      });
+
+      reloadEvilWpaState();
+      reloadEvilWpaPartials();
+
+      // Live partial events from the EAPOL extractor — refresh stats +
+      // table the moment a new partial lands.
+      const tryWireEw = () => {
+        const sock = window.pipineapple && window.pipineapple.socket;
+        if (!sock) { setTimeout(tryWireEw, 200); return; }
+        sock.on("evil_wpa:partial", () => {
+          reloadEvilWpaState();
+          reloadEvilWpaPartials();
+        });
+      };
+      tryWireEw();
+
+      // Light poll while the Evil WPA tab is visible so the frame /
+      // EAPOL counters tick without spamming the backend when the
+      // operator is on another tab.
+      if (!_ewPollTimer) {
+        _ewPollTimer = setInterval(() => {
+          if (ewPanelVisible()) {
+            reloadEvilWpaState();
+            reloadEvilWpaPartials();
+          }
+        }, 4000);
+      }
+    }
+
+    // Honour a #evil-wpa hash — set by the Recon "Clone to PineAP"
+    // redirect so the operator lands directly on the Evil WPA tab.
+    if (location.hash === "#evil-wpa") {
+      activateTab("evil-wpa");
+    }
   }
 
   // ---------- Open SSID handlers ----------
@@ -329,6 +380,107 @@
     }).join("");
   }
 
+  // ---------- Evil WPA handlers (S12) ----------
+  let _ewPollTimer = null;
+
+  function ewPanelVisible() {
+    const p = $("tab-evil-wpa");
+    return !!(p && !p.hidden);
+  }
+
+  async function reloadEvilWpaState() {
+    try {
+      const r = await fetch("/pineap/evil-wpa/state");
+      if (!r.ok) return;
+      renderEvilWpaState(await r.json());
+    } catch (e) {
+      console.error("[pineap] reloadEvilWpaState:", e);
+    }
+  }
+
+  function renderEvilWpaState(s) {
+    if (!s) return;
+    const pill = $("ew-running-pill");
+    if (pill) {
+      pill.textContent = s.running ? "running" : "stopped";
+      pill.className = "badge " + (s.running ? "badge-good" : "");
+    }
+    if ($("ew-frames"))         $("ew-frames").textContent         = s.frames_seen || 0;
+    if ($("ew-eapol"))          $("ew-eapol").textContent          = s.eapol_seen || 0;
+    if ($("ew-partials-count")) $("ew-partials-count").textContent = s.partials_extracted || 0;
+    if ($("ew-pcap-bytes"))     $("ew-pcap-bytes").textContent     = fmtBytes(s.pcap_bytes);
+    if ($("ew-session"))        $("ew-session").textContent        = s.session_id || "—";
+  }
+
+  async function reloadEvilWpaPartials() {
+    const tbody = $("ew-partials-tbody");
+    if (!tbody) return;
+    try {
+      const r = await fetch("/pineap/evil-wpa/partials");
+      const data = await r.json();
+      renderEvilWpaPartials(data.partials || []);
+    } catch (e) {
+      console.error("[pineap] reloadEvilWpaPartials:", e);
+    }
+  }
+
+  function renderEvilWpaPartials(partials) {
+    const tbody = $("ew-partials-tbody");
+    if (!tbody) return;
+    if ($("ew-partials-total")) $("ew-partials-total").textContent = String(partials.length);
+    if (!partials.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">No partials harvested yet. Start the engine and have a device with the cloned SSID saved attempt to join.</td></tr>`;
+      return;
+    }
+    // newest first
+    const sorted = [...partials].sort((a, b) => (b.extracted_at || 0) - (a.extracted_at || 0));
+    tbody.innerHTML = sorted.map((p) => {
+      const line = p.hash_line || "";
+      const shortLine = line.length > 48 ? line.slice(0, 48) + "…" : line;
+      return `<tr>
+        <td class="muted">${escapeHtml(fmtTs(p.extracted_at))}</td>
+        <td><strong>${escapeHtml(p.essid || "—")}</strong></td>
+        <td><code>${escapeHtml(p.ap_mac || "—")}</code></td>
+        <td><code>${escapeHtml(p.sta_mac || "—")}</code></td>
+        <td><code title="${escapeHtml(line)}">${escapeHtml(shortLine)}</code></td>
+      </tr>`;
+    }).join("");
+  }
+
+  async function onSaveEvilWpaConfig() {
+    // Always stamp security_mode=wpa2 — this is what flips the engine
+    // from the Open SSID / Karma path to the EAPOL-sniffer path at Start.
+    const body = {
+      primary_ssid:  ($("ew-primary-ssid")?.value || "").trim(),
+      channel:       parseInt($("ew-channel")?.value || "6", 10),
+      hw_mode:       $("ew-hw-mode")?.value || "g",
+      security_mode: "wpa2",
+    };
+    const res = await postJSON("/pineap/ap-config", body);
+    showStatus(res.msg || (res.ok ? "saved" : "failed"), res.ok ? "ok" : "fail");
+    if (res.state) {
+      renderState(res.state);
+      if ($("ew-security")) $("ew-security").textContent = res.state.security_mode;
+    }
+    return !!res.ok;
+  }
+
+  async function onEvilWpaStart() {
+    // 1. Persist the WPA config (sets security_mode=wpa2 + SSID/channel).
+    // 2. Ensure we're in a broadcasting mode — Evil WPA only arms in
+    //    active/advanced (passive keeps hostapd silent; off won't start).
+    // 3. Gate behind the shared ethics modal, which POSTs /pineap/start —
+    //    the same lifecycle entry point the Open SSID tab uses.
+    const saved = await onSaveEvilWpaConfig();
+    if (!saved) return;
+    const curMode = $("pa-mode-disp")?.textContent || "";
+    if (curMode === "off" || curMode === "passive") {
+      const r = await postJSON("/pineap/mode", { mode: "active" });
+      if (r.state) renderState(r.state);
+    }
+    openEthicsModal();
+  }
+
   // ---------- Lifecycle ----------
   function openEthicsModal() {
     const st = {
@@ -358,6 +510,7 @@
     const summary = (res.messages || []).join("; ") || (res.ok ? "started" : "failed");
     showStatus(summary, res.ok ? "ok" : "fail");
     if (res.state) renderState(res.state);
+    if (ewPanelVisible()) { reloadEvilWpaState(); reloadEvilWpaPartials(); }
   }
 
   async function onStop() {
@@ -365,6 +518,7 @@
     const res = await postJSON("/pineap/stop");
     showStatus((res.messages || []).join("; ") || "stopped", res.ok ? "ok" : "fail");
     if (res.state) renderState(res.state);
+    if (ewPanelVisible()) { reloadEvilWpaState(); reloadEvilWpaPartials(); }
   }
 
   // ---------- Pool ----------

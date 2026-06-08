@@ -446,6 +446,11 @@ class EvilWpaService:
             log.info("evil_wpa: harvested partial — %s (line=%s...)",
                      partial.get("id"), line[:50])
             self._emit_partial(partial)
+            # #113: surface the partial on the Handshakes page with
+            # source="Evil WPA" so it flows through the existing Crack
+            # dispatch. Best-effort — a handshakes-service hiccup must
+            # never break harvesting.
+            self._register_with_handshakes(partial, active_pcap, out_22000)
         if new_count:
             log.info("evil_wpa: %d new partial(s) this extract run", new_count)
 
@@ -482,6 +487,35 @@ class EvilWpaService:
             socketio.emit("evil_wpa:partial", partial, namespace="/")
         except Exception:
             pass
+
+    def _register_with_handshakes(
+        self, partial: dict[str, Any], pcap_path: Path, hash_path: Path,
+    ) -> None:
+        """Register a harvested partial with the Handshakes service so it
+        appears on the top-level Handshakes page (source="Evil WPA") and
+        can be Crack-dispatched. Best-effort — failures are logged, never
+        raised, so the sniff/extract loop keeps running."""
+        try:
+            from app.services.handshakes import get_service as get_handshakes
+            meta = {
+                "id":           partial.get("id"),
+                "ap_mac":       partial.get("ap_mac"),
+                "sta_mac":      partial.get("sta_mac"),
+                "essid":        partial.get("essid"),
+                "channel":      self._channel,
+                "hash_line":    partial.get("hash_line"),
+                "extracted_at": partial.get("extracted_at"),
+                "tool":         "evil-wpa",
+            }
+            get_handshakes().register_external_capture(
+                pcap_path=pcap_path,
+                hash_22000_path=hash_path,
+                source="Evil WPA",
+                metadata=meta,
+            )
+        except Exception:
+            log.exception("evil_wpa: handshakes registration failed for %s",
+                          partial.get("id"))
 
 
 # ---------- Module singleton ----------

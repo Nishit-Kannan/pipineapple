@@ -539,6 +539,21 @@ class HandshakesService:
         route uses the message to populate the notification.
         """
         from app.tools import hcxpcapngtool
+
+        # External captures (e.g. Evil WPA partials) ship a pre-built,
+        # single-line .22000 — use it directly rather than re-converting
+        # the shared session pcap (which would emit every partial in the
+        # session, not just this one). Falls through to a pcap rebuild if
+        # the registered file has vanished.
+        rel_22000 = capture.get("hash_22000_relative_path")
+        if rel_22000:
+            p = self._dir / rel_22000
+            try:
+                if p.is_file() and p.stat().st_size > 0:
+                    return p, f"using registered {p.name}"
+            except OSError:
+                pass
+
         pcap_path = self.resolve_pcap_path(capture)
         if pcap_path is None:
             return None, "source pcap is missing on disk"
@@ -705,6 +720,131 @@ class HandshakesService:
         tmp = self._index_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2))
         tmp.replace(self._index_path)
+
+    # ---------- External capture registration (Session 12) ----------
+    def register_external_capture(
+        self,
+        *,
+        pcap_path: str | Path,
+        hash_22000_path: str | Path | None,
+        source: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[bool, str, dict[str, Any] | None]:
+        """Register a capture produced outside the airodump flow (e.g.
+        an Evil WPA partial harvested by the EAPOL sniffer) as a
+        first-class entry in ``index.json`` so it shows up on the
+        Handshakes page with ``source`` and can be Crack-dispatched
+        through the existing flow.
+
+        ``metadata`` carries the fields the index entry needs::
+
+            {
+              "id":           "<stable id>",      (optional; uuid if absent)
+              "ap_mac":       "aa:bb:..",         (rogue BSSID → bssid column)
+              "sta_mac":      "11:22:..",          (associating client)
+              "essid":        "HomeNet",
+              "channel":      6,
+              "hash_line":    "WPA*02*...",        (one .22000 line)
+              "extracted_at": 1780000000.0,
+              "tool":         "evil-wpa",          (optional label)
+            }
+
+        Idempotent: keyed on ``hash_line`` — re-registering the same
+        partial (the extractor re-runs every 30s) is a no-op that
+        returns the existing entry. Writes a single-line ``.22000``
+        next to the session output so each Handshakes row maps to
+        exactly one crackable target.
+
+        Returns ``(ok, message, entry)``.
+        """
+        import os
+
+        pcap_path = Path(pcap_path)
+        meta = dict(metadata or {})
+        hash_line = (meta.get("hash_line") or "").strip()
+
+        def _rel(p: Path | None) -> str | None:
+            if p is None:
+                return None
+            try:
+                return os.path.relpath(str(p), str(self._dir))
+            except ValueError:
+                # Different drive (Windows) — fall back to absolute. Won't
+                # happen on the Pi, but keeps the helper honest.
+                return str(p)
+
+        with self._lock:
+            try:
+                data = json.loads(self._index_path.read_text())
+                if not isinstance(data, dict) or "captures" not in data:
+                    data = {"captures": []}
+            except (FileNotFoundError, json.JSONDecodeError):
+                data = {"captures": []}
+
+            # Idempotency — dedupe on the .22000 hash line (its natural
+            # unique key; it encodes AP MAC, STA MAC, nonce, MIC).
+            if hash_line:
+                for c in data["captures"]:
+                    if c.get("hash_line") == hash_line:
+                        return True, "already registered", c
+
+            cap_id = meta.get("id") or uuid.uuid4().hex
+
+            # Write a per-partial single-line .22000 so each row resolves
+            # to exactly its own target. Lives next to the combined file
+            # the extractor produced (or next to the pcap as a fallback).
+            per_partial_22000: Path | None = None
+            if hash_line:
+                base_dir = (Path(hash_22000_path).parent
+                            if hash_22000_path else pcap_path.parent)
+                per_partial_22000 = base_dir / f"partial-{cap_id}.22000"
+                try:
+                    per_partial_22000.write_text(hash_line + "\n")
+                except OSError:
+                    log.exception("register_external_capture: per-partial "
+                                  ".22000 write failed")
+                    per_partial_22000 = (Path(hash_22000_path)
+                                         if hash_22000_path else None)
+            elif hash_22000_path:
+                per_partial_22000 = Path(hash_22000_path)
+
+            now = meta.get("extracted_at") or time.time()
+            entry = {
+                "id":                 cap_id,
+                "bssid":              (meta.get("ap_mac") or "").lower(),
+                "essid_at_capture":   meta.get("essid"),
+                "channel_at_capture": meta.get("channel"),
+                "started_at":         now,
+                "ended_at":           now,
+                "duration_secs":      0,
+                "deauth_used":        False,
+                "deauth_count":       0,
+                "tool":               meta.get("tool") or "evil-wpa",
+                "pcap_format":        "pcapng",
+                "pcap_relative_path": _rel(pcap_path),
+                "hash_22000_relative_path": _rel(per_partial_22000),
+                "hash_line":          hash_line or None,
+                "sta_mac":            meta.get("sta_mac"),
+                "source":             source,
+                # An M1+M2 partial has a valid MIC → it's a crackable
+                # WPA*02 line even though it isn't a "complete" 4-way.
+                "messages_seen":      [1, 2],
+                "has_pmkid":          False,
+                "is_complete":        False,
+                "is_partial":         True,
+                "crackable":          True,
+                "complete_pairs":     0,
+                "partial_pairs":      1,
+            }
+            data["captures"].append(entry)
+            self._index_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._index_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2))
+            tmp.replace(self._index_path)
+
+        log.info("handshakes: registered external capture %s "
+                 "(source=%s, essid=%r)", cap_id, source, meta.get("essid"))
+        return True, f"registered {cap_id[:8]} ({source})", entry
 
 
 # ---------- Helpers -------------------------------------------------------

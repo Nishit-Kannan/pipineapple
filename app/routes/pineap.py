@@ -230,3 +230,58 @@ def karma_stats():
     clients/SSIDs). Empty when karma isn't running."""
     from app.services.karma import get_service as get_karma
     return jsonify(get_karma().get_stats())
+
+
+# ---------- Evil WPA (S12) ----------
+
+@bp.route("/evil-wpa/clone", methods=["POST"])
+def clone_evil_wpa():
+    """Set up an Evil WPA clone from a Recon-observed AP. Called by
+    the "Clone to PineAP" button on the Recon page slide-out. Body::
+
+        {
+          "bssid":             "aa:bb:cc:11:22:33",
+          "essid":             "HomeNet",
+          "channel":           6,
+          "source_signal_dbm": -52,            (optional)
+          "source_security":   "WPA2-PSK"      (optional, informational)
+        }
+
+    Configures primary_ssid + channel + security_mode=wpa2 in one
+    shot and records the source AP metadata. Refuses while PineAP
+    is running."""
+    data = request.get_json(silent=True) or {}
+    ok, msg = get_service().clone_evil_wpa_target(
+        bssid=(data.get("bssid") or "").strip(),
+        essid=(data.get("essid") or "").strip(),
+        channel=data.get("channel"),
+        source_signal_dbm=data.get("source_signal_dbm"),
+        source_security=data.get("source_security"),
+    )
+    notif = notifications.success if ok else notifications.warning
+    notif(f"evil-wpa clone: {msg}", source="pineap")
+    return jsonify({
+        "ok":    ok,
+        "msg":   msg,
+        "state": get_service().get_state(),
+    }), (200 if ok else 400)
+
+
+@bp.route("/evil-wpa/state", methods=["GET"])
+def evil_wpa_state():
+    """Live Evil WPA sniffer state + stats (frames seen, EAPOL seen,
+    partials extracted, current session id). Empty fields when not
+    running."""
+    from app.services.evil_wpa import get_service as get_evil_wpa
+    return jsonify(get_evil_wpa().get_stats())
+
+
+@bp.route("/evil-wpa/partials", methods=["GET"])
+def evil_wpa_partials():
+    """All partial handshakes harvested in the current/last Evil WPA
+    session. Each entry has the .22000 hash line plus metadata
+    (AP MAC, STA MAC, ESSID, extracted_at). The Crack dispatch
+    flow can ingest these via the same .22000 path as recon
+    captures (task #113 wires them into the Handshakes page)."""
+    from app.services.evil_wpa import get_service as get_evil_wpa
+    return jsonify({"partials": get_evil_wpa().list_partials()})

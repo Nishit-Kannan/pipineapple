@@ -820,25 +820,42 @@ class PineAPService:
             log.exception("pineap: NAT setup failed")
             msgs.append(f"NAT setup failed: {e} — phone may show 'No Internet'")
 
-        # ---- 7. Karma (Advanced mode only) ----
-        if advanced:
-            karma_iface = snap.get("karma_iface", DEFAULT_KARMA_IFACE)
-            # Pause recon to free the karma radio
+        # ---- 7. Karma OR Evil WPA sniffer (mutually exclusive — both
+        #         want wlan-mon-5g). Decision rules:
+        #
+        #   security_mode=open + mode=advanced  → Karma (probe-response
+        #                                          injector for pool SSIDs)
+        #   security_mode=wpa2 + mode in (active, advanced) → Evil WPA
+        #                                          EAPOL sniffer
+        #   anything else → neither
+        #
+        # Karma + Evil WPA can't run simultaneously on this hardware
+        # because both pin wlan-mon-5g to hostapd's channel. If the
+        # operator wants both behaviours they'd need a fourth radio,
+        # out of scope.
+        mon_iface = snap.get("karma_iface", DEFAULT_KARMA_IFACE)
+        want_karma = (advanced and security_mode == "open")
+        want_evil_wpa = (security_mode == "wpa2")
+
+        if want_karma or want_evil_wpa:
+            # Pause recon to free the monitor radio (same operational
+            # cost for either sub-service)
             try:
                 from app.services.recon import get_service as get_recon_svc
                 rs = get_recon_svc()
                 if hasattr(rs, "stop_scan"):
                     rs.stop_scan()
-                msgs.append(f"recon paused (karma claims {karma_iface})")
+                msgs.append(f"recon paused ({mon_iface} claimed)")
             except Exception:
                 log.exception("pineap: recon-pause failed")
                 msgs.append("recon-pause failed (continuing)")
-            # Start karma
+
+        if want_karma:
             try:
                 from app.services.karma import get_service as get_karma
                 karma = get_karma()
                 ok, msg = karma.start(
-                    iface=karma_iface,
+                    iface=mon_iface,
                     channel=channel,
                     primary_bssid=primary_bssid,
                 )
@@ -848,6 +865,23 @@ class PineAPService:
             except Exception as e:
                 log.exception("pineap: karma start failed")
                 msgs.append(f"karma start failed: {e}")
+
+        if want_evil_wpa:
+            try:
+                from app.services.evil_wpa import get_service as get_evil_wpa
+                ew = get_evil_wpa()
+                ok, msg = ew.start(
+                    iface=mon_iface,
+                    channel=channel,
+                    ap_bssid=primary_bssid,
+                    ssid=primary_ssid,
+                )
+                with self._lock:
+                    self._state["evil_wpa_running"] = ok
+                msgs.append(f"evil_wpa: {msg}")
+            except Exception as e:
+                log.exception("pineap: evil_wpa start failed")
+                msgs.append(f"evil_wpa start failed: {e}")
 
         return True, msgs
 
