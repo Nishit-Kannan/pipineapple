@@ -203,6 +203,14 @@ class ClientReconService:
         self._lease_path: Path | None = None
         self._lease_thread: threading.Thread | None = None
         self._lease_stop = threading.Event()
+        # MACs the operator has explicitly cleared, mapped to the
+        # cleared-at timestamp. The lease poller skips re-adding a
+        # MAC if its lease was issued before the clear time (i.e. the
+        # lease entry is leftover state, not a fresh association).
+        # When the client genuinely renews/re-associates after the
+        # clear, the new lease's issue time is > cleared_at and we
+        # un-suppress the MAC automatically.
+        self._suppressed_macs: dict[str, float] = {}
 
     # ---------- Persistence ----------
     def _load_persisted(self) -> dict[str, dict[str, Any]]:
@@ -307,11 +315,24 @@ class ClientReconService:
             })
 
     def clear(self) -> tuple[bool, str, int]:
+        """Wipe the persisted client store AND record current MACs as
+        suppressed so the lease-file poller doesn't immediately re-add
+        them from leftover dnsmasq lease entries. A client only
+        reappears after they genuinely renew/re-DHCP (their new lease's
+        issue time will be > the cleared_at timestamp)."""
         with self._lock:
+            cleared_at = time.time()
             n = len(self._clients)
+            # Suppress every currently-tracked MAC from poller re-adds.
+            # Old entries in the suppression dict stay (we don't reset
+            # the map) so prior Clear operations remain in effect.
+            for mac in self._clients:
+                self._suppressed_macs[mac] = cleared_at
             self._clients = {}
             self._ip_to_mac = {}
             self._persist()
+        log.info("client_recon: cleared %d clients, %d MACs suppressed",
+                 n, len(self._suppressed_macs))
         return True, f"cleared {n} clients", n
 
     # ---------- Log tailer ----------
@@ -403,22 +424,49 @@ class ClientReconService:
         """Read dnsmasq's lease file (format: ``<expiry> <mac> <ip>
         <hostname> <client_id>`` per line) and upsert anything new.
         Hostname ``*`` means the client didn't send DHCP option 12 —
-        we treat that as None, not the literal asterisk."""
+        we treat that as None, not the literal asterisk.
+
+        Honors the suppression map: a MAC the operator has Cleared
+        won't be re-added by this poller unless the lease was issued
+        AFTER the clear (i.e. the client did a fresh DHCP renewal)."""
         if not lease_path.is_file():
             return
         try:
             text = lease_path.read_text(errors="replace")
         except OSError:
             return
+        # dnsmasq's standard lease length matches what we configured
+        # in pineap.py (12h). The lease entry's first column is the
+        # absolute expiry timestamp, so issue_time = expiry - 12h.
+        _LEASE_LEN_SEC = 12 * 3600
         for line in text.splitlines():
             parts = line.strip().split()
             if len(parts) < 3:
+                continue
+            try:
+                expiry = int(parts[0])
+            except ValueError:
                 continue
             mac = parts[1].lower()
             ip = parts[2]
             hostname = parts[3] if len(parts) >= 4 else None
             if hostname == "*":
                 hostname = None
+
+            # Suppression check: was this MAC just Cleared, and is this
+            # lease leftover (issued before the clear)?
+            with self._lock:
+                cleared_at = self._suppressed_macs.get(mac)
+            if cleared_at is not None:
+                lease_issued_at = expiry - _LEASE_LEN_SEC
+                if lease_issued_at < cleared_at:
+                    # Stale lease from before clear — skip
+                    continue
+                # Fresh renewal since clear — un-suppress
+                with self._lock:
+                    self._suppressed_macs.pop(mac, None)
+                log.info("client_recon: %s renewed after clear, un-suppressing", mac)
+
             with self._lock:
                 existing = self._clients.get(mac)
             if existing and existing.get("ip") == ip and (
