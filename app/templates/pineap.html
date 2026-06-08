@@ -15,7 +15,7 @@
   {# ---------- Tab bar ---------- #}
   <div class="tabs">
     <button class="tab active" data-tab="settings">Settings</button>
-    <button class="tab disabled" disabled title="Session 11">Open SSID</button>
+    <button class="tab" data-tab="open">Open SSID</button>
     <button class="tab disabled" disabled title="Session 12">Evil WPA</button>
     <button class="tab disabled" disabled title="Session 13">Impersonation</button>
     <button class="tab disabled" disabled title="Session 13">Filtering</button>
@@ -177,6 +177,111 @@
           </tbody>
         </table>
       </section>
+    </div>
+  </section>
+
+  {# ---------- Open SSID tab (S11) ---------- #}
+  <section id="tab-open" class="tab-panel" hidden>
+    <div class="dash-grid">
+
+      {# AP config form #}
+      <section class="card">
+        <div class="card-head">
+          <h2>Open AP configuration</h2>
+          <span class="muted">primary BSS — additional SSIDs come from the pool</span>
+        </div>
+        <p class="muted" style="font-size:13px;">
+          The primary SSID is the rogue AP's main beacon — hostapd will also
+          advertise up to 7 extras from the SSID pool (pinned first, hidden
+          excluded). Stop PineAP before changing these fields.
+        </p>
+        <div class="form-row" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;">
+          <label style="flex:2; min-width:200px;">
+            <span class="auth-label">Primary SSID</span>
+            <input id="open-primary-ssid" type="text" value="{{ state.primary_ssid }}"
+                   placeholder="visible rogue AP name">
+          </label>
+          <label style="flex:1; min-width:90px;">
+            <span class="auth-label">Channel</span>
+            <input id="open-channel" type="number" min="1" max="196"
+                   value="{{ state.channel }}">
+          </label>
+          <label style="flex:1; min-width:80px;">
+            <span class="auth-label">Band</span>
+            <select id="open-hw-mode">
+              <option value="g" {% if state.hw_mode == "g" %}selected{% endif %}>2.4 GHz (g)</option>
+              <option value="a" {% if state.hw_mode == "a" %}selected{% endif %}>5 GHz (a)</option>
+            </select>
+          </label>
+          <label style="display:flex; align-items:flex-end;">
+            <input type="checkbox" id="open-primary-hidden"
+                   {% if state.primary_hidden %}checked{% endif %}>
+            hidden SSID
+          </label>
+        </div>
+        <div style="margin-top:12px;">
+          <button id="open-save" class="bigbtn">Save AP config</button>
+        </div>
+      </section>
+
+      {# Captive probe log #}
+      <section class="card">
+        <div class="card-head">
+          <h2>Captive-portal probes</h2>
+          <span class="muted">sentinel listener log @ 10.0.0.1:80</span>
+        </div>
+        <p class="muted" style="font-size:12px;">
+          iOS / Android / Windows each fire a known HTTP probe right after
+          DHCP. The sentinel answers them so the OS treats the rogue as
+          "real internet" — and logs every UA so we can fingerprint the
+          device better than DHCP option 55 alone.
+        </p>
+        <table class="data" id="open-probes-table" style="font-size:11px;">
+          <thead>
+            <tr><th>Time</th><th>Client</th><th>OS</th><th>Path</th><th>User-Agent</th></tr>
+          </thead>
+          <tbody id="open-probes-tbody">
+            <tr><td colspan="5" class="muted">No probes yet.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      {# Connected clients #}
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Connected clients</h2>
+          <span class="muted" id="open-client-count">0</span>
+          <span style="margin-left:auto; display:flex; gap:6px;">
+            <button id="open-clients-refresh" class="bigbtn actbtn-muted"
+                    style="font-size:11px;">Refresh</button>
+            <button id="open-clients-clear" class="bigbtn actbtn-muted"
+                    style="font-size:11px;">Clear history</button>
+          </span>
+        </div>
+        <p class="muted" style="font-size:12px;">
+          Pulled from the dnsmasq lease file + the verbose log
+          (<code>log-dhcp</code> for DHCP option 55 fingerprint;
+          <code>log-queries</code> for DNS history). Click a row to expand
+          its recent DNS queries.
+        </p>
+        <table class="data" id="open-clients-table">
+          <thead>
+            <tr>
+              <th>MAC</th>
+              <th>IP</th>
+              <th>Hostname</th>
+              <th>OS guess</th>
+              <th>Queries</th>
+              <th>First seen</th>
+              <th>Last seen</th>
+            </tr>
+          </thead>
+          <tbody id="open-clients-tbody">
+            <tr><td colspan="7" class="muted">No clients yet. Once a device associates and DHCPs, it'll appear here.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
     </div>
   </section>
 

@@ -36,7 +36,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import secrets
+import signal
 import threading
 import time
 from enum import Enum
@@ -44,6 +47,27 @@ from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+
+# ---------- S11 lifecycle constants ----------
+
+DEFAULT_IFACE       = "wlan-ap"
+DEFAULT_KARMA_IFACE = "wlan-mon-5g"
+DEFAULT_CHANNEL     = 6
+DEFAULT_HW_MODE     = "g"
+DEFAULT_PRIMARY_SSID = "PineApple"     # operator should override before going live
+DEFAULT_SUBNET      = "10.0.0.0/24"
+DEFAULT_GATEWAY     = "10.0.0.1"
+DEFAULT_DHCP_RANGE  = ("10.0.0.10", "10.0.0.250")
+
+# Config + log files for the rogue AP. Living in /tmp keeps them
+# tmpfs-fast and self-clearing on reboot — matching the same pattern
+# we use for the management AP. The dnsmasq log is the tailer's input.
+HOSTAPD_CONFIG_PATH  = Path("/tmp/pipineapple-pineap-hostapd.conf")
+DNSMASQ_CONFIG_PATH  = Path("/tmp/pipineapple-pineap-dnsmasq.conf")
+DNSMASQ_LOG_PATH     = Path("/tmp/pipineapple-pineap-dnsmasq.log")
+DNSMASQ_LEASES_PATH  = Path("/tmp/pipineapple-pineap-dnsmasq.leases")
+DNSMASQ_PID_PATH     = Path("/tmp/pipineapple-pineap-dnsmasq.pid")
 
 
 # ---------- Modes ----------
@@ -105,9 +129,16 @@ class PineAPService:
         # Caller holds self._lock.
         if self._state is None:
             try:
-                self._state = json.loads(self._state_path.read_text())
+                loaded = json.loads(self._state_path.read_text())
             except (FileNotFoundError, json.JSONDecodeError):
-                self._state = self._default_state()
+                loaded = {}
+            # Merge defaults so older state files (e.g. S10 vintage,
+            # missing the S11 lifecycle fields) get the new keys
+            # populated rather than KeyError'ing later. Loaded values
+            # always win for keys that exist on both sides.
+            defaults = self._default_state()
+            defaults.update(loaded)
+            self._state = defaults
         if self._pool is None:
             try:
                 data = json.loads(self._pool_path.read_text())
@@ -120,10 +151,30 @@ class PineAPService:
             "mode":              PineAPMode.OFF.value,
             "broadcast_enabled": False,
             "capture_enabled":   False,
-            "iface":             "wlan-ap",
+            "iface":             DEFAULT_IFACE,
+            "karma_iface":       DEFAULT_KARMA_IFACE,
+            "primary_ssid":      DEFAULT_PRIMARY_SSID,
+            "primary_hidden":    False,    # ignore_broadcast_ssid for the primary BSS
+            "channel":           DEFAULT_CHANNEL,
+            "hw_mode":           DEFAULT_HW_MODE,
+            "subnet":            DEFAULT_SUBNET,
+            "gateway_ip":        DEFAULT_GATEWAY,
+            "dhcp_range":        list(DEFAULT_DHCP_RANGE),
+            # Salt for deterministic per-SSID BSSID generation. Auto-
+            # generated on first save so the operator never has to
+            # think about it. Stable across reboots, different across
+            # deployments — see hostapd.bssid_for_ssid().
+            "bssid_salt":        secrets.token_hex(16),
             "last_changed":      time.time(),
-            "running":           False,    # True only while hostapd is up (S11)
-            "job_id":            None,     # JobManager job id (S11)
+            "running":           False,    # True only while hostapd is up
+            # JobManager IDs for the running daemons — used by stop()
+            # to SIGTERM each one. Cleared on stop.
+            "hostapd_job_id":    None,
+            "dnsmasq_job_id":    None,
+            # Karma + sentinel running flags (services manage their own
+            # lifecycle; we just track for the UI status pill)
+            "karma_running":     False,
+            "sentinel_running":  False,
         }
 
     def _save_state(self) -> None:
@@ -181,6 +232,44 @@ class PineAPService:
             self._state["last_changed"] = time.time()
             self._save_state()
         return True, f"capture {'enabled' if enabled else 'disabled'}"
+
+    def set_ap_config(
+        self,
+        primary_ssid: str | None = None,
+        channel: int | None = None,
+        primary_hidden: bool | None = None,
+        hw_mode: str | None = None,
+    ) -> tuple[bool, str]:
+        """Update the open-AP config (primary SSID + channel + hidden +
+        band). Refuses while PineAP is running — operator must stop
+        first, change config, restart. (Changing channel under a live
+        hostapd would disconnect every client anyway.)"""
+        with self._lock:
+            self._load()
+            if self._state["running"]:
+                return False, "stop PineAP before changing AP config"
+            if primary_ssid is not None:
+                p = primary_ssid.strip()
+                if not p or len(p.encode("utf-8")) > MAX_SSID_BYTES:
+                    return False, "primary SSID must be 1-32 bytes UTF-8"
+                self._state["primary_ssid"] = p
+            if channel is not None:
+                try:
+                    ch = int(channel)
+                except (TypeError, ValueError):
+                    return False, "channel must be an int"
+                if not (1 <= ch <= 196):
+                    return False, f"channel {ch} out of valid range"
+                self._state["channel"] = ch
+            if primary_hidden is not None:
+                self._state["primary_hidden"] = bool(primary_hidden)
+            if hw_mode is not None:
+                if hw_mode not in ("g", "a"):
+                    return False, f"hw_mode must be 'g' or 'a', got {hw_mode!r}"
+                self._state["hw_mode"] = hw_mode
+            self._state["last_changed"] = time.time()
+            self._save_state()
+        return True, "AP config updated"
 
     # ---------- Public: SSID pool ----------
     def list_pool(self) -> list[dict[str, Any]]:
@@ -301,15 +390,21 @@ class PineAPService:
             self._save_pool()
         return True, f"cleared {removed} entries", removed
 
-    # ---------- Public: hostapd lifecycle (stubbed in S10) ----------
+    # ---------- Public: full lifecycle (S11) ----------
     def start(self) -> tuple[bool, list[str]]:
         """Bring up PineAP per the current mode.
 
-        S10 limit: only ``passive`` and ``off`` work — S10 doesn't
-        actually launch hostapd. ``active`` / ``advanced`` return a
-        clear "wait for S11" message instead of pretending to start.
-        Refactoring this in S11 is straightforward: replace the
-        passive no-op with hostapd config render + JobManager.start_job.
+        passive  → just flips the running flag (operator wants the
+                   engine "armed but silent" — useful staging area).
+        active   → bring up wlan-ap → render+launch dnsmasq →
+                   render+launch hostapd → start captive sentinel +
+                   client-recon log tailer → push the rogue subnet
+                   into the management-access deny-list.
+        advanced → everything in active, plus pause recon on the
+                   karma radio + start the Scapy karma injector.
+
+        Idempotent: re-calling start while already running returns
+        a "no-op" success.
         """
         msgs: list[str] = []
         with self._lock:
@@ -317,18 +412,39 @@ class PineAPService:
             mode = self._state["mode"]
             if mode == PineAPMode.OFF.value:
                 return False, ["mode is 'off' — pick a mode before starting"]
-            if mode in (PineAPMode.ACTIVE.value, PineAPMode.ADVANCED.value):
-                return False, [
-                    f"mode '{mode}' requires hostapd broadcast — "
-                    "not yet wired (lands in S11). Use 'passive' for now."
-                ]
-            # Passive: nothing to launch, just flip the running flag
-            # so the UI status reflects "armed but silent".
+            if self._state["running"]:
+                return True, [f"already running in {mode} mode"]
+
+            # Take a snapshot of the config fields under the lock; the
+            # rest of start() runs outside it so the long blocking
+            # operations (subprocess waits, network setup) don't hold
+            # the lock and block other request handlers.
+            snap = dict(self._state)
+            pool_snap = list(self._pool or [])
+
+        if mode == PineAPMode.PASSIVE.value:
+            with self._lock:
+                self._state["running"]      = True
+                self._state["last_changed"] = time.time()
+                self._save_state()
+            msgs.append("started in passive mode (configured, hostapd silent)")
+            log.info("pineap: %s", msgs[-1])
+            return True, msgs
+
+        # Active or Advanced path
+        ok, sub_msgs = self._start_broadcast(snap, pool_snap,
+                                             advanced=(mode == PineAPMode.ADVANCED.value))
+        msgs.extend(sub_msgs)
+        if not ok:
+            # Try to undo whatever did come up so we don't leak state
+            log.warning("pineap: start failed mid-way, attempting rollback")
+            self._tear_down_broadcast()
+            return False, msgs
+
+        with self._lock:
             self._state["running"]      = True
             self._state["last_changed"] = time.time()
             self._save_state()
-        msgs.append("started in passive mode (no broadcast — S10 limit)")
-        log.info("pineap: %s", msgs[-1])
         return True, msgs
 
     def stop(self) -> tuple[bool, list[str]]:
@@ -337,14 +453,301 @@ class PineAPService:
             self._load()
             if not self._state.get("running"):
                 return True, ["already stopped"]
-            # S11 will SIGTERM the hostapd job here.
-            self._state["running"]      = False
-            self._state["job_id"]       = None
-            self._state["last_changed"] = time.time()
+            mode = self._state["mode"]
+            running_broadcast = mode in (PineAPMode.ACTIVE.value,
+                                         PineAPMode.ADVANCED.value)
+
+        if running_broadcast:
+            msgs.extend(self._tear_down_broadcast())
+
+        with self._lock:
+            self._state["running"]            = False
+            self._state["hostapd_job_id"]     = None
+            self._state["dnsmasq_job_id"]     = None
+            self._state["karma_running"]      = False
+            self._state["sentinel_running"]   = False
+            self._state["last_changed"]       = time.time()
             self._save_state()
         msgs.append("stopped")
-        log.info("pineap: stopped")
+        log.info("pineap: stopped (mode was %s)",
+                 self._state.get("mode", "?"))
         return True, msgs
+
+    # ---------- Internal lifecycle steps ----------
+    def _start_broadcast(
+        self, snap: dict[str, Any], pool: list[dict[str, Any]],
+        *, advanced: bool,
+    ) -> tuple[bool, list[str]]:
+        """Bring up the AP stack: interface → dnsmasq → hostapd → sentinel
+        → (karma if advanced). Each step that succeeds records its state
+        so _tear_down_broadcast can undo it. Returns (ok, messages)."""
+        from app.tools import hostapd as hostapd_tool
+        from app.tools import dnsmasq as dnsmasq_tool
+        from app.tools import iproute, rfkill, nm
+        from app.tools._common import stub_mode
+        from app.services.job_manager import job_manager
+        from app.services.access_control import access_control
+
+        msgs: list[str] = []
+        iface       = snap["iface"]
+        primary_ssid = snap["primary_ssid"]
+        channel     = int(snap["channel"])
+        hw_mode     = snap["hw_mode"]
+        gateway     = snap["gateway_ip"]
+        subnet      = snap["subnet"]
+        dhcp_start, dhcp_end = snap["dhcp_range"]
+        salt        = snap["bssid_salt"]
+
+        # ---- 1. Interface bring-up ----
+        rfkill.unblock_wifi()
+        ok, msg = nm.set_managed(iface, False)
+        msgs.append(f"nm.unmanage({iface}): {msg}")
+        if not ok and not stub_mode():
+            # nmcli failures aren't fatal — the iface may already be
+            # unmanaged or NM may not be running. Continue.
+            log.warning("pineap: nm.set_managed soft-failure: %s", msg)
+        # Flush in case a stale address from a previous run lingers
+        iproute.flush_address(iface)
+        ok, msg = iproute.add_address(iface, f"{gateway}/24")
+        msgs.append(f"ip addr add {gateway}/24 dev {iface}: {msg}")
+        if not ok and not stub_mode():
+            return False, msgs
+        ok, msg = iproute.set_link_state(iface, "up")
+        msgs.append(f"ip link up {iface}: {msg}")
+        if not ok and not stub_mode():
+            return False, msgs
+
+        # ---- 2. dnsmasq config + launch ----
+        # Include log-dhcp + log-queries so client_recon's tailer can
+        # parse the verbose stream. log-facility points to our own log
+        # file (not syslog) so we can read it without root syslog perms.
+        dnsmasq_body = dnsmasq_tool.render_config(
+            iface=iface,
+            gateway_ip=gateway,
+            dhcp_range_start=dhcp_start,
+            dhcp_range_end=dhcp_end,
+            dhcp_lease="12h",
+            forward_dns=True,
+            log_queries=True,
+        )
+        # Append fields render_config doesn't directly support:
+        #   - log-facility: where to send the verbose log (our tailer
+        #     reads this)
+        #   - dhcp-leasefile: stable path for the sentinel to resolve
+        #     IP→MAC against
+        #   - pid-file: needed for clean teardown if we ever lose the
+        #     JobManager reference
+        dnsmasq_body += (
+            f"log-facility={DNSMASQ_LOG_PATH}\n"
+            f"dhcp-leasefile={DNSMASQ_LEASES_PATH}\n"
+            f"pid-file={DNSMASQ_PID_PATH}\n"
+        )
+        dnsmasq_tool.write_config(DNSMASQ_CONFIG_PATH, dnsmasq_body)
+        # Truncate the log so the tailer's "seek to end" starts at the
+        # right place rather than at the tail of a stale previous run.
+        try:
+            DNSMASQ_LOG_PATH.write_text("")
+        except OSError:
+            pass
+
+        dnsmasq_cmd = [
+            "dnsmasq", "--keep-in-foreground",
+            "-C", str(DNSMASQ_CONFIG_PATH),
+        ]
+        try:
+            dns_job = job_manager.start_job(
+                dnsmasq_cmd, name="pineap-dnsmasq", tags=["pineap"],
+            )
+            with self._lock:
+                self._state["dnsmasq_job_id"] = dns_job.id
+            msgs.append(f"dnsmasq started (job {dns_job.id})")
+        except Exception as e:
+            log.exception("pineap: dnsmasq launch failed")
+            return False, msgs + [f"dnsmasq launch failed: {e}"]
+
+        # ---- 3. Render + launch hostapd ----
+        primary_bssid = hostapd_tool.bssid_for_ssid(primary_ssid, salt)
+        # Build extras from pool: pinned first, exclude hidden, exclude
+        # primary, cap at MAX_BSS - 1 (chip limit). Pool entries with
+        # the same SSID as primary would just collide; skip them.
+        extras: list[dict[str, Any]] = []
+        for e in sorted(pool, key=lambda x: (not x.get("pinned"),
+                                             -(x.get("last_seen") or 0))):
+            ssid = e.get("ssid")
+            if not ssid or e.get("hidden") or ssid == primary_ssid:
+                continue
+            extras.append({
+                "ssid":   ssid,
+                "bssid":  hostapd_tool.bssid_for_ssid(ssid, salt),
+                "hidden": False,
+            })
+            if len(extras) >= hostapd_tool.DEFAULT_MAX_BSS - 1:
+                break
+
+        hostapd_body = hostapd_tool.render_config(
+            iface=iface,
+            ssid=primary_ssid,
+            password=None,                 # open AP — S12 adds WPA variants
+            channel=channel,
+            hw_mode=hw_mode,
+            primary_bssid=primary_bssid,
+            hidden=bool(snap.get("primary_hidden")),
+            extra_bsses=extras,
+        )
+        hostapd_tool.write_config(HOSTAPD_CONFIG_PATH, hostapd_body)
+        hostapd_cmd = ["hostapd", str(HOSTAPD_CONFIG_PATH)]
+        try:
+            hap_job = job_manager.start_job(
+                hostapd_cmd, name="pineap-hostapd", tags=["pineap"],
+            )
+            with self._lock:
+                self._state["hostapd_job_id"] = hap_job.id
+            msgs.append(
+                f"hostapd started: SSID {primary_ssid!r} + {len(extras)} "
+                f"extras on ch{channel} (job {hap_job.id})"
+            )
+        except Exception as e:
+            log.exception("pineap: hostapd launch failed")
+            return False, msgs + [f"hostapd launch failed: {e}"]
+
+        # ---- 4. Captive sentinel listener ----
+        try:
+            from app.services.captive_sentinel import get_service as get_sentinel
+            sentinel = get_sentinel()
+            ok, msg = sentinel.start(
+                bind_host=gateway, bind_port=80, stub=stub_mode(),
+            )
+            with self._lock:
+                self._state["sentinel_running"] = ok
+            msgs.append(f"captive sentinel: {msg}")
+        except Exception as e:
+            log.exception("pineap: sentinel start failed")
+            msgs.append(f"sentinel start failed: {e}")
+            # Sentinel is enrichment-only — not fatal
+
+        # ---- 5. client_recon log tailer ----
+        try:
+            from app.services.client_recon import get_service as get_recon
+            client_recon = get_recon()
+            ok, msg = client_recon.start_tailer(DNSMASQ_LOG_PATH)
+            msgs.append(f"client-recon tailer: {msg}")
+        except Exception as e:
+            log.exception("pineap: client_recon start failed")
+            msgs.append(f"client-recon start failed: {e}")
+
+        # ---- 6. Auto-add subnet to deny-list ----
+        try:
+            ok, msg = access_control.add_cidr(subnet)
+            msgs.append(f"deny-list +{subnet}: {msg}")
+        except Exception as e:
+            log.exception("pineap: deny-list add failed")
+            msgs.append(f"deny-list add failed: {e} — add {subnet} manually!")
+
+        # ---- 7. Karma (Advanced mode only) ----
+        if advanced:
+            karma_iface = snap.get("karma_iface", DEFAULT_KARMA_IFACE)
+            # Pause recon to free the karma radio
+            try:
+                from app.services.recon import get_service as get_recon_svc
+                rs = get_recon_svc()
+                if hasattr(rs, "stop_scan"):
+                    rs.stop_scan()
+                msgs.append(f"recon paused (karma claims {karma_iface})")
+            except Exception:
+                log.exception("pineap: recon-pause failed")
+                msgs.append("recon-pause failed (continuing)")
+            # Start karma
+            try:
+                from app.services.karma import get_service as get_karma
+                karma = get_karma()
+                ok, msg = karma.start(
+                    iface=karma_iface,
+                    channel=channel,
+                    primary_bssid=primary_bssid,
+                )
+                with self._lock:
+                    self._state["karma_running"] = ok
+                msgs.append(f"karma: {msg}")
+            except Exception as e:
+                log.exception("pineap: karma start failed")
+                msgs.append(f"karma start failed: {e}")
+
+        return True, msgs
+
+    def _tear_down_broadcast(self) -> list[str]:
+        """Reverse of _start_broadcast. Best-effort — each step
+        independently logs but doesn't abort the others if it fails."""
+        from app.services.access_control import access_control
+        from app.services.job_manager import job_manager
+        from app.tools import iproute
+
+        msgs: list[str] = []
+        with self._lock:
+            self._load()
+            snap = dict(self._state)
+
+        # 1. Karma (if running)
+        if snap.get("karma_running"):
+            try:
+                from app.services.karma import get_service as get_karma
+                ok, msg = get_karma().stop()
+                msgs.append(f"karma stop: {msg}")
+            except Exception as e:
+                msgs.append(f"karma stop failed: {e}")
+            # Restore recon
+            try:
+                from app.services.recon import get_service as get_recon_svc
+                rs = get_recon_svc()
+                if hasattr(rs, "start_scan"):
+                    rs.start_scan()
+                msgs.append("recon restored")
+            except Exception:
+                log.exception("pineap: recon-restore failed")
+                msgs.append("recon-restore failed (manual restart may be needed)")
+
+        # 2. Captive sentinel + client_recon tailer
+        try:
+            from app.services.captive_sentinel import get_service as get_sentinel
+            ok, msg = get_sentinel().stop()
+            msgs.append(f"sentinel stop: {msg}")
+        except Exception as e:
+            msgs.append(f"sentinel stop failed: {e}")
+        try:
+            from app.services.client_recon import get_service as get_client_recon
+            get_client_recon().stop_tailer()
+            msgs.append("client-recon tailer stopped")
+        except Exception as e:
+            msgs.append(f"client-recon stop failed: {e}")
+
+        # 3. hostapd + dnsmasq via JobManager
+        for key, label in (("hostapd_job_id", "hostapd"),
+                           ("dnsmasq_job_id", "dnsmasq")):
+            jid = snap.get(key)
+            if jid:
+                try:
+                    ok, reason = job_manager.stop_job(jid, grace=3.0,
+                                                     first_signal=signal.SIGTERM)
+                    msgs.append(f"{label} stop ({jid[:8]}): {reason}")
+                except Exception as e:
+                    msgs.append(f"{label} stop failed: {e}")
+
+        # 4. Remove subnet from deny-list
+        try:
+            ok, msg = access_control.remove_cidr(snap.get("subnet", DEFAULT_SUBNET))
+            msgs.append(f"deny-list -{snap.get('subnet')}: {msg}")
+        except Exception as e:
+            msgs.append(f"deny-list remove failed: {e}")
+
+        # 5. Tear down the AP interface
+        iface = snap.get("iface", DEFAULT_IFACE)
+        try:
+            iproute.set_link_state(iface, "down")
+            iproute.flush_address(iface)
+            msgs.append(f"{iface} brought down + flushed")
+        except Exception as e:
+            msgs.append(f"{iface} teardown failed: {e}")
+
+        return msgs
 
 
 # ---------- Module singleton ----------

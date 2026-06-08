@@ -125,6 +125,154 @@
 
     reloadState();
     reloadPool();
+
+    // ---------- Open SSID tab ----------
+    if ($("open-clients-tbody")) {
+      if ($("open-save")) $("open-save").addEventListener("click", onSaveOpenConfig);
+      if ($("open-clients-refresh")) $("open-clients-refresh").addEventListener("click", reloadClients);
+      if ($("open-clients-clear"))   $("open-clients-clear").addEventListener("click", onClearClients);
+      reloadClients();
+      reloadProbes();
+
+      // Live updates from client_recon (DHCP upsert + DNS query). Both
+      // arrive frequently — cheap dedup: re-render on event but cap
+      // the rate at ~once per 500ms via setTimeout coalescing.
+      let pendingRefresh = null;
+      const coalesce = () => {
+        if (pendingRefresh) return;
+        pendingRefresh = setTimeout(() => {
+          pendingRefresh = null;
+          reloadClients();
+          reloadProbes();
+        }, 500);
+      };
+      const tryWire = () => {
+        const sock = window.pipineapple && window.pipineapple.socket;
+        if (!sock) { setTimeout(tryWire, 200); return; }
+        sock.on("client:upsert", coalesce);
+        sock.on("client:query",  coalesce);
+      };
+      tryWire();
+    }
+  }
+
+  // ---------- Open SSID handlers ----------
+  async function onSaveOpenConfig() {
+    const body = {
+      primary_ssid:   ($("open-primary-ssid")?.value || "").trim(),
+      channel:        parseInt($("open-channel")?.value || "6", 10),
+      hw_mode:        $("open-hw-mode")?.value || "g",
+      primary_hidden: !!$("open-primary-hidden")?.checked,
+    };
+    const res = await postJSON("/pineap/ap-config", body);
+    showStatus(res.msg || (res.ok ? "saved" : "failed"), res.ok ? "ok" : "fail");
+    if (res.state) renderState(res.state);
+  }
+
+  async function reloadClients() {
+    const tbody = $("open-clients-tbody");
+    if (!tbody) return;
+    try {
+      const r = await fetch("/pineap/clients");
+      const data = await r.json();
+      renderClients(data.clients || []);
+    } catch (e) {
+      console.error("[pineap] reloadClients:", e);
+    }
+  }
+
+  function renderClients(clients) {
+    const tbody = $("open-clients-tbody");
+    if (!tbody) return;
+    if ($("open-client-count")) $("open-client-count").textContent = String(clients.length);
+    if (!clients.length) {
+      tbody.innerHTML = `<tr><td colspan="7" class="muted">
+        No clients yet. Once a device associates and DHCPs, it'll appear here.
+      </td></tr>`;
+      return;
+    }
+    tbody.innerHTML = clients.map((c) => {
+      const osLabel = c.os_guess
+        ? `<span class="badge badge-ok">${escapeHtml(c.os_guess)}</span>`
+        : `<span class="muted">unknown</span>`;
+      const queries = (c.recent_queries || [])
+        .slice().reverse()
+        .map((q) =>
+          `<div style="font-size:11px;">
+             <span class="muted">${escapeHtml(fmtTs(q.ts))}</span>
+             <span class="muted">[${escapeHtml(q.type)}]</span>
+             <code>${escapeHtml(q.name)}</code>
+           </div>`)
+        .join("");
+      return `<tr class="open-client-row" data-mac="${escapeHtml(c.mac)}">
+        <td><code>${escapeHtml(c.mac)}</code></td>
+        <td><code>${escapeHtml(c.ip || "—")}</code></td>
+        <td>${escapeHtml(c.hostname || "—")}</td>
+        <td>${osLabel}<div class="muted" style="font-size:10px;">${escapeHtml(c.dhcp_option55_fingerprint || "")}</div></td>
+        <td>${c.query_count || 0}</td>
+        <td class="muted" style="font-size:11px;">${escapeHtml(fmtTs(c.first_seen))}</td>
+        <td class="muted" style="font-size:11px;">${escapeHtml(fmtTs(c.last_seen))}</td>
+      </tr>
+      <tr class="open-client-detail" data-for="${escapeHtml(c.mac)}" hidden>
+        <td colspan="7" style="background:rgba(0,0,0,0.1); padding:8px;">
+          <strong style="font-size:12px;">Recent DNS queries (${(c.recent_queries||[]).length}):</strong>
+          ${queries || '<div class="muted">none yet</div>'}
+        </td>
+      </tr>`;
+    }).join("");
+
+    // Click row to expand detail
+    tbody.querySelectorAll(".open-client-row").forEach((row) => {
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () => {
+        const mac = row.dataset.mac;
+        const detail = tbody.querySelector(`.open-client-detail[data-for="${mac}"]`);
+        if (detail) detail.hidden = !detail.hidden;
+      });
+    });
+  }
+
+  async function onClearClients() {
+    if (!confirm("Wipe the persisted client history? (Doesn't kick anyone currently associated.)")) return;
+    const res = await postJSON("/pineap/clients/clear");
+    showStatus(res.msg, res.ok ? "ok" : "fail");
+    reloadClients();
+  }
+
+  async function reloadProbes() {
+    const tbody = $("open-probes-tbody");
+    if (!tbody) return;
+    try {
+      const r = await fetch("/pineap/probes?limit=50");
+      const data = await r.json();
+      renderProbes(data.probes || []);
+    } catch (e) {
+      console.error("[pineap] reloadProbes:", e);
+    }
+  }
+
+  function renderProbes(probes) {
+    const tbody = $("open-probes-tbody");
+    if (!tbody) return;
+    if (!probes.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">No probes yet.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = probes.map((p) => {
+      const label = p.label
+        ? `<span class="badge badge-ok">${escapeHtml(p.label)}</span>`
+        : `<span class="muted">404</span>`;
+      const client = p.client_mac
+        ? `<code>${escapeHtml(p.client_mac)}</code>`
+        : `<span class="muted">${escapeHtml(p.client_ip || "?")}</span>`;
+      return `<tr>
+        <td class="muted">${escapeHtml(fmtTs(p.ts))}</td>
+        <td>${client}</td>
+        <td>${label}</td>
+        <td><code>${escapeHtml(p.path)}</code></td>
+        <td class="muted" style="max-width:300px; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(p.user_agent || "")}</td>
+      </tr>`;
+    }).join("");
   }
 
   // ---------- Lifecycle ----------

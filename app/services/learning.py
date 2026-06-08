@@ -2505,6 +2505,275 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 11 — Open SSID + Karma/Mana + captive sentinel + DHCP/DNS
+    # ------------------------------------------------------------------
+    {
+        "id": "pineap-open-ssid",
+        "title": "PineAP — Open AP + Karma + client recon",
+        "added_in_session": 11,
+        "intro": (
+            "S10 built the PineAP foundation; S11 makes radio waves. "
+            "Real hostapd lifecycle on wlan-ap (open multi-BSS), "
+            "dnsmasq for DHCP + DNS, a captive-portal sentinel HTTP "
+            "listener on the gateway IP that answers iOS/Android/"
+            "Windows probes so the OS treats the rogue as 'real "
+            "internet', a Scapy-based Karma/Mana injector that "
+            "replies to probe requests for pool SSIDs, automatic "
+            "deny-list management for the rogue subnet, and a "
+            "client-recon service that parses dnsmasq's verbose log "
+            "to enrich each connected client with OS fingerprint + "
+            "DNS query history."
+        ),
+        "ui_reference": (
+            "PineAP page → Open SSID tab. AP config form (primary "
+            "SSID + channel + band + hidden), connected-clients "
+            "table with expand-on-click DNS query history, captive "
+            "probe log. Live updates via SocketIO."
+        ),
+        "wrapper_modules": [
+            "app/tools/hostapd.py (extended: multi-BSS + bssid_for_ssid)",
+            "app/services/pineap.py (full lifecycle)",
+            "app/services/karma.py",
+            "app/services/captive_sentinel.py",
+            "app/services/client_recon.py",
+            "app/routes/pineap.py (extended)",
+        ],
+        "commands": [
+            # ---- hostapd multi-BSS ----
+            {
+                "command": "(reference) Open multi-BSS hostapd.conf",
+                "description": (
+                    "Primary BSS + ``bss=<iface>_<n>`` stanzas, each "
+                    "with its own SSID and locally-administered BSSID. "
+                    "Cap is chip-dependent (~4-8 for mt76x2u); we cap "
+                    "at 8 in DEFAULT_MAX_BSS. Pool entries that are "
+                    "pinned sort to the front; hidden entries skip; "
+                    "duplicates of the primary SSID skip."
+                ),
+                "example_output": (
+                    "interface=wlan-ap\n"
+                    "driver=nl80211\n"
+                    "ssid=RogueAP-Open\n"
+                    "bssid=8e:59:82:a3:0b:25\n"
+                    "hw_mode=g\n"
+                    "channel=6\n"
+                    "auth_algs=1\n"
+                    "\n"
+                    "bss=wlan-ap_1\n"
+                    "ssid=Pinned-SSID\n"
+                    "bssid=c2:26:34:0d:2a:13\n"
+                    "\n"
+                    "bss=wlan-ap_2\n"
+                    "ssid=HomeWiFi\n"
+                    "bssid=82:9f:40:5b:23:1d"
+                ),
+            },
+            {
+                "command": "(reference) Deterministic per-SSID BSSID",
+                "description": (
+                    "``hostapd.bssid_for_ssid(ssid, salt)`` returns a "
+                    "MAC by hashing ``salt || ssid`` (BLAKE2b → 6 "
+                    "bytes), forcing the locally-administered bit on "
+                    "and the multicast bit off. Salt lives in "
+                    "$DATA_DIR/pineap_state.json — auto-generated on "
+                    "first save. Same SSID always gets the same MAC "
+                    "across reboots (returning victims see a familiar "
+                    "BSSID); different SSIDs get different MACs (no "
+                    "tell-tale shared BSSID across the pool)."
+                ),
+            },
+
+            # ---- Open AP bring-up sequence ----
+            {
+                "command": "(sequence) Open AP bring-up on wlan-ap",
+                "description": (
+                    "Each step is a single subprocess call wrapped in "
+                    "our tool modules. Order matters:\n"
+                    "  1. rfkill unblock wifi                — soft-unblock\n"
+                    "  2. nmcli device set wlan-ap managed no — NM hands off\n"
+                    "  3. ip addr flush dev wlan-ap          — kill stale state\n"
+                    "  4. ip addr add 10.0.0.1/24 dev wlan-ap — gateway IP\n"
+                    "  5. ip link set wlan-ap up              — bring iface up\n"
+                    "  6. dnsmasq -C <conf>                   — DHCP+DNS server\n"
+                    "  7. hostapd <conf>                       — beacon broadcaster\n"
+                    "Stop reverses 6,7 (SIGTERM via JobManager) then "
+                    "5,4 (ip link down + flush)."
+                ),
+            },
+
+            # ---- dnsmasq verbose-log config ----
+            {
+                "command": "(reference) dnsmasq.conf with log-dhcp + log-queries",
+                "description": (
+                    "PineAP's dnsmasq is launched with the verbose "
+                    "options enabled, plus log-facility pointing at a "
+                    "specific file (not syslog) so we can tail it "
+                    "without root syslog perms. Key fields:\n"
+                    "  log-dhcp        — emit DHCP DISCOVER/REQUEST/ACK lines\n"
+                    "  log-queries     — emit a line per DNS query\n"
+                    "  log-facility=/tmp/pipineapple-pineap-dnsmasq.log\n"
+                    "  dhcp-leasefile=/tmp/pipineapple-pineap-dnsmasq.leases\n"
+                    "  forward DNS to 1.1.1.1 + 8.8.8.8 so association "
+                    "succeeds end-to-end."
+                ),
+            },
+
+            # ---- DHCP option-55 fingerprinting ----
+            {
+                "command": "(reference) DHCP option 55 → OS fingerprint",
+                "description": (
+                    "Option 55 (Parameter Request List) is the ordered "
+                    "list of DHCP options the client wants in the "
+                    "offer. The list shape is remarkably stable per "
+                    "OS family:\n"
+                    "  iOS:     1,3,6,15,119,252\n"
+                    "  macOS:   1,121,3,6,15,119,252,95,44,46  (or similar)\n"
+                    "  Android: 1,3,6,15,26,28,51,58,59,43\n"
+                    "  Windows: 1,3,6,15,31,33,43,44,46,47,121,249,252\n"
+                    "  Linux dhclient: 1,28,2,3,15,6,119,12,44,47,26,121,42\n"
+                    "client_recon.py keeps a small table; longest-"
+                    "prefix-match wins."
+                ),
+            },
+
+            # ---- Captive portal sentinels ----
+            {
+                "command": "(reference) Captive-portal probe endpoints",
+                "description": (
+                    "Every modern OS probes a known URL to decide "
+                    "'real internet vs captive portal'. Our sentinel "
+                    "binds 10.0.0.1:80 and answers each truthfully:\n"
+                    "  iOS    : GET /hotspot-detect.html → 200 'Success' HTML\n"
+                    "  Android: GET /generate_204         → 204 No Content\n"
+                    "  Windows: GET /connecttest.txt      → 200 'Microsoft Connect Test'\n"
+                    "  Firefox: GET /canonical.html       → 200 success HTML\n"
+                    "Truthful responses make the OS mark the network "
+                    "as healthy so app traffic flows. The S17 MITM "
+                    "module will add a 'lie' toggle to force the OS "
+                    "into captive-portal mode (system browser pops up "
+                    "the rogue's landing page)."
+                ),
+            },
+
+            # ---- Karma vs Mana ----
+            {
+                "command": "(reference) Karma vs Mana — pool-only is the safer default",
+                "description": (
+                    "Classical Karma (Hak5 default): reply to every "
+                    "directed probe request with a probe-response "
+                    "claiming the requested SSID. Maximum blast radius. "
+                    "\n\nMana (sensepost refinement, our default): only "
+                    "reply to probes whose SSID is in the curated pool. "
+                    "Bounded collateral — the operator chose what to "
+                    "impersonate. The pool gets auto-populated from "
+                    "recon scans + probe-request observations (S10), "
+                    "and the operator can pin / hide / clear it."
+                ),
+            },
+            {
+                "command": "(reference) Probe-response frame construction",
+                "description": (
+                    "Karma can't ride hostapd alone — hostapd only "
+                    "responds to probes for SSIDs it advertises. We run "
+                    "a parallel Scapy sniffer on wlan-mon-5g (recon is "
+                    "paused while Karma is up) and inject:\n"
+                    "  RadioTap / Dot11(type=0, subtype=5, addr1=client,\n"
+                    "                    addr2=our_bssid, addr3=our_bssid)\n"
+                    "  / Dot11ProbeResp(beacon_interval=100, cap=0x0021)\n"
+                    "  / Dot11Elt(ID=0,  info=ssid)            # SSID IE\n"
+                    "  / Dot11Elt(ID=1,  info=basic_rates)     # rates\n"
+                    "  / Dot11Elt(ID=3,  info=bytes([channel])) # DS Param Set\n"
+                    "  / Dot11Elt(ID=50, info=extended_rates)\n"
+                    "cap=0x0021 = ESS + Short Preamble, Privacy=0 (open). "
+                    "Without the DS Parameter Set IE, the client doesn't "
+                    "know what channel to switch to for the follow-up."
+                ),
+            },
+
+            # ---- Channel coordination ----
+            {
+                "command": "(reference) Why the injector locks to hostapd's channel",
+                "description": (
+                    "Clients scanning hop fast (~50ms per channel). To "
+                    "reply to a probe, you must be on the SAME channel "
+                    "as the client at the moment the probe is sent. "
+                    "Options: hop ourselves (halves beacon presence on "
+                    "every channel) or stick on hostapd's channel and "
+                    "accept that we only catch probes the client sends "
+                    "on that channel during its scan. Hak5 takes the "
+                    "lock approach; so do we. Probes are frequent "
+                    "enough that we catch one within a few seconds in "
+                    "practice."
+                ),
+            },
+
+            # ---- Rate limiting ----
+            {
+                "command": "(behavior) Per-(client, SSID) rate limit, 30s",
+                "description": (
+                    "Without dedup, a client's scan burst (10+ probes "
+                    "per second for a few seconds) would get 10+ "
+                    "identical probe-responses. We track "
+                    "{(client_mac, ssid) → last_reply_ts} and drop "
+                    "replies within 30s of the previous. Map capped at "
+                    "5000 entries with GC on threshold."
+                ),
+            },
+
+            # ---- Recon coordination ----
+            {
+                "command": "(behavior) Recon pause during Advanced mode",
+                "description": (
+                    "When PineAP starts in Advanced mode, "
+                    "recon.stop_scan() runs first to free wlan-mon-5g. "
+                    "On stop, recon.start_scan() restores the previous "
+                    "scan with the same settings. 2.4G recon on "
+                    "wlan-mon-2g keeps running; only 5G coverage "
+                    "drops while Karma is live. Trade-off documented "
+                    "in the journal."
+                ),
+            },
+
+            # ---- Deny-list auto-add ----
+            {
+                "command": "(behavior) Auto-add rogue subnet to deny-list",
+                "description": (
+                    "On PineAP start: access_control.add_cidr("
+                    "10.0.0.0/24). On stop: remove_cidr. Means a "
+                    "victim phone that auto-joins the rogue and gets "
+                    "an IP in that subnet can't reach the management "
+                    "UI on wlan0 — the WSGI deny-list blocks them "
+                    "before auth even runs. One less thing for the "
+                    "operator to forget."
+                ),
+            },
+
+            # ---- Live console for hardware verify ----
+            {
+                "command": "tail -F /tmp/pipineapple-pineap-dnsmasq.log",
+                "description": (
+                    "Watch the verbose dnsmasq stream the platform "
+                    "tails. You'll see DHCP exchanges (dhcp-discover "
+                    "→ dhcp-request → requested options → dhcp-ack), "
+                    "then a flood of DNS queries the moment the client "
+                    "captive-probes (captive.apple.com, "
+                    "connectivitycheck.gstatic.com, etc.)."
+                ),
+            },
+            {
+                "command": "sudo iw dev wlan-ap station dump",
+                "description": (
+                    "Live list of stations associated with hostapd. "
+                    "Useful console cross-check for the UI's "
+                    "'Connected Clients' table — same data, different "
+                    "lens. Shows signal strength + tx/rx bytes per "
+                    "station, which we don't surface in the UI yet."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 01 — Driver detection
     # ------------------------------------------------------------------
     {
