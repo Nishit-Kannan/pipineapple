@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% block title %}PineAP — PiPineapple{% endblock %}
+{% block nav_pineap %}active{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>PineAP</h1>
+    <p class="muted">
+      The rogue-AP engine. Settings tab below is live (Session 10);
+      Open SSID, Evil WPA, Impersonation, Filtering, Clients, and
+      Access Points tabs unlock in Sessions 11–13.
+    </p>
+  </div>
+
+  {# ---------- Tab bar ---------- #}
+  <div class="tabs">
+    <button class="tab active" data-tab="settings">Settings</button>
+    <button class="tab disabled" disabled title="Session 11">Open SSID</button>
+    <button class="tab disabled" disabled title="Session 12">Evil WPA</button>
+    <button class="tab disabled" disabled title="Session 13">Impersonation</button>
+    <button class="tab disabled" disabled title="Session 13">Filtering</button>
+    <button class="tab disabled" disabled title="Session 13">Clients</button>
+    <button class="tab disabled" disabled title="Session 13">Access Points</button>
+  </div>
+
+  {# ---------- Global status pill ---------- #}
+  <div id="pineap-status" class="settings-status muted" hidden></div>
+
+  {# ---------- Settings tab ---------- #}
+  <section id="tab-settings" class="tab-panel">
+
+    {# Status row #}
+    <div class="statcards">
+      <div class="statcard">
+        <div class="statcard-label">Engine</div>
+        <div class="statcard-value" id="pa-running">
+          {{ "running" if state.running else "stopped" }}
+        </div>
+        <div class="statcard-sub muted">
+          mode: <span id="pa-mode-disp">{{ state.mode }}</span> ·
+          iface: <code>{{ state.iface }}</code>
+        </div>
+      </div>
+      <div class="statcard">
+        <div class="statcard-label">Pool size</div>
+        <div class="statcard-value" id="pa-pool-count">{{ pool|length }}</div>
+        <div class="statcard-sub muted">
+          <span id="pa-pinned-count">
+            {{ pool|selectattr("pinned")|list|length }}
+          </span> pinned ·
+          <span id="pa-hidden-count">
+            {{ pool|selectattr("hidden")|list|length }}
+          </span> hidden
+        </div>
+      </div>
+      <div class="statcard">
+        <div class="statcard-label">Broadcast</div>
+        <div class="statcard-value" id="pa-broadcast-disp">
+          {{ "on" if state.broadcast_enabled else "off" }}
+        </div>
+        <div class="statcard-sub muted">
+          capture: <span id="pa-capture-disp">
+            {{ "on" if state.capture_enabled else "off" }}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div class="dash-grid">
+      {# ---------- Mode + lifecycle ---------- #}
+      <section class="card">
+        <div class="card-head">
+          <h2>Operation mode</h2>
+          <span class="muted">passive · active · advanced (Karma)</span>
+        </div>
+        <p class="muted" style="font-size:13px;">
+          <strong>Passive</strong> — engine configured, hostapd silent.
+          Safe staging mode. <strong>Active</strong> — broadcasts the
+          pool as fake beacons (S11). <strong>Advanced</strong> —
+          Active + Karma probe responses (S11). S10 only the passive
+          path is fully wired; active/advanced persist the setting but
+          start refuses until S11.
+        </p>
+        <div id="pa-mode-radios" style="display:flex; gap:14px; flex-wrap:wrap; margin-top:8px;">
+          <label><input type="radio" name="pa-mode" value="off"      {% if state.mode=="off"      %}checked{% endif %}> off</label>
+          <label><input type="radio" name="pa-mode" value="passive"  {% if state.mode=="passive"  %}checked{% endif %}> passive</label>
+          <label><input type="radio" name="pa-mode" value="active"   {% if state.mode=="active"   %}checked{% endif %}> active</label>
+          <label><input type="radio" name="pa-mode" value="advanced" {% if state.mode=="advanced" %}checked{% endif %}> advanced</label>
+        </div>
+
+        <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+          <label>
+            <input type="checkbox" id="pa-broadcast"
+                   {% if state.broadcast_enabled %}checked{% endif %}>
+            broadcast SSID pool
+          </label>
+          <label style="margin-left:14px;">
+            <input type="checkbox" id="pa-capture"
+                   {% if state.capture_enabled %}checked{% endif %}>
+            capture associating clients
+          </label>
+        </div>
+
+        <div style="margin-top:14px; display:flex; gap:8px;">
+          <button id="pa-start" class="bigbtn bigbtn-danger">Start PineAP</button>
+          <button id="pa-stop"  class="bigbtn actbtn-muted">Stop</button>
+        </div>
+      </section>
+
+      {# ---------- Ethics reminder ---------- #}
+      <section class="card">
+        <div class="card-head">
+          <h2>Operator notes</h2>
+          <span class="muted">read me</span>
+        </div>
+        <p style="font-size:13px;">
+          PineAP creates fake APs on <code>{{ state.iface }}</code>.
+          When broadcasting, every device in range sees the pool as
+          available networks; devices with matching auto-join saved
+          networks may associate.
+        </p>
+        <p class="muted" style="font-size:13px; margin-top:8px;">
+          Lab use only. Targeting devices you don't own or have
+          explicit written authorisation to test is illegal in most
+          jurisdictions. Each Start press requires explicit confirmation.
+        </p>
+        <p class="muted" style="font-size:13px; margin-top:8px;">
+          Before Active/Advanced: add the rogue-AP DHCP subnet (likely
+          <code>10.0.0.0/24</code>) to the
+          <a href="/settings">Security → Management access deny-list</a>
+          so victim clients can't reach this UI even after association.
+        </p>
+      </section>
+
+      {# ---------- SSID pool ---------- #}
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>SSID pool</h2>
+          <span class="muted">
+            auto-populated from recon + probe observations; pin to protect
+          </span>
+        </div>
+
+        <div class="deny-list-row" style="flex-wrap:wrap; gap:6px;">
+          <input id="pa-add-ssid" type="text"
+                 placeholder="add SSID manually (1-32 printable ASCII)"
+                 style="flex:1; min-width:200px;">
+          <label style="display:flex; align-items:center; gap:4px;">
+            <input type="checkbox" id="pa-add-pin"> pin
+          </label>
+          <button id="pa-add-btn" class="bigbtn">Add</button>
+          <span style="margin-left:auto; display:flex; gap:6px;">
+            <button id="pa-pool-refresh" class="bigbtn actbtn-muted"
+                    style="font-size:11px;">Refresh</button>
+            <button id="pa-pool-clear" class="bigbtn actbtn-muted"
+                    style="font-size:11px;">Clear (unpinned)</button>
+            <button id="pa-pool-clear-all" class="bigbtn bigbtn-danger"
+                    style="font-size:11px;">Clear all</button>
+          </span>
+        </div>
+
+        <table class="data" id="pa-pool-table">
+          <thead>
+            <tr>
+              <th>SSID</th>
+              <th>Source</th>
+              <th>First seen</th>
+              <th>Last seen</th>
+              <th>Obs</th>
+              <th>Pin</th>
+              <th>Hide</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="pa-pool-tbody">
+            <tr><td colspan="8" class="muted" style="padding:12px;">Loading…</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </section>
+
+  {# ---------- Ethics-confirm modal ---------- #}
+  <div id="pa-ethics-modal" class="modal" hidden role="dialog"
+       aria-labelledby="pa-ethics-title" aria-modal="true">
+    <div class="modal-backdrop" id="pa-ethics-backdrop"></div>
+    <div class="modal-card">
+      <h3 id="pa-ethics-title">Confirm PineAP start</h3>
+      <p>
+        You're about to start a rogue AP in mode
+        <code id="pa-ethics-mode">…</code> on
+        <code id="pa-ethics-iface">…</code>.
+      </p>
+      <p class="muted" style="margin-top:8px;">
+        Active/Advanced broadcast SSIDs that nearby devices may try to
+        join — including the <em>Karma</em> pattern in Advanced mode
+        where the AP replies to <strong>any</strong> probe request.
+        Only run against lab equipment you own or have explicit written
+        authorisation to test.
+      </p>
+      <label for="pa-ethics-input" class="muted" style="margin-top:12px; display:block;">
+        Type <code>pineap</code> to confirm:
+      </label>
+      <input type="text" id="pa-ethics-input" autocomplete="off"
+             style="margin-top:4px; width:100%; padding:6px;
+                    font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace;">
+      <div class="modal-actions">
+        <button id="pa-ethics-cancel" class="bigbtn actbtn-muted">Cancel</button>
+        <button id="pa-ethics-confirm" class="bigbtn bigbtn-danger" disabled>
+          Start PineAP
+        </button>
+      </div>
+    </div>
+  </div>
+{% endblock %}

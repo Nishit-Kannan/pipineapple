@@ -13,6 +13,7 @@
   <script src="{{ url_for('static', filename='settings.js') }}" defer></script>
   <script src="{{ url_for('static', filename='recon.js') }}" defer></script>
   <script src="{{ url_for('static', filename='handshakes.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='pineap.js') }}" defer></script>
 </head>
 <body>
   {# ---------- Title bar ---------- #}
@@ -142,8 +143,9 @@
           <span class="sidenav-label">Recon</span>
         </a>
 
-        <a href="#" class="sidenav-item disabled"
-           title="PineAP — Phase D (Sessions 10–13)">
+        <a href="{{ url_for('pineap.index') }}"
+           class="sidenav-item {% block nav_pineap %}{% endblock %}"
+           title="PineAP — rogue AP engine">
           <span class="sidenav-icon">
             {# target / bullseye #}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"

@@ -2058,6 +2058,453 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 09 — Crack dispatch: scp + remote hashcat over SSH
+    # ------------------------------------------------------------------
+    {
+        "id": "crack-dispatch",
+        "title": "Crack dispatch — remote hashcat over SSH",
+        "added_in_session": 9,
+        "intro": (
+            "The Pi can't realistically crack WPA passwords itself — "
+            "the Pi 5 CPU does maybe a few thousand H/s against "
+            "PBKDF2-SHA1 (4096 iters), so even a 14M-line wordlist "
+            "like rockyou takes ~1 hour. A modest GPU clears it in "
+            "seconds. So the platform is a dispatcher: it scps the "
+            ".22000 file to a configured SSH-reachable host (Mac, "
+            "Linux box with NVIDIA, Jetson, anything with hashcat "
+            "installed) and runs `hashcat -m 22000` there over SSH, "
+            "streaming progress back to the UI by tailing the "
+            "per-job log file. SocketIO `crack:status` events update "
+            "the Cracks card on the Handshakes page every ~2s."
+        ),
+        "ui_reference": (
+            "Settings → Crack Targets tab: shows the platform's "
+            "public key + add/test/remove targets. Handshakes page: "
+            "per-row 'Crack' button opens a target picker modal; the "
+            "'Crack jobs' card below the captures table shows live "
+            "progress and the cracked PSK in green."
+        ),
+        "wrapper_modules": [
+            "app/services/crack_targets.py",
+            "app/services/crack.py",
+            "app/routes/crack.py",
+        ],
+        "commands": [
+            # ---- SSH key + TOFU setup ----
+            {
+                "command": "ssh-keygen -t ed25519 -f $DATA_DIR/ssh/id_ed25519 -N '' -C pipineapple",
+                "description": (
+                    "Generates the platform's SSH keypair the first "
+                    "time the Crack Targets tab is opened. Stored "
+                    "under $DATA_DIR/ssh/ (separate from operator's "
+                    "~/.ssh/) so platform state is self-contained "
+                    "and rebootable to known good by removing one "
+                    "directory. ed25519 over RSA: shorter keys, "
+                    "faster, modern default."
+                ),
+            },
+            {
+                "command": "ssh-keygen -l -f $DATA_DIR/ssh/id_ed25519.pub",
+                "description": (
+                    "SHA256 fingerprint — what the Crack Targets tab "
+                    "displays under the public key block so the "
+                    "operator can verify against the key shown on "
+                    "the remote after installing it."
+                ),
+                "example_output": "256 SHA256:abcd…xyz pipineapple (ED25519)",
+            },
+            {
+                "command": (
+                    "ssh -i $DATA_DIR/ssh/id_ed25519 "
+                    "-o UserKnownHostsFile=$DATA_DIR/ssh/known_hosts "
+                    "-o StrictHostKeyChecking=accept-new "
+                    "-o BatchMode=yes -o ConnectTimeout=10 "
+                    "-o IdentitiesOnly=yes user@host '<cmd>'"
+                ),
+                "description": (
+                    "Exact ssh invocation the dispatcher uses. Key "
+                    "flags:\n"
+                    "  • StrictHostKeyChecking=accept-new — OpenSSH's "
+                    "modern TOFU mode: accept the host key on first "
+                    "connect, reject if the key ever changes.\n"
+                    "  • BatchMode=yes — refuses password prompts; "
+                    "fails fast instead of hanging on a TTY prompt "
+                    "nobody will answer.\n"
+                    "  • IdentitiesOnly=yes — don't try the operator's "
+                    "other ~/.ssh keys, only ours.\n"
+                    "  • Per-platform known_hosts so we don't touch "
+                    "the operator's ~/.ssh/known_hosts."
+                ),
+            },
+
+            # ---- Installing the key on the remote ----
+            {
+                "command": (
+                    "echo '<paste platform public key>' | "
+                    "ssh user@host 'cat >> ~/.ssh/authorized_keys'"
+                ),
+                "description": (
+                    "One-liner from the operator's laptop to install "
+                    "the platform's public key on a remote crack "
+                    "target. The Crack Targets tab shows this exact "
+                    "command with the platform's actual key prefilled. "
+                    "After this, ssh as 'user@host' from the Pi works "
+                    "key-only, no password."
+                ),
+            },
+
+            # ---- Target sanity test ----
+            {
+                "command": (
+                    "(compound remote check) ssh user@host "
+                    "'command -v hashcat && [ -r <wordlist> ] && "
+                    "hashcat --version && uname -srm && wc -l < <wordlist>'"
+                ),
+                "description": (
+                    "What 'Test' button on a crack target runs. One "
+                    "round trip checks ssh reachable, hashcat "
+                    "installed, wordlist readable + line count, "
+                    "hashcat version, kernel arch. Exit codes 11/12 "
+                    "are mapped to friendly error messages "
+                    "('hashcat not installed', 'wordlist not "
+                    "readable'). 255 + 'permission denied' in stderr → "
+                    "'copy the platform's public key to "
+                    "~/.ssh/authorized_keys'. The crack_targets "
+                    "service maps each rc to a clear UI message."
+                ),
+            },
+
+            # ---- hashcat invocation ----
+            {
+                "command": (
+                    "hashcat -m 22000 --quiet --status --status-timer=10 "
+                    "--potfile-disable /tmp/<job>.22000 /path/to/wordlist.txt"
+                ),
+                "description": (
+                    "Exact hashcat command the dispatcher runs on "
+                    "the remote. Flag notes:\n"
+                    "  • -m 22000 — universal WPA-PBKDF2-PMKID+EAPOL "
+                    "mode (handles both PMKID and 4-way handshake "
+                    "from the same file).\n"
+                    "  • --quiet — suppress hashcat's noisy startup "
+                    "banner, leave just status blocks + cracked lines.\n"
+                    "  • --status --status-timer=10 — emit a status "
+                    "block every 10s (Speed/Progress/Recovered/"
+                    "Time.Estimated). The parser keys on these.\n"
+                    "  • --potfile-disable — don't auto-recover from "
+                    "the remote's potfile; each run is independent. "
+                    "(Operator's local hashcat use isn't affected.)"
+                ),
+            },
+            {
+                "command": "(reference) hashcat status block — what the parser reads",
+                "description": (
+                    "Every --status-timer seconds, hashcat dumps:\n"
+                    "  Speed.#1.........:   312456 H/s (4.92ms) @ Accel:512…\n"
+                    "  Progress.........: 2499584/14344391 (17.43%)\n"
+                    "  Recovered........: 0/1 (0.00%) Digests\n"
+                    "  Time.Estimated...: Fri Jun  5 23:48:13 2026 "
+                    "(3 mins, 4 secs)\n"
+                    "The parser greps these four fields with a "
+                    "regex apiece, normalises Speed to H/s "
+                    "(handles kH/s/MH/s/GH/s/TH/s suffixes), and "
+                    "emits crack:status SocketIO events when state "
+                    "changes (no spam if values stay identical)."
+                ),
+            },
+            {
+                "command": "(reference) Cracked PSK line format",
+                "description": (
+                    "When hashcat finds the PSK it prints the "
+                    "matched 22000 line followed by ':password':\n"
+                    "  WPA*02*<MIC>*<MAC_AP>*<MAC_STA>*<ESSID_hex>"
+                    "*<ANONCE>*<EAPOL>*<flags>:hunter2\n"
+                    "All 22000 header fields are hex/numeric and "
+                    "never contain ':', so str.partition(':', 1) on "
+                    "the FIRST colon recovers the password verbatim — "
+                    "passwords containing ':' (like 'p@ss:word!') "
+                    "survive. The early rsplit(':', 1) version "
+                    "truncated them; that was the first bug we "
+                    "caught with the parser test."
+                ),
+            },
+
+            # ---- Stop semantics ----
+            {
+                "command": "(behavior) Stopping a running crack job",
+                "description": (
+                    "JobManager.stop_job sends SIGTERM to the local "
+                    "ssh process. OpenSSH propagates the signal to "
+                    "the remote command, hashcat catches SIGTERM, "
+                    "flushes status, and exits cleanly. The session "
+                    "collapses with it. The remote /tmp/<job>.22000 "
+                    "is cleaned up by the trailing `rm -f` we chain "
+                    "after the hashcat invocation, regardless of "
+                    "hashcat's exit status."
+                ),
+            },
+
+            # ---- Pi-can't-crack reality check ----
+            {
+                "command": "(reality check) Why we don't crack on the Pi 5",
+                "description": (
+                    "Pi 5 CPU on WPA-PBKDF2 (mode 22000): "
+                    "~3-5k H/s. A modest discrete GPU: 100k-1M H/s. "
+                    "A high-end one: tens of MH/s. The Pi's "
+                    "VideoCore 7 GPU isn't hashcat-supported "
+                    "anyway (OpenCL/HIP backends only). "
+                    "rockyou.txt has 14M lines — Pi takes ~1 hour to "
+                    "exhaust; a 3060 takes ~14s; an A100 takes <1s. "
+                    "Hence the dispatcher-only role."
+                ),
+            },
+
+            # ---- Exit codes ----
+            {
+                "command": "(reference) hashcat exit codes the dispatcher distinguishes",
+                "description": (
+                    "0 = something was cracked. Parser will have "
+                    "captured the PSK from the WPA*...:password "
+                    "line; job.status='done'.\n"
+                    "1 = exhausted (wordlist run through, nothing "
+                    "found). Not a 'failure' — expected outcome. "
+                    "job.status='exhausted'.\n"
+                    "Other non-zero + we sent SIGTERM = "
+                    "job.status='stopped'.\n"
+                    "Other non-zero with no stop signal = "
+                    "job.status='failed' (real error, e.g. malformed "
+                    ".22000, missing wordlist after Test passed, etc.)."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
+    # Session 10 — PineAP: hostapd, SSID pool, beacon broadcasting
+    # ------------------------------------------------------------------
+    {
+        "id": "pineap-engine",
+        "title": "PineAP — rogue-AP engine + SSID pool",
+        "added_in_session": 10,
+        "intro": (
+            "The Hak5 Pineapple's headline feature, faithfully ported "
+            "to PiPineapple. A single `hostapd` instance on the "
+            "`wlan-ap` adapter advertises one or more SSIDs (the "
+            "pool), with three operation modes: Passive (configured "
+            "but silent), Active (broadcasting the pool), and "
+            "Advanced (Active + Karma probe responses). Session 10 "
+            "lands the pool store, mode state, Settings tab, and "
+            "auto-population from recon + probe-request observations. "
+            "Active/Advanced broadcasting + actual hostapd lifecycle "
+            "land in Session 11."
+        ),
+        "ui_reference": (
+            "Sidebar → PineAP page → Settings tab. Mode radios + "
+            "broadcast/capture toggles + SSID pool table with "
+            "pin/hide/remove actions. Start gated behind an "
+            "ethics-confirm modal (type 'pineap' to confirm)."
+        ),
+        "wrapper_modules": [
+            "app/services/pineap.py",
+            "app/routes/pineap.py",
+            "app/templates/pineap.html",
+            "app/static/pineap.js",
+        ],
+        "commands": [
+            # ---- hostapd basics ----
+            {
+                "command": "(reference) hostapd.conf for a multi-SSID rogue AP",
+                "description": (
+                    "Same wrapper as the management AP (app/tools/"
+                    "hostapd.py), different config. Primary BSS plus "
+                    "zero-or-more `bss=...` stanzas, each with its "
+                    "own SSID + auth + BSSID. Chip-level cap is "
+                    "usually 4-8 simultaneous BSSes per radio. For "
+                    "larger pools, S11 will cycle the SSID via "
+                    "`hostapd_cli set_ssid` every few hundred ms — "
+                    "the Hak5 approach."
+                ),
+                "example_output": (
+                    "interface=wlan-ap\n"
+                    "driver=nl80211\n"
+                    "ssid=HomeWiFi\n"
+                    "hw_mode=g\n"
+                    "channel=6\n"
+                    "auth_algs=1\n"
+                    "\n"
+                    "bss=wlan-ap_1\n"
+                    "ssid=linksys\n"
+                    "bssid=02:11:22:33:44:55\n"
+                    "\n"
+                    "bss=wlan-ap_2\n"
+                    "ssid=Starbucks WiFi\n"
+                    "bssid=02:11:22:33:44:56"
+                ),
+            },
+            {
+                "command": "sudo hostapd /etc/pipineapple/pineap.conf",
+                "description": (
+                    "Launch the rogue AP daemon. PiPineapple wraps "
+                    "this via JobManager so the process lifecycle is "
+                    "platform-owned. Foreground for `-dd` debug "
+                    "tracing during console exercise; the service "
+                    "drops `-dd` in production."
+                ),
+            },
+            {
+                "command": "sudo hostapd_cli -i wlan-ap status",
+                "description": (
+                    "Live state of the running daemon. Shows the "
+                    "active BSSes, their MACs, current channel, and "
+                    "associated stations. Same control socket used "
+                    "by S11 to cycle SSIDs in 'broadcast the whole "
+                    "pool' mode."
+                ),
+            },
+
+            # ---- PineAP three-mode model ----
+            {
+                "command": "(reference) PineAP three operation modes",
+                "description": (
+                    "Faithful to the Hak5 Pineapple's semantics:\n"
+                    "  • passive — engine configured, hostapd not "
+                    "broadcasting. Staging area for settings.\n"
+                    "  • active — broadcasting the pool as fake "
+                    "beacons. Every device in range sees the pool as "
+                    "available networks; matching auto-join saved "
+                    "networks may try to associate.\n"
+                    "  • advanced — active + Karma probe responses. "
+                    "Replies to ANY probe request claiming to be the "
+                    "requested SSID, not just pool entries. The most "
+                    "dangerous mode against saved open networks.\n"
+                    "S10 only the passive path is wired; active/"
+                    "advanced persist the setting but start refuses "
+                    "until S11."
+                ),
+            },
+
+            # ---- SSID pool design ----
+            {
+                "command": "(reference) PineAP SSID pool entry",
+                "description": (
+                    "Stored at $DATA_DIR/pineap_pool.json, one record "
+                    "per SSID:\n"
+                    "  {\n"
+                    "    \"ssid\":           \"HomeWiFi\",\n"
+                    "    \"source\":         \"recon|probe|manual|import\",\n"
+                    "    \"first_seen\":     unix_ts,\n"
+                    "    \"last_seen\":      unix_ts,\n"
+                    "    \"observed_count\": 7,\n"
+                    "    \"pinned\":         false,\n"
+                    "    \"hidden\":         false\n"
+                    "  }\n"
+                    "Validation: 1-32 bytes UTF-8 (the 802.11 limit). "
+                    "Manual adds must be printable ASCII to keep the "
+                    "UI form sane; auto-population (recon/probe) "
+                    "bypasses the ASCII gate because real-world "
+                    "SSIDs include emoji + CJK and dropping them "
+                    "silently is worse than storing them. Pinned "
+                    "entries survive 'Clear (unpinned)'. Hidden "
+                    "entries stay in the pool but are excluded from "
+                    "broadcast."
+                ),
+            },
+
+            # ---- Auto-population hooks ----
+            {
+                "command": "(reference) Auto-population from recon + probes",
+                "description": (
+                    "Wired into `ReconService._tick`. After the SSID-"
+                    "enrichment pass, every merged AP with a "
+                    "non-empty SSID is pushed via "
+                    "`pineap.auto_add_from_recon`; every directed "
+                    "probe request (probed_essids minus the empty-"
+                    "string broadcast probes) is pushed via "
+                    "`pineap.auto_add_from_probes`. Both go through "
+                    "`add_ssid` which de-dupes and bumps "
+                    "observed_count + last_seen. Wrapped in a "
+                    "try/except in the recon loop — pool write "
+                    "failures cannot break recon."
+                ),
+            },
+
+            # ---- Why probe-request leakage matters ----
+            {
+                "command": "(reference) Why directed probe requests fill the pool",
+                "description": (
+                    "Phones and laptops periodically probe for "
+                    "saved networks ('anyone here named MyHomeWifi, "
+                    "MyOfficeWifi, ...?'). Modern iOS 14+/Android 11+ "
+                    "have moved mostly to passive scanning + "
+                    "randomised MAC in probes, but they still leak "
+                    "the SSID name list under various scan strategies "
+                    "(hidden-SSID handling, certain power states, "
+                    "OEM defaults). PineAP's pool grows by listening "
+                    "for exactly this leakage — the more crowded "
+                    "the airspace, the bigger your auto-collected "
+                    "pool."
+                ),
+            },
+
+            # ---- Defenses (the threat model context) ----
+            {
+                "command": "(reference) Defenses against Karma / Evil Twin",
+                "description": (
+                    "1. MFP / 802.11w — beacons + management frames "
+                    "are signed by the original AP's session key, so "
+                    "a Karma response gets rejected by the client's "
+                    "supplicant. Mandatory in WPA3, optional in "
+                    "WPA2-MFP. Defeats Karma against WPA3/WPA2-MFP "
+                    "networks.\n"
+                    "2. PSK strength — for WPA2/WPA3-PSK without "
+                    "MFP, the rogue AP can complete the association "
+                    "up through the 4-way handshake and capture a "
+                    "crackable partial. Strong PSKs make the post-"
+                    "capture crack infeasible.\n"
+                    "3. Auto-join discipline — the operator's only "
+                    "controllable defense for open networks. iOS/"
+                    "Android/macOS all support per-network Auto-Join "
+                    "off. Forget unused open networks entirely.\n"
+                    "4. Server-cert validation for enterprise WiFi — "
+                    "defeats Evil Enterprise even with auto-join on."
+                ),
+            },
+
+            # ---- Ethics gate ----
+            {
+                "command": "(behavior) Ethics modal — type 'pineap' to confirm",
+                "description": (
+                    "Same pattern as S06's deauth modal. Every Start "
+                    "press surfaces a confirm dialog showing the "
+                    "selected mode + interface, requiring the "
+                    "operator to type the literal word `pineap` "
+                    "before the confirm button enables. Notifications "
+                    "service logs the start + mode + pool size so "
+                    "the bell-drawer audit trail captures every "
+                    "rogue-AP launch."
+                ),
+            },
+
+            # ---- Management UI deny-list interaction ----
+            {
+                "command": "(reference) Why the deny-list matters here",
+                "description": (
+                    "When PineAP advertises an open SSID and a "
+                    "victim phone associates, the phone gets a DHCP "
+                    "lease on the rogue subnet (10.0.0.0/24 typical) "
+                    "and is now on the same L2 broadcast as the "
+                    "platform's management UI on wlan0. The S04.5 "
+                    "management-access deny-list, configured for the "
+                    "rogue subnet, blocks the victim's source IPs at "
+                    "the WSGI layer before any auth even runs. The "
+                    "Settings tab surfaces a reminder banner so this "
+                    "doesn't get forgotten."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 01 — Driver detection
     # ------------------------------------------------------------------
     {

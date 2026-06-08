@@ -733,6 +733,28 @@ class ReconService:
             self._aps = merged_aps
             self._clients = merged_clients
 
+        # PineAP pool auto-population (S10). Fire-and-forget — auto-add
+        # is wrapped to swallow exceptions in the pineap module so a
+        # broken pool write can't break the recon loop. Every AP we have
+        # an SSID for is a candidate (source=recon); every directed
+        # probe request (probed_essids minus the empty broadcast probes)
+        # is a candidate (source=probe). The pineap service de-dupes —
+        # calling with the same SSID just bumps last_seen +
+        # observed_count.
+        try:
+            from app.services import pineap as _pineap
+            recon_ssids = [a.get("essid") for a in merged_aps.values()
+                           if a.get("essid")]
+            _pineap.auto_add_from_recon(recon_ssids)
+            probed_ssids: set[str] = set()
+            for c in merged_clients.values():
+                for s in (c.get("probed_essids") or []):
+                    if s:        # broadcast probes are empty-string, skip
+                        probed_ssids.add(s)
+            _pineap.auto_add_from_probes(sorted(probed_ssids))
+        except Exception:
+            log.exception("pineap auto-populate from recon tick failed")
+
         self._emit_update()
 
     def _emit_update(self, force: bool = False) -> None:
