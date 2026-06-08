@@ -586,8 +586,16 @@ class PineAPService:
         # primary, cap at MAX_BSS - 1 (chip limit). Pool entries with
         # the same SSID as primary would just collide; skip them.
         extras: list[dict[str, Any]] = []
+        # Cap at MAX_BSS - 1 because the primary BSS already counts as
+        # one. Check BEFORE the append (not after) — checking after
+        # would still allow 1 extra when MAX_BSS=1, because the
+        # ``>= MAX_BSS - 1`` test is satisfied after the first append.
+        # This bit us on the mt76x2u cap=1 path: hostapd was getting a
+        # 2-BSS config even with DEFAULT_MAX_BSS=1.
         for e in sorted(pool, key=lambda x: (not x.get("pinned"),
                                              -(x.get("last_seen") or 0))):
+            if len(extras) >= hostapd_tool.DEFAULT_MAX_BSS - 1:
+                break
             ssid = e.get("ssid")
             if not ssid or e.get("hidden") or ssid == primary_ssid:
                 continue
@@ -596,8 +604,6 @@ class PineAPService:
                 "bssid":  hostapd_tool.bssid_for_ssid(ssid, salt),
                 "hidden": False,
             })
-            if len(extras) >= hostapd_tool.DEFAULT_MAX_BSS - 1:
-                break
 
         hostapd_body = hostapd_tool.render_config(
             iface=iface,
