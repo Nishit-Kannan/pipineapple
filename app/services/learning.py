@@ -3002,6 +3002,47 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
                 ),
             },
             {
+                "command": "(concept) Evil-twin deauth coupling — three radios",
+                "description": (
+                    "Passive Evil WPA waits for a device to roam to the "
+                    "clone on its own. The active play deauths the REAL AP "
+                    "so its clients drop and re-associate — some land on "
+                    "our same-SSID clone and start the 4-way. While it "
+                    "runs:\n"
+                    "  wlan-ap      → rogue WPA2 hostapd (the twin)\n"
+                    "  wlan-mon-5g  → EAPOL sniffer\n"
+                    "  wlan-mon-2g  → deauth injection (free; recon paused)\n"
+                    "All three pinned to the target's channel. Opt-in, "
+                    "only when cloned from Recon (we need the real BSSID), "
+                    "default off, lab-only."
+                ),
+                "notes": (
+                    "Hard limit: 802.11w / MFP. Deauth frames are "
+                    "management frames, so an MFP-required AP "
+                    "cryptographically rejects them and nobody is "
+                    "dislodged. We parse rsn.mfp_required from the beacon "
+                    "and warn in the UI; the toggle still lets you opt in "
+                    "but it'll be a no-op there. WPA3 mandates MFP."
+                ),
+            },
+            {
+                "command": "sudo aireplay-ng --deauth 10 -a <REAL_AP_BSSID> wlan-mon-2g",
+                "description": (
+                    "Broadcast deauth at the real AP (no -c → destination "
+                    "ff:ff:ff:ff:ff:ff, hits every associated client). "
+                    "This is exactly what evil_wpa.py's deauth loop fires "
+                    "every 5s on the spare radio when the coupling is "
+                    "armed. The radio must already be monitor + locked to "
+                    "the AP's channel (the service does that first)."
+                ),
+                "notes": (
+                    "-a is the AP BSSID; add -c <STA_MAC> for a targeted "
+                    "single-client deauth instead of broadcast. aireplay "
+                    "returns non-zero if the radio isn't in monitor mode, "
+                    "the channel isn't pinned, or MFP rejected the frames."
+                ),
+            },
+            {
                 "command": "cat $PIPINEAPPLE_DATA_DIR/handshakes/index.json | python3 -m json.tool",
                 "description": (
                     "Inspect the persisted capture index. Evil WPA "

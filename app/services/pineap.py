@@ -53,6 +53,11 @@ log = logging.getLogger(__name__)
 
 DEFAULT_IFACE       = "wlan-ap"
 DEFAULT_KARMA_IFACE = "wlan-mon-5g"
+# Injection radio for the optional Evil WPA "deauth the real AP"
+# (evil-twin) coupling. The third Alfa — free once recon is paused,
+# which Evil WPA does on start. Despite the 2g label it's a dual-band
+# mt76x2u, so it tunes the target's channel on either band.
+DEFAULT_DEAUTH_IFACE = "wlan-mon-2g"
 DEFAULT_CHANNEL     = 6
 DEFAULT_HW_MODE     = "g"
 DEFAULT_PRIMARY_SSID = "PineApple"     # operator should override before going live
@@ -153,6 +158,7 @@ class PineAPService:
             "capture_enabled":   False,
             "iface":             DEFAULT_IFACE,
             "karma_iface":       DEFAULT_KARMA_IFACE,
+            "deauth_iface":      DEFAULT_DEAUTH_IFACE,
             "primary_ssid":      DEFAULT_PRIMARY_SSID,
             "primary_hidden":    False,    # ignore_broadcast_ssid for the primary BSS
             "channel":           DEFAULT_CHANNEL,
@@ -195,6 +201,13 @@ class PineAPService:
             "sentinel_running":  False,
             # Evil WPA EAPOL sniffer running flag (S12)
             "evil_wpa_running":  False,
+            # Optional "evil-twin" deauth coupling (S12): when True AND a
+            # real target BSSID is known (i.e. cloned from Recon), Start
+            # also fires broadcast deauth at the real AP on the spare
+            # radio to force its clients to re-associate — some land on
+            # our clone and hand us M1+M2. Default off, opt-in, lab-only.
+            # No-op against MFP-required (802.11w) targets.
+            "evil_wpa_deauth":   False,
         }
 
     def _save_state(self) -> None:
@@ -260,6 +273,7 @@ class PineAPService:
         primary_hidden: bool | None = None,
         hw_mode: str | None = None,
         security_mode: str | None = None,
+        evil_wpa_deauth: bool | None = None,
     ) -> tuple[bool, str]:
         """Update the rogue AP config (primary SSID + channel + hidden +
         band + security mode). Refuses while PineAP is running —
@@ -304,7 +318,12 @@ class PineAPService:
                 # banners after the operator manually switches to open.
                 if security_mode == "open" and self._state.get("security_mode") == "wpa2":
                     self._state["evil_wpa_target"] = None
+                    # Switching back to open also disarms the evil-twin
+                    # deauth coupling (it only makes sense for WPA clones).
+                    self._state["evil_wpa_deauth"] = False
                 self._state["security_mode"] = security_mode
+            if evil_wpa_deauth is not None:
+                self._state["evil_wpa_deauth"] = bool(evil_wpa_deauth)
             self._state["last_changed"] = time.time()
             self._save_state()
         return True, "AP config updated"
@@ -317,6 +336,7 @@ class PineAPService:
         *,
         source_signal_dbm: int | None = None,
         source_security: str | None = None,
+        source_mfp_required: bool | None = None,
     ) -> tuple[bool, str]:
         """Set up Evil WPA cloning from a Recon-observed AP. One-click
         from the Recon AP slide-out. Configures primary_ssid + channel
@@ -353,13 +373,21 @@ class PineAPService:
             self._state["security_mode"]  = "wpa2"
             self._state["primary_hidden"] = False
             self._state["evil_wpa_target"] = {
-                "source_bssid":       bssid,
-                "source_essid":       essid,
-                "source_channel":     ch,
-                "source_signal_dbm":  source_signal_dbm,
-                "source_security":    source_security,
-                "cloned_at":          time.time(),
+                "source_bssid":        bssid,
+                "source_essid":        essid,
+                "source_channel":      ch,
+                "source_signal_dbm":   source_signal_dbm,
+                "source_security":     source_security,
+                # 802.11w state of the real AP. When True, the evil-twin
+                # deauth coupling can't dislodge clients (frames rejected)
+                # — the UI warns and the operator can still opt in, but it
+                # will be a no-op. None = unknown (older recon detail).
+                "source_mfp_required": bool(source_mfp_required) if source_mfp_required is not None else None,
+                "cloned_at":           time.time(),
             }
+            # Each fresh clone starts with the deauth coupling disarmed —
+            # it's an explicit opt-in per target.
+            self._state["evil_wpa_deauth"] = False
             self._state["last_changed"] = time.time()
             self._save_state()
         log.info("pineap: cloned Evil WPA target %r (BSSID %s, ch%d, sig=%s)",
@@ -560,6 +588,7 @@ class PineAPService:
             self._state["hostapd_job_id"]     = None
             self._state["dnsmasq_job_id"]     = None
             self._state["karma_running"]      = False
+            self._state["evil_wpa_running"]   = False
             self._state["sentinel_running"]   = False
             self._state["last_changed"]       = time.time()
             self._save_state()
@@ -867,6 +896,20 @@ class PineAPService:
                 msgs.append(f"karma start failed: {e}")
 
         if want_evil_wpa:
+            # Optional evil-twin deauth coupling: only when the operator
+            # opted in AND we have a real target BSSID (i.e. cloned from
+            # Recon — a from-scratch WPA SSID has no AP to deauth). The
+            # deauth fires on the spare radio (wlan-mon-2g), freed because
+            # recon was paused above. MFP-required targets reject the
+            # frames — we still attempt (warned in the UI), so it's a
+            # no-op rather than an error there.
+            target = snap.get("evil_wpa_target") or {}
+            real_bssid = target.get("source_bssid")
+            deauth_on = bool(snap.get("evil_wpa_deauth")) and bool(real_bssid)
+            deauth_iface = snap.get("deauth_iface", DEFAULT_DEAUTH_IFACE)
+            if snap.get("evil_wpa_deauth") and not real_bssid:
+                msgs.append("evil_wpa deauth requested but no real target "
+                            "BSSID (clone from Recon first) — skipping deauth")
             try:
                 from app.services.evil_wpa import get_service as get_evil_wpa
                 ew = get_evil_wpa()
@@ -875,10 +918,19 @@ class PineAPService:
                     channel=channel,
                     ap_bssid=primary_bssid,
                     ssid=primary_ssid,
+                    deauth_enabled=deauth_on,
+                    deauth_iface=deauth_iface if deauth_on else None,
+                    deauth_bssid=real_bssid if deauth_on else None,
                 )
                 with self._lock:
                     self._state["evil_wpa_running"] = ok
                 msgs.append(f"evil_wpa: {msg}")
+                if deauth_on:
+                    mfp = target.get("source_mfp_required")
+                    mfp_note = (" (target advertises MFP-required — deauth "
+                                "frames will be rejected)") if mfp else ""
+                    msgs.append(f"evil-twin deauth armed at {real_bssid} "
+                                f"on {deauth_iface}{mfp_note}")
             except Exception as e:
                 log.exception("pineap: evil_wpa start failed")
                 msgs.append(f"evil_wpa start failed: {e}")
@@ -897,7 +949,9 @@ class PineAPService:
             self._load()
             snap = dict(self._state)
 
-        # 1. Karma (if running)
+        # 1. Karma OR Evil WPA (mutually exclusive — both pin wlan-mon-5g).
+        #    Evil WPA's stop() also tears down the coupled deauth thread
+        #    on the spare radio.
         if snap.get("karma_running"):
             try:
                 from app.services.karma import get_service as get_karma
@@ -905,7 +959,15 @@ class PineAPService:
                 msgs.append(f"karma stop: {msg}")
             except Exception as e:
                 msgs.append(f"karma stop failed: {e}")
-            # Restore recon
+        if snap.get("evil_wpa_running"):
+            try:
+                from app.services.evil_wpa import get_service as get_evil_wpa
+                ok, msg = get_evil_wpa().stop()
+                msgs.append(f"evil_wpa stop: {msg}")
+            except Exception as e:
+                msgs.append(f"evil_wpa stop failed: {e}")
+        # Restore recon if either sub-service had paused it
+        if snap.get("karma_running") or snap.get("evil_wpa_running"):
             try:
                 from app.services.recon import get_service as get_recon_svc
                 rs = get_recon_svc()

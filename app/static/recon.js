@@ -532,12 +532,14 @@
     }
     const clbtn = $("slideout-clone-evil-wpa");
     if (clbtn) { clbtn.disabled = true; clbtn.textContent = "Cloning…"; }
+    const mfpRequired = !!(beacon && beacon.rsn && beacon.rsn.mfp_required);
     const res = await postJson("/pineap/evil-wpa/clone", {
-      bssid:             ap.bssid,
-      essid:             ap.essid || "",
-      channel:           ap.channel,
-      source_signal_dbm: ap.signal_dbm,
-      source_security:   security,
+      bssid:               ap.bssid,
+      essid:               ap.essid || "",
+      channel:             ap.channel,
+      source_signal_dbm:   ap.signal_dbm,
+      source_security:     security,
+      source_mfp_required: mfpRequired,
     });
     if (res.ok) {
       window.location.href = "/pineap/#evil-wpa";

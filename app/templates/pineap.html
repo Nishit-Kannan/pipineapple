@@ -358,6 +358,37 @@
             </select>
           </label>
         </div>
+        {# Evil-twin deauth coupling — opt-in, only meaningful when we
+           cloned a real AP from Recon (we need its BSSID + channel). #}
+        {% set tgt = state.evil_wpa_target %}
+        {% set has_real_target = tgt and tgt.source_bssid %}
+        <div style="margin-top:14px; border-top:1px solid var(--border); padding-top:10px;">
+          <label style="display:flex; align-items:center; gap:8px;"
+                 title="{% if not has_real_target %}Clone a WPA AP from Recon first — we need its real BSSID + channel to deauth it{% endif %}">
+            <input type="checkbox" id="ew-deauth"
+                   {% if state.evil_wpa_deauth %}checked{% endif %}
+                   {% if not has_real_target %}disabled{% endif %}>
+            <span>Also deauth the real AP (<strong>evil-twin mode</strong>)</span>
+          </label>
+          <p class="muted" style="font-size:11px; margin-top:6px;">
+            {% if not has_real_target %}
+              Disabled — clone a WPA target from Recon's slide-out first.
+              Deauth needs the real AP's BSSID + channel; a from-scratch
+              SSID has no AP to dislodge.
+            {% else %}
+              Broadcast deauth at <code>{{ tgt.source_bssid }}</code> on the
+              spare radio (<code>{{ state.deauth_iface }}</code>) while the
+              engine runs — dislodged clients re-associate and some land on
+              this clone. Offensive + noisy; lab equipment only.
+              {% if tgt.source_mfp_required %}
+                <br><strong style="color:var(--warn, #d08a2a);">⚠ This target
+                advertises MFP-required (802.11w)</strong> — deauth frames
+                will be rejected, so the coupling will be a no-op here.
+              {% endif %}
+            {% endif %}
+          </p>
+        </div>
+
         <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
           <button id="ew-save" class="bigbtn">Save WPA config</button>
           <span style="margin-left:auto; display:flex; gap:8px;">
@@ -389,6 +420,7 @@
           <dt class="muted">Frames seen</dt><dd id="ew-frames">0</dd>
           <dt class="muted">EAPOL frames</dt><dd id="ew-eapol">0</dd>
           <dt class="muted">Partials extracted</dt><dd id="ew-partials-count">0</dd>
+          <dt class="muted">Deauth bursts</dt><dd id="ew-deauth-bursts">— <span class="muted" id="ew-deauth-target"></span></dd>
           <dt class="muted">pcap size</dt><dd id="ew-pcap-bytes">0 B</dd>
           <dt class="muted">Session</dt><dd><code id="ew-session">—</code></dd>
         </dl>

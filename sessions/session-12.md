@@ -47,6 +47,22 @@ Karma when `security_mode=open + mode=advanced`, and Evil WPA when
 `security_mode=wpa2 + mode in (active, advanced)`. Never both — a fourth
 radio would be needed.
 
+**Evil-twin deauth coupling (added this session).** Passive Evil WPA waits
+for a device to roam to us on its own — slow. The real-world play is active:
+deauth the *real* AP so its clients drop and re-associate, and with our
+same-SSID clone in range some land on us and start the 4-way. This needs the
+real AP's BSSID + channel (only a Recon clone has them) and a third radio to
+inject from. While Evil WPA runs the radio map is: `wlan-ap` = rogue hostapd,
+`wlan-mon-5g` = EAPOL sniffer, `wlan-mon-2g` = deauth injection (free because
+recon is paused). All three on the target's channel — the three-radio
+scenario the roadmap calls out, where a dedicated deauth radio keeps the
+capture radio clean. We fire **broadcast** deauth (DA = ff:ff:…) at the real
+BSSID in bursts via the S07 `aireplay` wrapper. The hard limit is **MFP /
+802.11w**: deauths are management frames, so an MFP-required AP rejects them
+and the coupling is a no-op — we parse `rsn.mfp_required` from the beacon and
+warn in the UI but still let the operator opt in (it just won't dislodge
+anyone). Default off, opt-in per clone, behind the ethics gate, lab-only.
+
 ---
 
 ## Checkpoint 2 — Build
@@ -108,12 +124,44 @@ This session's UI + integration work:
 - `app/services/learning.py` — new "PineAP — Evil WPA (partial-handshake
   harvest)" section (#115).
 
+**Evil-twin deauth coupling (follow-up enhancement):**
+
+- `app/services/pineap.py` — new `evil_wpa_deauth` state flag +
+  `DEFAULT_DEAUTH_IFACE = "wlan-mon-2g"`. `set_ap_config` accepts the toggle
+  (and now correctly forwards `security_mode`, which the route had been
+  dropping — latent bug). `clone_evil_wpa_target` records
+  `source_mfp_required` and resets the toggle (opt-in per clone). Switching
+  back to `open` disarms it. `_start_broadcast` arms the deauth only when the
+  toggle is on AND a real `source_bssid` is present, passing it to
+  `evil_wpa.start()`; it logs a skip note for from-scratch SSIDs. Also fixed
+  a pre-existing gap from the handoff: `_tear_down_broadcast` and `stop()`
+  never stopped the Evil WPA service — now they do (and restore recon for
+  either Karma or Evil WPA).
+
+- `app/services/evil_wpa.py` — `start()` takes `deauth_enabled/deauth_iface/
+  deauth_bssid`; when armed it spawns a deauth thread that puts the spare
+  radio in monitor + locks the channel, then fires broadcast
+  `aireplay.send_deauth(client_mac=None)` bursts every 5s. `stop()` joins it;
+  `get_stats()` exposes `deauth_enabled/deauth_bssid/deauth_bursts`.
+
+- `app/routes/pineap.py` — clone passes `source_mfp_required`; ap-config
+  passes `evil_wpa_deauth` + `security_mode`.
+
+- `app/static/recon.js` — clone POST includes `source_mfp_required` from
+  `beacon.rsn.mfp_required`.
+
+- `app/templates/pineap.html` + `app/static/pineap.js` — opt-in deauth
+  checkbox (server-rendered: enabled only when a real target was cloned;
+  MFP-required warning when applicable), a deauth-bursts status row, and the
+  toggle wired into the WPA-config save.
+
 ---
 
 ## Checkpoint 3 — Verification (stub mode, on the Mac)
 
 `tests`-style harness via the Flask test client + service calls, all under
-`PIPINEAPPLE_CONFIG=test` (USE_REAL_TOOLS=0). **37/37 checks pass.** Covered:
+`PIPINEAPPLE_CONFIG=test` (USE_REAL_TOOLS=0). **63/63 checks pass** across two
+suites (37 core S12 + 26 deauth coupling). Core suite covered:
 
 - All three `/pineap/evil-wpa/*` routes + `/pineap/start` + `/pineap/ap-config`
   + `/handshakes/list` registered with the right methods.
@@ -134,6 +182,15 @@ This session's UI + integration work:
   registered single-line file containing exactly the one partial line —
   i.e. the Crack dispatch path resolves end-to-end.
 - Handshakes page still renders the Source column.
+
+Deauth-coupling suite covered: `evil_wpa_deauth` defaults False + `deauth_iface`
+defaults `wlan-mon-2g`; clone stores `source_mfp_required` and resets the
+toggle; ap-config persists the toggle + `security_mode`; switching to open
+disarms it; the page renders the checkbox + the MFP-required warning + the
+deauth-bursts stat; `evil_wpa.start()` consumes the deauth params and reports
+them in stats; and the full lifecycle proof — `_start_broadcast` passes
+`deauth_enabled=True` + the real BSSID + `wlan-mon-2g` to `evil_wpa.start()`
+for a Recon clone, and skips it with a note for a from-scratch SSID.
 
 `node --check` clean on `pineap.js`, `recon.js`, `handshakes.js`.
 `py_compile` clean on all edited Python.
@@ -185,6 +242,19 @@ Click **Start Evil WPA** → ethics modal (type `pineap`) → confirm. Expect:
 - `iw dev wlan-ap info` → `type AP`; `iw dev wlan-mon-5g info` → `type
   monitor`, channel pinned to 6.
 
+**4b. (Optional) Arm the evil-twin deauth.** Before Start, tick **"Also
+deauth the real AP"** on the Evil WPA tab — it's only enabled because you
+cloned a real target (it'd be greyed out for a from-scratch SSID). Save, then
+Start. Expect in `journalctl`: `evil-twin deauth armed at <real BSSID> on
+wlan-mon-2g`, and the **Deauth bursts** stat ticks up every ~5s. This forces
+your test AP's clients off so they re-associate — with the real AP still
+powered (don't kill it for this variant) and our clone in range, watch which
+one the victim lands on. Confirm `wlan-mon-2g` went to monitor + the target
+channel (`iw dev wlan-mon-2g info`). **Note:** if your test AP has 802.11w
+(MFP) enabled, the UI will have shown a warning and the deauths will be
+silently rejected — that's expected, not a bug; turn MFP off on the lab AP to
+exercise this path. Lab gear only — don't deauth anything you don't own.
+
 **5. Trigger the handshake.** Bring the victim into range / toggle its Wi-Fi.
 It should attempt to auto-join `EvilWPA-Lab`. Watch for:
 - `journalctl` / `hostapd` foreground: association + EAPOL 1/4, 2/4, then a
@@ -220,9 +290,12 @@ configured remote (Mac/Jetson) → Start. With `/tmp/wl.txt` containing
 should show the cracked password. **This is the real proof** — a valid M1+M2
 partial cracks to the exact PSK you set on the lab AP.
 
-**9. Stop + teardown.** Stop on the Evil WPA tab. Confirm: sniffer stops,
-hostapd + dnsmasq SIGTERM'd, `wlan-ap` link down + flushed, deny-list
-`-10.0.0.0/24`, recon restored. `iw dev wlan-ap info` → back to managed/down.
+**9. Stop + teardown.** Stop on the Evil WPA tab. Confirm: sniffer stops, the
+deauth thread stops (bursts stat stops climbing), hostapd + dnsmasq SIGTERM'd,
+`wlan-ap` link down + flushed, deny-list `-10.0.0.0/24`, recon restored.
+`iw dev wlan-ap info` → back to managed/down. (Stopping the Evil WPA service
+on teardown was a gap left from the mid-session handoff — wired up this
+session.)
 
 Hardware quirks that apply here (from the Phase D memory + S11 addendum):
 the `iw set type` link-down-first dance, `DEFAULT_MAX_BSS=1` on mt76x2u, the

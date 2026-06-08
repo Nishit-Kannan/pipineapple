@@ -410,6 +410,13 @@
     if ($("ew-partials-count")) $("ew-partials-count").textContent = s.partials_extracted || 0;
     if ($("ew-pcap-bytes"))     $("ew-pcap-bytes").textContent     = fmtBytes(s.pcap_bytes);
     if ($("ew-session"))        $("ew-session").textContent        = s.session_id || "—";
+    if ($("ew-deauth-bursts")) {
+      $("ew-deauth-bursts").textContent = s.deauth_enabled ? String(s.deauth_bursts || 0) : "—";
+    }
+    if ($("ew-deauth-target")) {
+      $("ew-deauth-target").textContent = (s.deauth_enabled && s.deauth_bssid)
+        ? `→ ${s.deauth_bssid}` : (s.deauth_enabled ? "" : "(off)");
+    }
   }
 
   async function reloadEvilWpaPartials() {
@@ -451,10 +458,14 @@
     // Always stamp security_mode=wpa2 — this is what flips the engine
     // from the Open SSID / Karma path to the EAPOL-sniffer path at Start.
     const body = {
-      primary_ssid:  ($("ew-primary-ssid")?.value || "").trim(),
-      channel:       parseInt($("ew-channel")?.value || "6", 10),
-      hw_mode:       $("ew-hw-mode")?.value || "g",
-      security_mode: "wpa2",
+      primary_ssid:    ($("ew-primary-ssid")?.value || "").trim(),
+      channel:         parseInt($("ew-channel")?.value || "6", 10),
+      hw_mode:         $("ew-hw-mode")?.value || "g",
+      security_mode:   "wpa2",
+      // Only send the toggle when the checkbox is enabled (a real target
+      // was cloned) — disabled means "not applicable", not "false".
+      evil_wpa_deauth: ($("ew-deauth") && !$("ew-deauth").disabled)
+                         ? !!$("ew-deauth").checked : undefined,
     };
     const res = await postJSON("/pineap/ap-config", body);
     showStatus(res.msg || (res.ok ? "saved" : "failed"), res.ok ? "ok" : "fail");

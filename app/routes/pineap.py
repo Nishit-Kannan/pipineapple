@@ -176,6 +176,8 @@ def set_ap_config():
         channel=data.get("channel"),
         primary_hidden=data.get("primary_hidden"),
         hw_mode=data.get("hw_mode"),
+        security_mode=data.get("security_mode"),
+        evil_wpa_deauth=data.get("evil_wpa_deauth"),
     )
     notif = notifications.success if ok else notifications.warning
     notif(f"pineap AP config: {msg}", source="pineap")
@@ -257,6 +259,7 @@ def clone_evil_wpa():
         channel=data.get("channel"),
         source_signal_dbm=data.get("source_signal_dbm"),
         source_security=data.get("source_security"),
+        source_mfp_required=data.get("source_mfp_required"),
     )
     notif = notifications.success if ok else notifications.warning
     notif(f"evil-wpa clone: {msg}", source="pineap")
