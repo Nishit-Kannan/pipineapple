@@ -506,6 +506,18 @@ class PineAPService:
             # nmcli failures aren't fatal — the iface may already be
             # unmanaged or NM may not be running. Continue.
             log.warning("pineap: nm.set_managed soft-failure: %s", msg)
+        # Ensure the interface is in 'managed' type before hostapd takes
+        # over. The mt76 driver fails to switch monitor → AP directly
+        # ("could not configure driver mode"); the reliable sequence is
+        # monitor → managed (us) → AP (hostapd). If wlan-ap was just
+        # used as a monitor iface by something else, this fixes it
+        # silently. If it was already managed, this is a no-op.
+        try:
+            from app.tools import iw
+            ok, msg = iw.set_type(iface, "managed")
+            msgs.append(f"iw set type managed {iface}: {msg}")
+        except Exception as e:
+            log.warning("pineap: iw.set_type soft-failure on %s: %s", iface, e)
         # Flush in case a stale address from a previous run lingers
         iproute.flush_address(iface)
         ok, msg = iproute.add_address(iface, f"{gateway}/24")
