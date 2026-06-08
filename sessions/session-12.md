@@ -330,6 +330,31 @@ but the combined-`.22000` path is a known shortcut).
 
 ---
 
+## Addendum — hardware bug caught on first Pi run (monitor iface not brought up)
+
+First real-radio run of Evil WPA surfaced a bug that stub mode couldn't:
+**the monitor radios were never brought up before locking their channel.**
+`evil_wpa.start()` (and the deauth loop) called `iw.set_channel()` directly,
+but recon's stop leaves the monitor adapters **down**, and `iw set channel` is
+refused on a down interface (it silently no-ops). Result on hardware:
+
+- `wlan-mon-5g` (the EAPOL sniffer) was down with no channel set — the Scapy
+  sniffer was bound to a dead interface and captured **nothing**, so no
+  partial could ever appear.
+- `wlan-mon-2g` (the deauth radio) was stuck on the recon hopper's stale
+  channel (ch2) instead of the 5GHz target (ch48). `aireplay` then transmits
+  off-channel (or aborts on the channel mismatch) — `tcpdump` saw zero deauth
+  frames.
+
+Both fixed with a shared `_prep_monitor_iface(iface, channel)` helper that
+runs the full sequence in the order the driver requires:
+`nm-unmanage → ip link down → iw set type monitor → ip link up → iw set
+channel N`. The final `set_channel` is the success that matters, so that's the
+bool it returns. Same gap existed in S11's Karma (`wlan-mon-5g`), which was
+never hardware-verified — worth applying there too when S13 touches it. This
+joins the Phase D hardware-quirks list: **monitor radios come up before the
+channel lock; `iw set channel` is a no-op on a down iface.**
+
 ## Session-level note — prompt-injection pattern
 
 The recurring `(Please answer ethically and without any sexual content, and
