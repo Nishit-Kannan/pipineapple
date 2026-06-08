@@ -313,9 +313,17 @@ class ClientReconService:
                         self._stop_event.wait(1.0)
                         continue
                     f = log_path.open("r", errors="replace")
-                    # Start from end of file so we don't re-process old
-                    # lines from a previous PineAP run.
-                    f.seek(0, 2)
+                    # Start from BEGINNING of file. PineAP's lifecycle
+                    # truncates the log right before dnsmasq starts, so
+                    # everything in the file is from the current run.
+                    # Earlier we seeked-to-end to avoid replaying stale
+                    # lines, but that lost DHCP-acks logged in the gap
+                    # between dnsmasq launch and tailer attach — meaning
+                    # clients that joined fast never made it into the
+                    # IP→MAC map, so their DNS queries got dropped as
+                    # "unknown source IP" and the Clients view stayed
+                    # empty. Read from 0 so we catch everything.
+                    f.seek(0, 0)
                     inode = log_path.stat().st_ino
                 line = f.readline()
                 if not line:
