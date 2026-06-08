@@ -544,6 +544,11 @@ class PineAPService:
             dhcp_lease="12h",
             forward_dns=True,
             log_queries=True,
+            # The management AP's dnsmasq holds 127.0.0.1:53 + 0.0.0.0:67
+            # with bind-interfaces. Coexist via bind-dynamic + SO_BINDTODEVICE
+            # so PineAP's dnsmasq only handles wlan-ap traffic and doesn't
+            # fight the mgmt-ap dnsmasq for loopback DNS.
+            coexist_with_other_dnsmasq=True,
         )
         # Append fields render_config doesn't directly support:
         #   - log-facility: where to send the verbose log (our tailer

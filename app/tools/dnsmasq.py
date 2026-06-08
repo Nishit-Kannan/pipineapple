@@ -30,6 +30,7 @@ def render_config(
     log_queries: bool = False,
     forward_dns: bool = False,
     upstream_dns: tuple[str, ...] = ("1.1.1.1", "8.8.8.8"),
+    coexist_with_other_dnsmasq: bool = False,
 ) -> str:
     """Render a minimal dnsmasq.conf bound to one interface.
 
@@ -41,10 +42,30 @@ def render_config(
     resolvers (default Cloudflare + Google). Required when AP clients
     need internet — without it, clients get IPs from DHCP but can't
     resolve any hostnames.
+
+    ``coexist_with_other_dnsmasq`` switches from ``bind-interfaces``
+    (which grabs 0.0.0.0:67 + 127.0.0.1:53 and refuses to share) to
+    ``bind-dynamic`` (uses ``SO_BINDTODEVICE`` so the DHCP socket is
+    restricted to ``iface``) plus ``except-interface=lo`` (skip the
+    loopback DNS bind that fights any other dnsmasq for ``127.0.0.1:53``).
+    Needed when running multiple dnsmasq instances on the same host —
+    e.g. the management AP and the PineAP rogue AP simultaneously.
     """
     lines = [
         f"interface={iface}",
-        "bind-interfaces",
+    ]
+    if coexist_with_other_dnsmasq:
+        # bind-dynamic uses SO_BINDTODEVICE on the DHCP socket so it
+        # only catches DHCP frames from `iface` even though port 67
+        # itself is shared. except-interface=lo skips the loopback DNS
+        # listener so we don't fight the other dnsmasq for 127.0.0.1:53.
+        lines += [
+            "bind-dynamic",
+            "except-interface=lo",
+        ]
+    else:
+        lines.append("bind-interfaces")
+    lines += [
         f"dhcp-range={dhcp_range_start},{dhcp_range_end},{dhcp_lease}",
         f"dhcp-option=3,{gateway_ip}",   # default route
         f"dhcp-option=6,{gateway_ip}",   # DNS server
