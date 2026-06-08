@@ -454,12 +454,17 @@ class ClientReconService:
                 hostname = None
 
             # Suppression check: was this MAC just Cleared, and is this
-            # lease leftover (issued before the clear)?
+            # lease leftover (issued before the clear)? Use a small
+            # fudge window (-10s) to handle clock skew between dnsmasq
+            # writing the lease and Python's time.time() recording the
+            # cleared_at — without it, a lease renewed right after a
+            # clear can still appear "stale" due to sub-second timing.
+            _CLEAR_FUDGE_SEC = 10
             with self._lock:
                 cleared_at = self._suppressed_macs.get(mac)
             if cleared_at is not None:
                 lease_issued_at = expiry - _LEASE_LEN_SEC
-                if lease_issued_at < cleared_at:
+                if lease_issued_at < cleared_at - _CLEAR_FUDGE_SEC:
                     # Stale lease from before clear — skip
                     continue
                 # Fresh renewal since clear — un-suppress
