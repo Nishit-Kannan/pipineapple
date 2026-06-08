@@ -29,11 +29,17 @@ log = logging.getLogger(__name__)
 
 
 # Chip-level cap on simultaneous BSSes per radio. Real ceiling varies
-# by chip/firmware (mt76x2u tops out around 4-8 in practice). We feature-
-# probe at hostapd start in the orchestration service; this is the
-# defensive ceiling the wrapper exposes for callers that just want a
-# safe upper bound.
-DEFAULT_MAX_BSS = 8
+# by chip/firmware: the mt76x2u in our Alfa AWUS036ACM actually only
+# supports 2 BSSes per radio under Pi OS Trixie kernel 6.12 (verified
+# empirically — hostapd fails the 3rd BSS bring-up with 'Device or
+# resource busy'). Some chips (ath9k, ath10k) support 8-16; some only
+# support 1.
+#
+# TODO: feature-probe via `iw phy <phy> info` and parse the
+#       "valid interface combinations" line for the real limit per
+#       phy. Until that's done, 2 is the conservative default that
+#       works on the operator's verified hardware.
+DEFAULT_MAX_BSS = 2
 
 
 def render_config(
