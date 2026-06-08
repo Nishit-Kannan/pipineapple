@@ -798,22 +798,24 @@
         <fieldset style="border:1px solid var(--border); border-radius:4px; padding:8px 12px; margin-top:12px;">
           <legend class="muted" style="padding:0 6px;">Capture tool</legend>
           <label style="display:block; margin:6px 0;">
-            <input type="radio" name="capture-tool" value="hcxdumptool" checked>
-            <strong>hcxdumptool</strong> <span class="muted">— PMKID + EAPOL</span>
+            <input type="radio" name="capture-tool" value="airodump-ng" checked>
+            <strong>airodump-ng</strong> <span class="muted">— works today</span>
             <div class="muted" style="font-size:11px; margin-left:22px;">
-              Active scan extracts PMKID from the AP directly (hashcat
-              mode 22000 — crackable on its own, no client needed). Also
-              captures natural EAPOL 4-ways when they happen. Recommended.
+              Classic 4-way handshake capture. BSSID-filtered, focused
+              pcap. Enable the deauth checkbox below to force fresh
+              handshakes from associated clients (otherwise waits for
+              natural reassociation, which may not happen).
             </div>
           </label>
           <label style="display:block; margin:6px 0;">
-            <input type="radio" name="capture-tool" value="airodump-ng">
-            <strong>airodump-ng</strong> <span class="muted">— EAPOL only (legacy)</span>
+            <input type="radio" name="capture-tool" value="hcxdumptool">
+            <strong>hcxdumptool</strong> <span class="muted">— PMKID + EAPOL (untested on this hardware)</span>
             <div class="muted" style="font-size:11px; margin-left:22px;">
-              Classic capture, BSSID-filtered at the tool level so the
-              pcap is tighter. Only catches EAPOL frames when clients
-              (re)associate — usually needs deauth to be useful, and
-              PMK caching often produces M3-only captures.
+              Active scan would extract PMKID directly from the AP, no
+              client needed. <strong>Currently incompatible</strong> with
+              the Alfa mt76x2u driver + Pi OS Trixie kernel 6.12 +
+              hcxdumptool 6.3.5 ("failed to arm interface"). Re-test
+              after upstream fixes; until then the capture will fail.
             </div>
           </label>
         </fieldset>
@@ -840,7 +842,7 @@
     overlay.querySelector("[data-act=start]").addEventListener("click", async () => {
       const deauth = overlay.querySelector("#capture-deauth-toggle").checked;
       const toolEl = overlay.querySelector("input[name=capture-tool]:checked");
-      const tool = toolEl ? toolEl.value : "hcxdumptool";
+      const tool = toolEl ? toolEl.value : "airodump-ng";
       overlay.querySelector("[data-act=start]").disabled = true;
       overlay.querySelector("[data-act=start]").textContent = "Starting…";
       const res = await postJson("/handshakes/start", {

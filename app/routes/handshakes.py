@@ -52,7 +52,9 @@ def start():
     channel = data.get("channel")
     essid = (data.get("essid") or "").strip()
     deauth = bool(data.get("deauth", False))
-    tool = (data.get("tool") or "hcxdumptool").strip()
+    # Default flipped to airodump in S07.7 — see handshakes.py for the
+    # mt76 + hcxdumptool 6.3.5 compatibility reason.
+    tool = (data.get("tool") or "airodump-ng").strip()
 
     if not bssid:
         return jsonify({"ok": False, "messages": ["bssid is required"]}), 400

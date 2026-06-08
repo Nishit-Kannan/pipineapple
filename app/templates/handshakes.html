@@ -29,14 +29,19 @@
       </span>
     </div>
 
-    {% if not captures %}
-      <p class="muted" id="hs-empty" style="padding:14px;">
-        No captures yet. Run a capture from the Recon page — click an AP
-        row and use the "Capture handshakes" button.
-      </p>
-    {% endif %}
+    {# Empty + error messages are ALWAYS in the DOM (hidden by default).
+       JS toggles them based on the fetch result. Previously the empty
+       message was Jinja-conditional on the server-rendered list — if
+       JS later got an empty list it had no element to unhide and the
+       page showed nothing at all (silent rendering bug). #}
+    <p class="muted" id="hs-empty" style="padding:14px;" hidden>
+      No captures yet. Run a capture from the Recon page — click an AP
+      row and use the "Capture handshakes" button.
+    </p>
+    <p class="badge badge-danger" id="hs-error" style="padding:14px; display:block;" hidden>
+    </p>
 
-    <table class="data" id="hs-table" {% if not captures %}hidden{% endif %}>
+    <table class="data" id="hs-table">
       <thead>
         <tr>
           <th style="width:24px;"><input type="checkbox" id="hs-select-all"></th>

@@ -65,6 +65,14 @@ INJECT_ROLE = "wlan-ap"       # role/name of the injection + focused-capture rad
 TOOL_HCXDUMPTOOL = "hcxdumptool"
 TOOL_AIRODUMP = "airodump-ng"
 SUPPORTED_TOOLS = (TOOL_HCXDUMPTOOL, TOOL_AIRODUMP)
+# Default tool for new captures. Flipped from hcxdumptool to airodump
+# in S07.7 because hcxdumptool 6.3.5 + mt76x2u driver + Pi OS Trixie
+# kernel 6.12 fails to arm the interface ("failed to arm interface" /
+# "driver is broken" — known incompatibility tracked upstream).
+# Airodump works reliably on the same hardware. Revisit when hcxdumptool
+# or the mt76 kernel driver gets a fix; until then operators can still
+# explicitly pick hcxdumptool from the capture-modal radio.
+DEFAULT_TOOL = TOOL_AIRODUMP
 
 
 class _Capture:
@@ -122,7 +130,7 @@ class HandshakesService:
     # ---------- Public API ----------
     def start_capture(
         self, bssid: str, channel: int, essid: str,
-        *, deauth: bool = False, tool: str = TOOL_HCXDUMPTOOL,
+        *, deauth: bool = False, tool: str = DEFAULT_TOOL,
     ) -> tuple[bool, list[str]]:
         """Begin a focused capture. Returns ``(ok, messages)``.
 

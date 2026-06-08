@@ -69,25 +69,51 @@
   }
 
   async function reload() {
-    let captures = [];
+    let captures = null;   // null = fetch failed; [] = succeeded but empty
+    let errMsg = "";
     try {
       const r = await fetch("/handshakes/list");
-      if (r.ok) {
+      if (!r.ok) {
+        errMsg = `HTTP ${r.status} from /handshakes/list`;
+      } else {
         const data = await r.json();
         captures = data.captures || [];
       }
-    } catch (e) { /* render empty */ }
+    } catch (e) {
+      errMsg = `network error fetching /handshakes/list: ${e}`;
+    }
     selected.clear();
     updateBulkButton();
-    render(captures);
+    if (captures === null) {
+      renderError(errMsg);
+    } else {
+      render(captures);
+    }
+  }
+
+  function renderError(msg) {
+    const tbody = $("hs-tbody");
+    const table = $("hs-table");
+    const empty = $("hs-empty");
+    const error = $("hs-error");
+    if (tbody) tbody.innerHTML = "";
+    if (table) table.hidden = true;
+    if (empty) empty.hidden = true;
+    if (error) {
+      error.hidden = false;
+      error.textContent = "Could not load captures: " + msg;
+    }
+    console.error("[handshakes]", msg);
   }
 
   function render(captures) {
     const tbody = $("hs-tbody");
     const table = $("hs-table");
     const empty = $("hs-empty");
+    const error = $("hs-error");
     const count = $("hs-count");
 
+    if (error) error.hidden = true;
     if (count) count.textContent = String(captures.length);
 
     if (!captures.length) {
@@ -147,7 +173,7 @@
       <td><strong>${escapeHtml(c.essid_at_capture || "<unknown>")}</strong></td>
       <td><code>${escapeHtml(c.bssid)}</code></td>
       <td>${escapeHtml(c.channel_at_capture || "—")}</td>
-      <td><span class="muted">${escapeHtml(c.tool || "hcxdumptool")}</span></td>
+      <td><span class="muted">${escapeHtml(c.tool || "—")}</span></td>
       <td>${pill}${pmkid} ${fmtMsgDots(c.messages_seen)}
         <div class="muted" style="font-size:10px; margin-top:2px;">${deauthBit}</div></td>
       <td class="muted">${escapeHtml(fmtTs(c.started_at))}</td>
