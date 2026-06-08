@@ -563,12 +563,21 @@ class PineAPService:
             f"pid-file={DNSMASQ_PID_PATH}\n"
         )
         dnsmasq_tool.write_config(DNSMASQ_CONFIG_PATH, dnsmasq_body)
-        # Truncate the log so the tailer's "seek to end" starts at the
-        # right place rather than at the tail of a stale previous run.
+        # Remove any stale log file from a previous run. We used to
+        # truncate via Python's write_text(""), but that leaves the
+        # file owned by root — and dnsmasq drops privileges to nobody
+        # right after startup, then can't open the root-owned file for
+        # writing ("Permission denied" → dnsmasq aborts). Unlink lets
+        # dnsmasq create a fresh file as its own user every Start. The
+        # tailer waits for the file to (re)appear (see client_recon
+        # _tail_loop file-not-exists branch) and seeks to start to
+        # catch every line.
         try:
-            DNSMASQ_LOG_PATH.write_text("")
-        except OSError:
+            DNSMASQ_LOG_PATH.unlink()
+        except FileNotFoundError:
             pass
+        except OSError as e:
+            log.warning("pineap: could not unlink stale dnsmasq log: %s", e)
 
         dnsmasq_cmd = [
             "dnsmasq", "--keep-in-foreground",
