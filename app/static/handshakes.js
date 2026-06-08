@@ -15,26 +15,12 @@
 (function () {
   "use strict";
   console.log("[handshakes.js] script loaded, document.readyState=", document.readyState);
-
-  // The defer attribute on the script tag means this runs AFTER the
-  // DOM is parsed but BEFORE DOMContentLoaded fires. Most of the time
-  // addEventListener is fine. But if for some reason readyState is
-  // already "complete" (e.g., script re-injected later, cached weirdly),
-  // the listener never fires. Belt-and-suspenders: run init directly
-  // if the DOM is already done parsing.
-  function bootstrap() {
-    if (!document.getElementById("hs-tbody")) {
-      console.log("[handshakes.js] hs-tbody not found, skipping init (not on Handshakes page)");
-      return;
-    }
-    console.log("[handshakes.js] init firing");
-    init();
-  }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", bootstrap);
-  } else {
-    bootstrap();   // DOM already parsed
-  }
+  // The bootstrap-or-listen call is at the BOTTOM of this IIFE — see
+  // the very last lines. We can't call any helper that uses `$` (or
+  // any other const) up here because const declarations have a
+  // temporal dead zone; references before the declaration line
+  // throw ReferenceError. Putting the bootstrap at the bottom means
+  // every const + function is initialised by the time it runs.
 
   const $ = (id) => document.getElementById(id);
   const escapeHtml = (s) =>
@@ -241,5 +227,23 @@
     }
     selected.clear();
     reload();
+  }
+
+  // ---- Bootstrap (kept at the bottom so it runs AFTER all `const`
+  // declarations above are initialised — avoids the TDZ ReferenceError
+  // that bit us on `defer` script execution where readyState was
+  // already past "loading"). ----
+  function bootstrap() {
+    if (!document.getElementById("hs-tbody")) {
+      console.log("[handshakes.js] hs-tbody not found, skipping init (not on Handshakes page)");
+      return;
+    }
+    console.log("[handshakes.js] init firing");
+    init();
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bootstrap);
+  } else {
+    bootstrap();   // DOM already parsed
   }
 })();
