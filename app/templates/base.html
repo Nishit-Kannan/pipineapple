@@ -12,6 +12,7 @@
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   <script src="{{ url_for('static', filename='settings.js') }}" defer></script>
   <script src="{{ url_for('static', filename='recon.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='handshakes.js') }}" defer></script>
 </head>
 <body>
   {# ---------- Title bar ---------- #}
@@ -155,8 +156,9 @@
           <span class="sidenav-label">PineAP</span>
         </a>
 
-        <a href="#" class="sidenav-item disabled"
-           title="Handshakes — Phase C (Sessions 7–9)">
+        <a href="{{ url_for('handshakes.index') }}"
+           class="sidenav-item {% block nav_handshakes %}{% endblock %}"
+           title="Handshakes — captured EAPOL / PMKID, downloads">
           <span class="sidenav-icon">
             {# link / chain #}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"

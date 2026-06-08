@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Handshakes — PiPineapple{% endblock %}
+{% block nav_handshakes %}active{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Handshakes</h1>
+    <p class="muted">
+      Every persisted handshake capture across all APs. Download as raw
+      pcap/pcapng for forensics, or as hashcat <code>.22000</code> format
+      for offline cracking. Cracking dispatch (Session 09) sends the
+      <code>.22000</code> off-Pi to a configured Mac or Jetson over SSH.
+    </p>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>All captures</h2>
+      <span class="muted" id="hs-count">{{ captures|length }}</span>
+      <span style="margin-left:auto; display:flex; gap:8px;">
+        <button id="hs-bulk-delete" class="bigbtn actbtn-muted"
+                style="font-size:11px; padding:4px 10px;" disabled>
+          Delete selected
+        </button>
+        <button id="hs-refresh" class="bigbtn actbtn-muted"
+                style="font-size:11px; padding:4px 10px;">
+          Refresh
+        </button>
+      </span>
+    </div>
+
+    {% if not captures %}
+      <p class="muted" id="hs-empty" style="padding:14px;">
+        No captures yet. Run a capture from the Recon page — click an AP
+        row and use the "Capture handshakes" button.
+      </p>
+    {% endif %}
+
+    <table class="data" id="hs-table" {% if not captures %}hidden{% endif %}>
+      <thead>
+        <tr>
+          <th style="width:24px;"><input type="checkbox" id="hs-select-all"></th>
+          <th>Source</th>
+          <th>SSID</th>
+          <th>BSSID</th>
+          <th>Ch</th>
+          <th>Tool</th>
+          <th>Status</th>
+          <th>Captured</th>
+          <th>Duration</th>
+          <th>Size</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="hs-tbody">
+        {# JS reloads via /handshakes/list on DOMContentLoaded. Brief
+           "loading…" placeholder for the moment between page render
+           and the fetch returning. #}
+        <tr><td colspan="11" class="muted" style="padding:12px;">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

@@ -12,12 +12,23 @@ the handshakes service.
 
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, render_template, request, send_file
 
 from app.services.handshakes import get_service
 from app.services.notifications import notifications
 
 bp = Blueprint("handshakes", __name__, url_prefix="/handshakes")
+
+
+# ---------- HTML page (Session 08) ----------
+@bp.route("/")
+def index():
+    """Top-level Handshakes page — full table of every persisted
+    capture across all APs and sources. Server pre-renders the
+    initial list; client JS refreshes on capture:status SocketIO
+    events and after any delete."""
+    captures = get_service().list_captures()
+    return render_template("handshakes.html", captures=captures)
 
 
 @bp.route("/start", methods=["POST"])
@@ -129,3 +140,59 @@ def delete_by_bssid():
     notif = notifications.success if ok else notifications.warning
     notif(f"captures bulk-delete {bssid}: {msg}", source="handshakes")
     return jsonify({"ok": ok, "msg": msg})
+
+
+# ---------- Downloads (Session 08) ----------
+@bp.route("/<capture_id>/download/pcap")
+def download_pcap(capture_id: str):
+    """Serve the raw .pcap/.pcapng for forensic / Wireshark / external
+    tool consumption. Mime type set per format."""
+    from flask import abort
+    svc = get_service()
+    cap = svc.get_capture_record(capture_id)
+    if cap is None:
+        abort(404, description=f"no capture {capture_id}")
+    pcap_path = svc.resolve_pcap_path(cap)
+    if pcap_path is None:
+        abort(410, description="pcap file gone from disk (index entry stale)")
+
+    # pcapng has a distinct mime type from libpcap; both browsers/tools
+    # accept application/octet-stream so use that for simplicity.
+    bssid_fs = cap.get("bssid", "unknown").upper().replace(":", "-")
+    fmt = cap.get("pcap_format") or pcap_path.suffix.lstrip(".") or "pcap"
+    filename = f"{bssid_fs}_{capture_id[:8]}.{fmt}"
+    return send_file(
+        pcap_path,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/octet-stream",
+    )
+
+
+@bp.route("/<capture_id>/download/22000")
+def download_22000(capture_id: str):
+    """Convert the pcap to hashcat .22000 format on demand and serve.
+
+    Conversion is cached next to the pcap so the second download is
+    instant. Returns 404 if the pcap contains no crackable PMKID /
+    EAPOL pairs (operator sees a clear message instead of a 0-byte
+    file)."""
+    from flask import abort
+    svc = get_service()
+    cap = svc.get_capture_record(capture_id)
+    if cap is None:
+        abort(404, description=f"no capture {capture_id}")
+    path, msg = svc.resolve_or_build_22000(cap)
+    if path is None:
+        # Common cases: empty pcap (junk capture); hcxpcapngtool not
+        # installed; pcap file gone. Either way: 404 with the msg.
+        abort(404, description=msg)
+
+    bssid_fs = cap.get("bssid", "unknown").upper().replace(":", "-")
+    filename = f"{bssid_fs}_{capture_id[:8]}.22000"
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="text/plain",
+    )

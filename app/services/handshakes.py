@@ -501,6 +501,68 @@ class HandshakesService:
             self.delete_capture(cid)
         return True, f"deleted {len(ids)} capture(s) for {bssid}"
 
+    # ---------- Download helpers (Session 08) ----------
+    def get_capture_record(self, capture_id: str) -> dict[str, Any] | None:
+        """Look up one persisted capture entry by id. Returns None if
+        not in the index. Includes ``pcap_size_bytes`` (via the same
+        enrichment list_captures uses)."""
+        for c in self.list_captures():
+            if c.get("id") == capture_id:
+                return c
+        return None
+
+    def resolve_pcap_path(self, capture: dict[str, Any]) -> Path | None:
+        """Map a capture record to its on-disk pcap. Returns None if
+        the file is gone (index says it exists but the file's been
+        manually deleted)."""
+        rel = capture.get("pcap_relative_path")
+        if not rel:
+            return None
+        p = self._dir / rel
+        return p if p.is_file() else None
+
+    def resolve_or_build_22000(
+        self, capture: dict[str, Any],
+    ) -> tuple[Path | None, str]:
+        """Get the .22000 file for a capture, building it on demand if
+        not yet cached. Cached next to the pcap as ``<base>.22000``.
+
+        Returns ``(path, message)`` where path is None on failure. The
+        route uses the message to populate the notification.
+        """
+        from app.tools import hcxpcapngtool
+        pcap_path = self.resolve_pcap_path(capture)
+        if pcap_path is None:
+            return None, "source pcap is missing on disk"
+
+        # .22000 cache lives next to the pcap, same stem, .22000 suffix.
+        # Per-capture id avoids collisions if multiple captures land in
+        # the same per-BSSID dir.
+        out_path = pcap_path.with_suffix(".22000")
+
+        # Cache hit?
+        try:
+            cached_ok = (
+                out_path.is_file()
+                and out_path.stat().st_size > 0
+                and out_path.stat().st_mtime >= pcap_path.stat().st_mtime
+            )
+        except OSError:
+            cached_ok = False
+        if cached_ok:
+            return out_path, f"using cached {out_path.name}"
+
+        ok, msg, counts = hcxpcapngtool.convert_to_22000(pcap_path, out_path)
+        if not ok:
+            # Don't leave a partially-written file behind
+            try:
+                if out_path.is_file() and out_path.stat().st_size == 0:
+                    out_path.unlink()
+            except OSError:
+                pass
+            return None, msg
+        return out_path, msg
+
     # ---------- Internals ----------
     def _resolve_inject_iface(self) -> str | None:
         """Same role/name lookup recon uses."""
