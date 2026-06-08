@@ -574,6 +574,142 @@
         }
       });
     }
+
+    // ---------- Crack Targets tab (Session 09) ----------
+    // Wire even if the tab isn't active yet — loads are cheap and the
+    // table appearing populated when the operator first clicks the tab
+    // is a nicer UX than a flash of "loading…".
+    if ($("#crack-targets-tbody")) {
+      loadCrackPubkey();
+      loadCrackTargets();
+      const addBtn = $("#ct-add");
+      if (addBtn) {
+        addBtn.addEventListener("click", async () => {
+          const body = {
+            name:          ($("#ct-name").value     || "").trim(),
+            host:          ($("#ct-host").value     || "").trim(),
+            user:          ($("#ct-user").value     || "").trim(),
+            port:          parseInt($("#ct-port").value || "22", 10),
+            wordlist_path: ($("#ct-wordlist").value || "").trim(),
+          };
+          if (!body.name || !body.host || !body.user || !body.wordlist_path) {
+            showStatus("name, host, user, wordlist are all required", "fail");
+            return;
+          }
+          addBtn.disabled = true;
+          showStatus(`adding crack target ${body.name}…`);
+          try {
+            const res = await postJSON("/crack/targets", body);
+            showStatus(res.msg || (res.ok ? "added" : "failed"),
+                       res.ok ? "ok" : "fail");
+            if (res.ok) {
+              ["ct-name", "ct-host", "ct-user", "ct-wordlist"].forEach(id => {
+                const el = $("#" + id);
+                if (el) el.value = "";
+              });
+              $("#ct-port").value = "22";
+              loadCrackTargets();
+            }
+          } finally {
+            addBtn.disabled = false;
+          }
+        });
+      }
+    }
+  }
+
+  // ---------- Crack target helpers ----------
+  async function loadCrackPubkey() {
+    try {
+      const r = await fetch("/crack/public-key");
+      const data = await r.json();
+      const pre = $("#crack-pubkey");
+      const fp = $("#crack-pubkey-fingerprint");
+      if (pre) pre.textContent = data.key || "(no key)";
+      if (fp)  fp.textContent  = data.fingerprint || "";
+    } catch (e) {
+      const pre = $("#crack-pubkey");
+      if (pre) pre.textContent = "failed to load public key: " + e;
+    }
+  }
+
+  async function loadCrackTargets() {
+    const tbody = $("#crack-targets-tbody");
+    if (!tbody) return;
+    try {
+      const r = await fetch("/crack/targets");
+      const data = await r.json();
+      renderCrackTargets(data.targets || []);
+    } catch (e) {
+      tbody.innerHTML =
+        `<tr class="deny-empty"><td colspan="7" class="muted">
+           failed to load targets: ${escapeHtml(String(e))}
+         </td></tr>`;
+    }
+  }
+
+  function renderCrackTargets(targets) {
+    const tbody = $("#crack-targets-tbody");
+    if (!tbody) return;
+    if (!targets.length) {
+      tbody.innerHTML =
+        `<tr class="deny-empty"><td colspan="7" class="muted">
+           No crack targets configured. Add one above.
+         </td></tr>`;
+      return;
+    }
+    tbody.innerHTML = targets.map(t => {
+      let testBadge = `<span class="muted">untested</span>`;
+      if (t.last_test_ok === true)  testBadge = `<span class="badge badge-ok"   title="${escapeHtml(t.last_test_msg || "")}">ok</span>`;
+      if (t.last_test_ok === false) testBadge = `<span class="badge badge-warn" title="${escapeHtml(t.last_test_msg || "")}">fail</span>`;
+      const lastMsg = t.last_test_msg
+        ? `<div class="muted" style="font-size:10px; margin-top:2px;">${escapeHtml(t.last_test_msg)}</div>`
+        : "";
+      return `<tr data-id="${escapeHtml(t.id)}">
+        <td><strong>${escapeHtml(t.name)}</strong></td>
+        <td><code>${escapeHtml(t.host)}</code></td>
+        <td><code>${escapeHtml(t.user)}</code></td>
+        <td>${escapeHtml(String(t.port || 22))}</td>
+        <td><code style="font-size:11px;">${escapeHtml(t.wordlist_path)}</code></td>
+        <td>${testBadge}${lastMsg}</td>
+        <td>
+          <button class="actbtn ct-test"   data-id="${escapeHtml(t.id)}">Test</button>
+          <button class="actbtn actbtn-muted ct-remove" data-id="${escapeHtml(t.id)}">×</button>
+        </td>
+      </tr>`;
+    }).join("");
+
+    tbody.querySelectorAll(".ct-test").forEach(b => {
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        b.textContent = "Testing…";
+        try {
+          const r = await fetch(`/crack/targets/${encodeURIComponent(b.dataset.id)}/test`,
+                                { method: "POST" });
+          const data = await r.json();
+          showStatus(data.msg || (data.ok ? "ok" : "failed"),
+                     data.ok ? "ok" : "fail");
+        } finally {
+          b.disabled = false;
+          b.textContent = "Test";
+          loadCrackTargets();
+        }
+      });
+    });
+    tbody.querySelectorAll(".ct-remove").forEach(b => {
+      b.addEventListener("click", async () => {
+        if (!confirm("Remove this crack target?")) return;
+        b.disabled = true;
+        try {
+          const r = await fetch(`/crack/targets/${encodeURIComponent(b.dataset.id)}`,
+                                { method: "DELETE" });
+          const data = await r.json();
+          showStatus(data.msg, data.ok ? "ok" : "fail");
+        } finally {
+          loadCrackTargets();
+        }
+      });
+    });
   }
 
   if (document.readyState === "loading") {

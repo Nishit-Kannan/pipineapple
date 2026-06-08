@@ -1885,6 +1885,179 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 08 / 08.1 — Handshakes page: .22000 conversion, downloads, cleanup
+    # ------------------------------------------------------------------
+    {
+        "id": "handshakes-page",
+        "title": "Handshakes page — .22000 export, downloads",
+        "added_in_session": 8,
+        "intro": (
+            "The dedicated cross-AP handshakes view: every persisted "
+            "capture across all targets, downloadable as raw "
+            "pcap/pcapng (for Wireshark / re-conversion / forensics) "
+            "or as hashcat mode 22000 (.22000) format for offline "
+            "cracking. Conversion happens on demand via hcxpcapngtool "
+            "and is cached next to the source pcap so the second "
+            "download is instant."
+        ),
+        "ui_reference": (
+            "Sidebar → Handshakes page. Full table of captures with "
+            "per-row download (pcap + .22000) and delete buttons."
+        ),
+        "wrapper_modules": [
+            "app/tools/hcxpcapngtool.py",
+            "app/services/handshakes.py",
+            "app/routes/handshakes.py",
+            "app/templates/handshakes.html",
+            "app/static/handshakes.js",
+        ],
+        "commands": [
+            # ---- .22000 format basics ----
+            {
+                "command": "(reference) hashcat mode 22000 line format",
+                "description": (
+                    "Each line is one crackable target:\n"
+                    "  WPA*<type>*<mic_or_pmkid>*<MAC_AP>*<MAC_STA>"
+                    "*<ESSID_hex>*<ANONCE_hex>*<EAPOL_hex>*<flags>\n"
+                    "  type 01 = PMKID (most fields empty)\n"
+                    "  type 02 = EAPOL handshake (full nonces + MIC + EAPOL bytes)\n"
+                    "A single pcap can produce both types. ESSID is "
+                    "hex-encoded to avoid escaping issues with names "
+                    "that contain colons/spaces/non-ASCII."
+                ),
+            },
+            {
+                "command": "sudo hcxpcapngtool -o /tmp/out.22000 <pcap_or_pcapng>",
+                "description": (
+                    "Convert any pcap (airodump-ng's .cap or "
+                    "hcxdumptool's .pcapng) to hashcat .22000. Tool is "
+                    "format-agnostic on input. Stdout summary shows "
+                    "what was extracted:\n"
+                    "  EAPOL pairs M1M2 / M1M3 / M2M3 — any non-zero is "
+                    "crackable\n"
+                    "  PMKIDs written — crackable on their own\n"
+                    "Returns 0 even when nothing was extracted; check "
+                    "the output file size."
+                ),
+            },
+            {
+                "command": "hashcat -m 22000 /tmp/out.22000 /path/to/wordlist.txt",
+                "description": (
+                    "Mode 22000 cracks both PMKID and EAPOL pairs from "
+                    "the same file. Session 09 (planned) will automate "
+                    "this off-Pi — the Pi 5 is way too slow for serious "
+                    "wordlists; dispatch to Mac/Jetson over SSH."
+                ),
+            },
+
+            # ---- Crackable combinations (fixed in S08.1) ----
+            {
+                "command": "(reference) Which message sets are crackable",
+                "description": (
+                    "hashcat mode 22000 accepts any of:\n"
+                    "  * M1+M2+M3+M4 — full handshake (best)\n"
+                    "  * M1+M2 — most common partial, M2 has the MIC\n"
+                    "  * M1+M3 — happens with PMK caching (fast reassoc)\n"
+                    "  * M2+M3 — less common but valid\n"
+                    "  * PMKID alone — hcxdumptool active-scan signature\n"
+                    "M1 alone / M2 alone / M3 alone are NOT enough "
+                    "(M2+ and M3 carry MICs but you need an ANonce "
+                    "or another MIC to pair with). Our handshake "
+                    "detector classifies all five crackable cases as "
+                    "'partial' or better; everything else is 'no hs'."
+                ),
+            },
+
+            # ---- The Handshakes page + download endpoints ----
+            {
+                "command": "(reference) Storage layout under $DATA_DIR/handshakes/",
+                "description": (
+                    "$DATA_DIR/handshakes/\n"
+                    "    AA-BB-CC-DD-EE-01/\n"
+                    "        20260605-220000.pcapng        # hcxdumptool source\n"
+                    "        20260605-220000.22000         # cached conversion\n"
+                    "        20260607-215615-01.cap        # airodump source\n"
+                    "        20260607-215615-01.22000      # cached conversion\n"
+                    "    index.json                          # metadata index\n"
+                    "The .22000 cache lives next to the source pcap; "
+                    "we rebuild only if the pcap's mtime is newer than "
+                    "the cache."
+                ),
+            },
+            {
+                "command": "curl -s http://localhost:5000/handshakes/list | python3 -m json.tool",
+                "description": (
+                    "JSON list of every persisted capture. Each entry: "
+                    "id, bssid, essid, channel, tool, deauth flags, "
+                    "messages_seen, is_complete/is_partial, "
+                    "has_pmkid, pcap_relative_path, pcap_size_bytes."
+                ),
+            },
+            {
+                "command": "curl -O -J http://localhost:5000/handshakes/<id>/download/pcap",
+                "description": (
+                    "Download the raw pcap/pcapng with auto-generated "
+                    "filename (BSSID + short id). Content-Disposition "
+                    "header. Useful for re-running through tshark or "
+                    "trying different hcxpcapngtool flags."
+                ),
+            },
+            {
+                "command": "curl -O -J http://localhost:5000/handshakes/<id>/download/22000",
+                "description": (
+                    "Download the .22000 hash file. Conversion happens "
+                    "on first download (cached for subsequent calls). "
+                    "Returns 404 with a clear message if the pcap "
+                    "contains no crackable targets, instead of a "
+                    "0-byte file."
+                ),
+            },
+
+            # ---- The hcxdumptool / mt76 compatibility note ----
+            {
+                "command": "(gotcha) hcxdumptool 6.3.5 + Alfa mt76x2u + Pi OS Trixie",
+                "description": (
+                    "hcxdumptool fails to arm the interface on this "
+                    "exact combo with 'failed to arm interface' / "
+                    "'driver is broken (most likely)'. Known upstream "
+                    "issue. Workaround: pick airodump-ng in the "
+                    "capture-tool radio (now the default). hcxdumptool "
+                    "stays selectable for when the upstream fix lands "
+                    "or operators run on different hardware."
+                ),
+            },
+
+            # ---- Static file caching ----
+            {
+                "command": "(gotcha) Browser caches static files for 5 min",
+                "description": (
+                    "config.py sets SEND_FILE_MAX_AGE_DEFAULT = 300 "
+                    "(5 minutes). Without this, every JS/CSS request "
+                    "did an ETag round trip over the slow mgmt AP — "
+                    "page loads took 6-8 seconds. With it, subsequent "
+                    "loads come from browser cache. Cmd-Shift-R / "
+                    "Ctrl-Shift-R bypasses cache (required after "
+                    "deploying static changes during dev)."
+                ),
+            },
+
+            # ---- The Recon-page client-count column ----
+            {
+                "command": "(reference) Per-AP client count in the Recon table",
+                "description": (
+                    "Each AP row now shows a 'Clients' column with the "
+                    "number of stations whose airodump-reported BSSID "
+                    "matches the AP. Computed in the recon service's "
+                    "_tick from the merged_clients dict, after the "
+                    "SSID-enrichment pass. Bold when >0 (highlights "
+                    "APs with active clients — your real targets); "
+                    "muted '0' for beacon-only APs."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 01 — Driver detection
     # ------------------------------------------------------------------
     {

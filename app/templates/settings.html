@@ -16,6 +16,7 @@
     <button class="tab active" data-tab="adapters">Adapter Management</button>
     <button class="tab" data-tab="networking">Networking</button>
     <button class="tab" data-tab="security">Security</button>
+    <button class="tab" data-tab="crack">Crack Targets</button>
     <button class="tab disabled" disabled title="Session 18">Advanced</button>
     <button class="tab disabled" disabled title="Session 18">Help</button>
   </div>
@@ -442,6 +443,62 @@
             {% else %}
               <tr class="deny-empty"><td colspan="2" class="muted">No deny CIDRs configured. UI is reachable from any source.</td></tr>
             {% endif %}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </section>
+
+  {# ---------- Crack Targets tab (Session 09) ---------- #}
+  <section id="tab-crack" class="tab-panel" hidden>
+    <div class="dash-grid">
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Platform SSH public key</h2>
+          <span class="muted">copy to each remote's <code>~/.ssh/authorized_keys</code></span>
+        </div>
+        <p class="muted" style="font-size:13px;">
+          The Pi can't do GPU cracking, so it dispatches captured handshakes
+          to a remote machine over SSH and runs <code>hashcat -m 22000</code>
+          there. Add the platform's public key below to any host you'd like
+          to use as a crack target, then register the target in the table
+          underneath.
+        </p>
+        <pre id="crack-pubkey"
+             style="font-size:11px; white-space:pre-wrap; word-break:break-all;
+                    background:rgba(0,0,0,0.15); padding:10px; border-radius:6px;">
+loading…</pre>
+        <div class="muted" id="crack-pubkey-fingerprint" style="font-size:11px;"></div>
+      </section>
+
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Configured crack targets</h2>
+          <span class="muted">SSH hosts with hashcat installed</span>
+        </div>
+        <div id="crack-target-form-row" class="deny-list-row" style="flex-wrap:wrap; gap:6px;">
+          <input id="ct-name"     type="text" placeholder="name (e.g. Mac Studio)"  style="width:160px;">
+          <input id="ct-host"     type="text" placeholder="host or IP"              style="width:160px;">
+          <input id="ct-user"     type="text" placeholder="ssh user"                style="width:120px;">
+          <input id="ct-port"     type="number" placeholder="22" value="22"         style="width:70px;">
+          <input id="ct-wordlist" type="text" placeholder="/path/to/wordlist.txt"   style="flex:1; min-width:240px;">
+          <button id="ct-add" class="bigbtn">Add target</button>
+        </div>
+
+        <table class="data deny-table" id="crack-targets-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Host</th>
+              <th>User</th>
+              <th>Port</th>
+              <th>Wordlist</th>
+              <th>Last test</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="crack-targets-tbody">
+            <tr class="deny-empty"><td colspan="7" class="muted">loading…</td></tr>
           </tbody>
         </table>
       </section>

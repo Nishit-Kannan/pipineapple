@@ -65,4 +65,64 @@
       </tbody>
     </table>
   </div>
+
+  {# ---------- Crack jobs (Session 09) ---------- #}
+  <div class="card" id="crack-card" style="margin-top:16px;">
+    <div class="card-head">
+      <h2>Crack jobs</h2>
+      <span class="muted" id="crack-count">0</span>
+      <span style="margin-left:auto;">
+        <button id="crack-refresh" class="bigbtn actbtn-muted"
+                style="font-size:11px; padding:4px 10px;">Refresh</button>
+      </span>
+    </div>
+    <p class="muted" id="crack-empty" style="padding:14px;" hidden>
+      No crack jobs yet. Click a capture's "Crack" button above. Configure
+      remote crack targets in <a href="/settings">Settings → Crack Targets</a>.
+    </p>
+    <table class="data" id="crack-table" hidden>
+      <thead>
+        <tr>
+          <th>Started</th>
+          <th>SSID / BSSID</th>
+          <th>Target</th>
+          <th>Status</th>
+          <th>Speed</th>
+          <th>Progress</th>
+          <th>ETA</th>
+          <th>Result</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="crack-tbody"></tbody>
+    </table>
+  </div>
+
+  {# ---------- Crack-target picker modal ---------- #}
+  <div id="crack-modal" class="modal" hidden role="dialog"
+       aria-labelledby="crack-modal-title" aria-modal="true">
+    <div class="modal-backdrop" id="crack-modal-backdrop"></div>
+    <div class="modal-card">
+      <h3 id="crack-modal-title">Dispatch crack job</h3>
+      <p class="muted" style="font-size:13px;">
+        Send <code id="crack-modal-target-cap">…</code> to a configured
+        remote and run <code>hashcat -m 22000</code> against the target's
+        wordlist.
+      </p>
+
+      <label for="crack-modal-target" class="muted" style="display:block; margin-top:12px;">
+        Crack target
+      </label>
+      <select id="crack-modal-target" style="width:100%; padding:6px;">
+        <option value="">— loading targets… —</option>
+      </select>
+
+      <p class="muted" id="crack-modal-msg" style="font-size:11px; margin-top:8px;"></p>
+
+      <div class="modal-actions">
+        <button id="crack-modal-cancel" class="bigbtn actbtn-muted">Cancel</button>
+        <button id="crack-modal-start"  class="bigbtn" disabled>Start crack</button>
+      </div>
+    </div>
+  </div>
 {% endblock %}
