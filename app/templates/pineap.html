@@ -251,7 +251,11 @@
         <div class="card-head">
           <h2>Connected clients</h2>
           <span class="muted" id="open-client-count">0</span>
-          <span style="margin-left:auto; display:flex; gap:6px;">
+          <span style="margin-left:auto; display:flex; gap:10px; align-items:center;">
+            <label style="font-size:11px;">
+              <input type="checkbox" id="open-clients-active-only" checked>
+              Active only (10 min)
+            </label>
             <button id="open-clients-refresh" class="bigbtn actbtn-muted"
                     style="font-size:11px;">Refresh</button>
             <button id="open-clients-clear" class="bigbtn actbtn-muted"

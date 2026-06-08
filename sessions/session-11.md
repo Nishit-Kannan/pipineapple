@@ -74,3 +74,51 @@ Route + template tests via Flask test client:
 ## What's next
 
 Operator's call. Natural next step is S12 (Evil WPA — the higher-value Karma variant that harvests partial handshakes), but we could also pull the Pi-deploy verification forward as a hardware sanity check before piling on more code.
+
+---
+
+## Addendum (post-hardware-verify) — seven bugs we caught and fixed
+
+Active-mode flow works end-to-end on real hardware. iPhone associates, gets DHCP lease, captive-portal probes succeed, internet flows, Connected Clients table populates with OS fingerprint and live DNS query history. The path from "S11 build is done" to "S11 actually works on hardware" took seven distinct fixes — worth documenting because every one of them is foundational for Phase D's later sessions.
+
+**1. `iw set type managed` fails on a live netdev.** mt76 driver requires interface DOWN before switching `type managed` ↔ `type AP`. The fix is `ip link set <iface> down` → `iw dev <iface> set type managed` → `ip addr add` → `ip link set <iface> up`, in that order. Without the link-down-first step, `iw set type` returns `Device or resource busy (-16)` and hostapd then can't claim the interface.
+
+**2. mt76x2u practical multi-BSS limit is 1, not what `iw phy info` advertises.** `iw phy phy3 info` reports `total <= 2` for valid interface combinations on the AWUS036ACM, but in practice running 2 AP-mode BSSes simultaneously breaks beaconing on Pi OS Trixie kernel 6.12: primary BSS shows `type AP` with `tx-packets=0`, secondary BSS gets created but stuck at `type managed` and the half-init halts beacons on both. `DEFAULT_MAX_BSS = 1` is the safe cap. Hak5-style pool broadcasting will need `hostapd_cli set_ssid` rotation in a later session.
+
+**3. Off-by-one in extras cap.** The pool-extras selection loop checked `len(extras) >= MAX_BSS - 1` *after* the append, which means with MAX_BSS=1 we still appended one extra and then broke. Fixed: check before the append. (Was correct for MAX_BSS≥2; only broke at exactly 1.)
+
+**4. dnsmasq port-67 conflict between mgmt-ap and pineap.** UDP `0.0.0.0:67` can only be held by one process per machine — DHCP needs the wildcard to receive broadcast DISCOVER frames. Default `bind-interfaces` mode grabs it, so a second dnsmasq's `bind-interfaces` fails with `Address already in use`. The fix: `bind-dynamic` + `except-interface=lo` for the PineAP dnsmasq. `bind-dynamic` uses `SO_BINDTODEVICE` so each instance's DHCP socket is restricted to its specific interface, and `except-interface=lo` skips the loopback DNS bind that would otherwise fight the mgmt-ap dnsmasq for `127.0.0.1:53`. Management AP's dnsmasq stays on `bind-interfaces` because it's the only consumer of loopback DNS.
+
+**5. dnsmasq log-file ownership trap.** Truncating the log via Python's `write_text("")` leaves the file owned by root, mode 0644. dnsmasq drops privileges to `nobody` shortly after start, then tries to open the log file for writing — and fails with `Permission denied`, aborts. Fix: `unlink()` the stale log instead of truncating; dnsmasq creates the new one fresh as its own user.
+
+**6. Log tailer seek-to-end loses DHCP-acks.** Tailer started after dnsmasq and used `f.seek(0, 2)` (end of file) to skip stale lines. But since PineAP's lifecycle truncates (now unlinks) the log right before dnsmasq starts, there are no stale lines to skip — and the seek-to-end loses every DHCP-ack that landed in the gap between dnsmasq launch and tailer attach. Fix: `f.seek(0, 0)` — read from the start of the (freshly-created) file.
+
+**7. dnsmasq verbose-log shape is different than expected.** Pi OS Trixie's dnsmasq emits DHCP lines as `DHCPACK(wlan-ap) <ip> <mac>` (uppercase, no hyphen, prefixed by numeric transaction ID) — not the older `dhcp-ack(wlan-ap) <ip> <mac> <hostname>` shape. The `requested options:` continuation list wraps across multiple lines, all sharing the same transaction ID. And crucially, on lease *renewals*, dnsmasq logs `DHCPACK` BEFORE the `requested options` lines — so a parser that flushes on ACK gets an empty opt55. Three fixes wrapped together: regex accepts both uppercase and lowercase forms; accumulate `opt55_parts` per transaction ID across multi-line continuations; don't pop the pending entry on ACK — keep upserting progressively as each subsequent line arrives, with periodic GC for aged-out transactions. iOS sends hostname as `*` (privacy default) which we normalize to None.
+
+---
+
+## Addendum — S11.1 cleanup patches
+
+After hardware verification, three small polish items landed without a new session entry:
+
+* **NAT auto-managed in PineAP lifecycle.** `app/services/pineap.py` now calls `iptables.enable_ip_forward()` + `ensure_nat_masquerade(subnet)` + `ensure_forward_rules(subnet)` on Start, and `iptables.remove_nat_and_forward(subnet)` on Stop. Reuses the same wrapper S04.9 built for the mgmt AP. Operator no longer needs to run iptables commands by hand for the phone to have internet on the rogue subnet.
+
+* **Connected Clients UI polish.** "Active only (10 min)" checkbox filters out stale leases (default on — hides the iOS privacy-MAC ghosts from previous WiFi toggles). The header now shows `N of M (K stale)` when filtered. iOS/Android randomized MACs (locally-administered bit set on the first octet) get a small `(rnd)` hint in the MAC column so the operator knows they're not the device's real hardware MAC. "Clear history" wipes the persisted client store via the existing `/pineap/clients/clear` route.
+
+* **Lease-file poller as primary client source.** `client_recon.start_lease_poller(leases_path, interval=3.0)` was added alongside the log tailer. Polls the dnsmasq lease file every few seconds and upserts any clients not already in the store. The log tailer remains the *enrichment* layer (OS fingerprint, DNS query history) — the poller guarantees the Connected Clients view fills even if log parsing falters on a format we haven't accounted for.
+
+---
+
+## What we actually proved on real hardware
+
+* hostapd in AP mode on `wlan-ap`, beacons broadcasting at `txpower=23 dBm` on channel 6 (visible from `wlan0`'s scan + from a phone's WiFi list as "keep-away")
+* dnsmasq coexisting with the management AP's dnsmasq via `bind-dynamic`, full DHCP exchange to associating clients
+* Captive sentinel responding on `10.0.0.1:80` to iOS / Android / Windows probe paths
+* DNS forwarding working (resolves apple, google, microsoft sentinel hostnames + general queries)
+* NAT + IP forwarding giving rogue clients real internet (phone shows "Connected", apps work)
+* client_recon parsing live dnsmasq logs in the correct (newer) Pi OS Trixie format, including multi-line `requested options` reassembly and ACK-before-options renewal ordering
+* iOS fingerprint correctly identified from DHCP option 55: `1,121,3,6,15,108,114,119,162,252`
+* Deny-list auto-add/remove of `10.0.0.0/24` so the rogue subnet can't reach the management UI
+* SocketIO `client:upsert` + `client:query` events streaming live to the UI
+
+Karma (Advanced mode) infrastructure is built but not yet verified on hardware — queued as task #107.

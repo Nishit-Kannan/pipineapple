@@ -154,6 +154,11 @@
       if ($("open-save")) $("open-save").addEventListener("click", onSaveOpenConfig);
       if ($("open-clients-refresh")) $("open-clients-refresh").addEventListener("click", reloadClients);
       if ($("open-clients-clear"))   $("open-clients-clear").addEventListener("click", onClearClients);
+      // Active-only toggle just re-renders from cached client list.
+      // We don't store the list locally so easiest is to refetch.
+      if ($("open-clients-active-only")) {
+        $("open-clients-active-only").addEventListener("change", reloadClients);
+      }
       reloadClients();
       reloadProbes();
 
@@ -207,17 +212,43 @@
   function renderClients(clients) {
     const tbody = $("open-clients-tbody");
     if (!tbody) return;
-    if ($("open-client-count")) $("open-client-count").textContent = String(clients.length);
-    if (!clients.length) {
-      tbody.innerHTML = `<tr><td colspan="7" class="muted">
-        No clients yet. Once a device associates and DHCPs, it'll appear here.
-      </td></tr>`;
+
+    // "Active only" filter — hide leases inactive >10 min so the
+    // table doesn't accumulate iOS privacy-MAC ghosts across testing.
+    // The store keeps them; we just hide them in the view.
+    const activeOnly = $("open-clients-active-only")?.checked;
+    const ACTIVE_WINDOW_SEC = 10 * 60;
+    const nowSec = Date.now() / 1000;
+    const filtered = activeOnly
+      ? clients.filter((c) => (nowSec - (c.last_seen || 0)) < ACTIVE_WINDOW_SEC)
+      : clients;
+    const hiddenCount = clients.length - filtered.length;
+
+    if ($("open-client-count")) {
+      $("open-client-count").textContent = hiddenCount > 0
+        ? `${filtered.length} of ${clients.length} (${hiddenCount} stale)`
+        : String(filtered.length);
+    }
+    if (!filtered.length) {
+      const empty = clients.length === 0
+        ? "No clients yet. Once a device associates and DHCPs, it'll appear here."
+        : `All ${clients.length} client(s) are stale (no activity in 10 min). Uncheck 'Active only' to see them, or click 'Clear history'.`;
+      tbody.innerHTML = `<tr><td colspan="7" class="muted">${escapeHtml(empty)}</td></tr>`;
       return;
     }
-    tbody.innerHTML = clients.map((c) => {
+    tbody.innerHTML = filtered.map((c) => {
       const osLabel = c.os_guess
         ? `<span class="badge badge-ok">${escapeHtml(c.os_guess)}</span>`
         : `<span class="muted">unknown</span>`;
+      // iOS privacy-MAC hint: locally-administered bit set on first
+      // octet (`xx & 0x02 == 0x02`). Apple/Android randomize per-SSID
+      // by default since iOS 14 / Android 10. Useful for the operator
+      // to know "this isn't the device's real MAC".
+      const firstOctet = parseInt((c.mac || "00").split(":")[0], 16);
+      const isPrivacy = !isNaN(firstOctet) && (firstOctet & 0x02) === 0x02;
+      const macDisplay = isPrivacy
+        ? `<code>${escapeHtml(c.mac)}</code> <span class="muted" title="Locally-administered MAC — likely iOS/Android privacy randomization" style="font-size:10px;">(rnd)</span>`
+        : `<code>${escapeHtml(c.mac)}</code>`;
       const queries = (c.recent_queries || [])
         .slice().reverse()
         .map((q) =>
@@ -228,7 +259,7 @@
            </div>`)
         .join("");
       return `<tr class="open-client-row" data-mac="${escapeHtml(c.mac)}">
-        <td><code>${escapeHtml(c.mac)}</code></td>
+        <td>${macDisplay}</td>
         <td><code>${escapeHtml(c.ip || "—")}</code></td>
         <td>${escapeHtml(c.hostname || "—")}</td>
         <td>${osLabel}<div class="muted" style="font-size:10px;">${escapeHtml(c.dhcp_option55_fingerprint || "")}</div></td>

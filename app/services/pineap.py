@@ -685,6 +685,25 @@ class PineAPService:
             log.exception("pineap: deny-list add failed")
             msgs.append(f"deny-list add failed: {e} — add {subnet} manually!")
 
+        # ---- 6.5. NAT + IP forwarding so the rogue subnet gets internet ----
+        # Without this, victim clients associate + DHCP + get DNS, but every
+        # outbound TCP/UDP packet dies at the Pi's gateway because there's no
+        # route translation. Captive-portal probes return "No Internet" and
+        # the OS keeps cellular as the primary route (which limits how much
+        # the rogue actually sees). The same pattern S04.9 used for the mgmt
+        # AP — different subnet, same wrapper.
+        try:
+            from app.tools import iptables
+            ok, msg = iptables.enable_ip_forward()
+            msgs.append(f"ip_forward: {msg}")
+            ok, msg = iptables.ensure_nat_masquerade(subnet)
+            msgs.append(f"nat MASQUERADE +{subnet}: {msg}")
+            ok, msg = iptables.ensure_forward_rules(subnet)
+            msgs.append(f"FORWARD +{subnet}: {msg}")
+        except Exception as e:
+            log.exception("pineap: NAT setup failed")
+            msgs.append(f"NAT setup failed: {e} — phone may show 'No Internet'")
+
         # ---- 7. Karma (Advanced mode only) ----
         if advanced:
             karma_iface = snap.get("karma_iface", DEFAULT_KARMA_IFACE)
@@ -775,12 +794,19 @@ class PineAPService:
                 except Exception as e:
                     msgs.append(f"{label} stop failed: {e}")
 
-        # 4. Remove subnet from deny-list
+        # 4. Remove subnet from deny-list + tear down NAT/FORWARD rules
         try:
             ok, msg = access_control.remove_cidr(snap.get("subnet", DEFAULT_SUBNET))
             msgs.append(f"deny-list -{snap.get('subnet')}: {msg}")
         except Exception as e:
             msgs.append(f"deny-list remove failed: {e}")
+        try:
+            from app.tools import iptables
+            ok, msg = iptables.remove_nat_and_forward(
+                snap.get("subnet", DEFAULT_SUBNET))
+            msgs.append(f"NAT teardown: {msg}")
+        except Exception as e:
+            msgs.append(f"NAT teardown failed: {e}")
 
         # 5. Tear down the AP interface
         iface = snap.get("iface", DEFAULT_IFACE)
