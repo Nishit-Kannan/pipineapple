@@ -29,17 +29,24 @@ log = logging.getLogger(__name__)
 
 
 # Chip-level cap on simultaneous BSSes per radio. Real ceiling varies
-# by chip/firmware: the mt76x2u in our Alfa AWUS036ACM actually only
-# supports 2 BSSes per radio under Pi OS Trixie kernel 6.12 (verified
-# empirically — hostapd fails the 3rd BSS bring-up with 'Device or
-# resource busy'). Some chips (ath9k, ath10k) support 8-16; some only
-# support 1.
+# by chip/firmware:
+#   * mt76x2u in our Alfa AWUS036ACM under Pi OS Trixie kernel 6.12 —
+#     `iw phy info` advertises `total <= 2` but in practice running two
+#     AP-mode interfaces simultaneously breaks beaconing. The primary
+#     BSS makes it to `type AP` but tx-packets stays at 0; the secondary
+#     BSS gets created but stays at `type managed` and the half-init
+#     halts beacons on both. Verified empirically on Nishit's hardware.
+#   * Other chips (ath9k, ath10k) genuinely support 8-16 BSSes.
 #
-# TODO: feature-probe via `iw phy <phy> info` and parse the
-#       "valid interface combinations" line for the real limit per
-#       phy. Until that's done, 2 is the conservative default that
-#       works on the operator's verified hardware.
-DEFAULT_MAX_BSS = 2
+# So: 1 is the safe default that works everywhere. The Hak5 "broadcast
+# the whole pool" pattern needs the `hostapd_cli set_ssid` rotation
+# approach instead of multi-BSS — cycle the primary SSID through pool
+# entries every ~500ms. That's deferred to a later session.
+#
+# TODO: feature-probe `iw phy info` for the advertised cap AND smoke-
+#       test with 2 BSSes at start time; fall back to 1 if the second
+#       BSS doesn't make it to type=AP within a couple seconds.
+DEFAULT_MAX_BSS = 1
 
 
 def render_config(
