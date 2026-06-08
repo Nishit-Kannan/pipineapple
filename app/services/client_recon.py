@@ -507,50 +507,49 @@ class ClientReconService:
         # 2. DHCP DISCOVER/OFFER/REQUEST/ACK — populate per-txn record
         m = _RE_DHCP.search(line)
         if m:
-            dhcp_type = (m.group("typeu") or m.group("typel") or "").lower()
             txn = m.group("txn")
             mac = m.group("mac").lower()
             ip = m.group("ip")
             hostname = m.group("hostname")
-            # Skip the placeholder hostname dnsmasq uses when the client
-            # sent option 12 as a literal '*' (iOS default for privacy)
+            # iOS sends '*' as option 12 placeholder (privacy default).
+            # Treat as None so the UI shows "no hostname" rather than literal "*".
             if hostname == "*":
                 hostname = None
 
             key = txn or f"mac:{mac}"
             pending = self._pending_txn.setdefault(key, {"opt55_parts": []})
             pending["mac"] = mac
+            pending["last_update"] = time.time()
             if ip:
                 pending["ip"] = ip
             if hostname:
                 pending["hostname"] = hostname
-
-            # Flush on ack
-            if dhcp_type == "ack":
-                p = self._pending_txn.pop(key, {})
-                opt55 = ",".join(p.get("opt55_parts") or []) or None
-                # Strip a trailing comma (we joined with commas + each
-                # continuation line ends with one already)
-                if opt55 and opt55.endswith(","):
-                    opt55 = opt55.rstrip(",")
-                self.upsert_dhcp(
-                    mac=mac,
-                    ip=p.get("ip") or ip,
-                    hostname=p.get("hostname"),
-                    opt55=opt55,
-                    vendor_class=p.get("vendor_class"),
-                )
+            # Always re-upsert with the current accumulated state.
+            # Idempotent: same MAC just updates the record. We don't
+            # pop the pending entry on ACK (the way the old code did)
+            # because dnsmasq logs the `requested options:` lines AFTER
+            # DHCPACK on lease renewals — flushing on ACK loses opt55.
+            # Cleanup runs in _gc_pending_txns instead.
+            self._flush_pending(key)
             return
 
         # 3. "requested options: ..." — possibly continuation of a
         #    multi-line option list. The transaction ID prefix matches
-        #    the DHCP line; accumulate by ID.
+        #    the DHCP line; accumulate by ID. Re-upsert if we know the
+        #    MAC so the OS guess updates as more option bytes arrive.
         m = _RE_REQUESTED.search(line)
         if m:
             opt_nums = _extract_opt55(m.group("opts"))
             txn = m.group("txn")
             if opt_nums:
                 self._append_opt_part(txn, opt_nums)
+                # Re-flush so opt55 gets recomputed and pushed to the
+                # client record (and the SocketIO `client:upsert` event
+                # carries the now-richer fingerprint).
+                key = txn or (next(reversed(self._pending_txn))
+                              if self._pending_txn else None)
+                if key:
+                    self._flush_pending(key)
             return
 
         # 4. "client provides name: ..." — pending hostname
@@ -560,6 +559,11 @@ class ClientReconService:
             target = self._lookup_pending(txn)
             if target is not None:
                 target["hostname"] = m.group("name")
+                target["last_update"] = time.time()
+                key = txn or (next(reversed(self._pending_txn))
+                              if self._pending_txn else None)
+                if key:
+                    self._flush_pending(key)
             return
 
         # 5. "vendor class: MSFT 5.0"
@@ -569,7 +573,45 @@ class ClientReconService:
             target = self._lookup_pending(txn)
             if target is not None:
                 target["vendor_class"] = m.group("vc").strip()
+                target["last_update"] = time.time()
+                key = txn or (next(reversed(self._pending_txn))
+                              if self._pending_txn else None)
+                if key:
+                    self._flush_pending(key)
             return
+
+    def _flush_pending(self, key: str) -> None:
+        """Upsert the client record for ``key`` with whatever's in
+        the pending entry. Idempotent — multiple calls during a single
+        DHCP transaction just refine the record progressively."""
+        p = self._pending_txn.get(key)
+        if not p or not p.get("mac"):
+            return
+        opt55 = ",".join(p.get("opt55_parts") or []) or None
+        if opt55 and opt55.endswith(","):
+            opt55 = opt55.rstrip(",")
+        # GC any aged-out entries while we're here (cheap, runs on
+        # every DHCP touch — keeps the dict bounded without a timer)
+        self._gc_pending_txns()
+        self.upsert_dhcp(
+            mac=p["mac"],
+            ip=p.get("ip"),
+            hostname=p.get("hostname"),
+            opt55=opt55,
+            vendor_class=p.get("vendor_class"),
+        )
+
+    def _gc_pending_txns(self, max_age: float = 60.0) -> None:
+        """Drop pending transactions we haven't touched in ``max_age``
+        seconds. Each transaction's actual log lines arrive within
+        about one second, so 60s is generous. Without this the dict
+        would accumulate one entry per DHCP exchange across the
+        platform's lifetime."""
+        now = time.time()
+        stale = [k for k, p in self._pending_txn.items()
+                 if (now - (p.get("last_update") or 0)) > max_age]
+        for k in stale:
+            self._pending_txn.pop(k, None)
 
     def _append_opt_part(self, txn: str | None, opt_nums: str) -> None:
         """Append a chunk of opt55 numbers to the matching transaction's
