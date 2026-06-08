@@ -509,9 +509,12 @@ class PineAPService:
         # Ensure the interface is in 'managed' type before hostapd takes
         # over. The mt76 driver fails to switch monitor → AP directly
         # ("could not configure driver mode"); the reliable sequence is
-        # monitor → managed (us) → AP (hostapd). If wlan-ap was just
-        # used as a monitor iface by something else, this fixes it
-        # silently. If it was already managed, this is a no-op.
+        # monitor → managed (us) → AP (hostapd). The kernel refuses
+        # `iw set type` while the interface is administratively up
+        # ("Device or resource busy") — so we must bring it down first,
+        # change type, then bring it back up. If it was already managed
+        # and down, this is essentially a no-op.
+        iproute.set_link_state(iface, "down")
         try:
             from app.tools import iw
             ok, msg = iw.set_type(iface, "managed")
