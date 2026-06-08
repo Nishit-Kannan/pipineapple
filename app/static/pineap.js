@@ -71,8 +71,31 @@
     if ($("pa-capture"))   $("pa-capture").checked   = !!st.capture_enabled;
   }
 
+  // Tab switching — same pattern as settings.js. Each page with tabs
+  // wires its own handlers because the activate function references
+  // per-page consts.
+  function activateTab(name) {
+    document.querySelectorAll(".tab").forEach((b) => {
+      if (b.dataset.tab === name) b.classList.add("active");
+      else b.classList.remove("active");
+    });
+    document.querySelectorAll(".tab-panel").forEach((p) => {
+      p.hidden = !p.id.endsWith(`-${name}`);
+    });
+  }
+
   function init() {
     if (!$("pa-pool-tbody")) return; // not on PineAP page
+
+    // Tab buttons (added in S11 — Settings + Open SSID enabled,
+    // others stay disabled until their sessions)
+    document.querySelectorAll(".tab").forEach((btn) => {
+      if (btn.disabled) return;
+      btn.addEventListener("click", () => {
+        const name = btn.dataset.tab;
+        if (name) activateTab(name);
+      });
+    });
 
     // Mode radios
     $$('input[name="pa-mode"]').forEach((r) => {
