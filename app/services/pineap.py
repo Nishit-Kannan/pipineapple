@@ -660,12 +660,19 @@ class PineAPService:
             msgs.append(f"sentinel start failed: {e}")
             # Sentinel is enrichment-only — not fatal
 
-        # ---- 5. client_recon log tailer ----
+        # ---- 5. client_recon log tailer + lease-file poller ----
+        # The lease poller is the *primary* source of truth for
+        # connected clients; the tailer is enrichment (OS fingerprint
+        # via DHCP option 55, DNS query history). Running both means
+        # clients show up even if log parsing falters on a format
+        # we haven't accounted for.
         try:
             from app.services.client_recon import get_service as get_recon
             client_recon = get_recon()
             ok, msg = client_recon.start_tailer(DNSMASQ_LOG_PATH)
             msgs.append(f"client-recon tailer: {msg}")
+            ok, msg = client_recon.start_lease_poller(DNSMASQ_LEASES_PATH)
+            msgs.append(f"client-recon lease poller: {msg}")
         except Exception as e:
             log.exception("pineap: client_recon start failed")
             msgs.append(f"client-recon start failed: {e}")
@@ -749,8 +756,10 @@ class PineAPService:
             msgs.append(f"sentinel stop failed: {e}")
         try:
             from app.services.client_recon import get_service as get_client_recon
-            get_client_recon().stop_tailer()
-            msgs.append("client-recon tailer stopped")
+            cr = get_client_recon()
+            cr.stop_tailer()
+            cr.stop_lease_poller()
+            msgs.append("client-recon tailer + lease poller stopped")
         except Exception as e:
             msgs.append(f"client-recon stop failed: {e}")
 

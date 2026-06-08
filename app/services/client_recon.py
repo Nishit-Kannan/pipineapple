@@ -58,12 +58,18 @@ log = logging.getLogger(__name__)
 # Match on exact prefix of the option-55 list; longest match wins.
 
 _FINGERPRINTS: list[tuple[str, str]] = [
-    # iOS — distinctive: 1,3,6,15,119,252
-    ("1,3,6,15,119,252",                "iOS"),
-    ("1,3,6,15,119,252,95,44,46",       "iOS"),
+    # iOS — distinctive shapes (older + newer)
+    ("1,3,6,15,119,252",                          "iOS"),
+    ("1,3,6,15,119,252,95,44,46",                 "iOS"),
+    # iOS 17+ on dnsmasq logs: 1,121,3,6,15,108,114,119,162,252
+    # (option 121 = classless-static-route, 108 = ipv6-only-pref,
+    # 114 = captive-portal, 162 = dnr, 252 = wpad)
+    ("1,121,3,6,15,108,114,119,162,252",          "iOS"),
     # macOS — similar but with more options + leading 252
-    ("1,3,6,15,119,95,252,44,46,47",    "macOS"),
-    ("1,121,3,6,15,119,252,95,44,46",   "macOS"),
+    ("1,3,6,15,119,95,252,44,46,47",              "macOS"),
+    ("1,121,3,6,15,119,252,95,44,46",             "macOS"),
+    # macOS 14+ shapes
+    ("1,121,3,6,15,108,114,119,252,95,44,46",     "macOS"),
     # Android — adds 26 (interface MTU)
     ("1,3,6,15,26,28,51,58,59,43",      "Android"),
     ("1,33,3,6,15,26,28,51,58,59,43",   "Android"),
@@ -97,23 +103,51 @@ def fingerprint_os(opt55: str, vendor_class: str | None = None) -> str | None:
 
 
 # ---------- Log line patterns ----------
-# dnsmasq logs look like (with timestamp prefix depending on syslog setup):
-#   dhcp-request(wlan-ap) 10.0.0.42 aa:bb:cc:dd:ee:ff Joes-iPhone
-#   client provides name: Joes-iPhone
-#   requested options: 1:netmask, 3:router, 6:dns-server, 15:domain-name, ...
-#   vendor class: MSFT 5.0
-#   query[A] init.itunes.apple.com from 10.0.0.42
+#
+# dnsmasq's verbose log shape (with log-dhcp + log-queries) on Pi OS
+# Trixie / dnsmasq 2.90+:
+#
+#   Jun  8 18:09:03 dnsmasq-dhcp[287949]: 905408650 DHCPDISCOVER(wlan-ap) 46:cb:c9:7e:29:c8
+#   Jun  8 18:09:03 dnsmasq-dhcp[287949]: 905408650 DHCPOFFER(wlan-ap) 10.0.0.104 46:cb:c9:7e:29:c8
+#   Jun  8 18:09:03 dnsmasq-dhcp[287949]: 905408650 requested options: 1:netmask, 121:classless-static-route, 3:router,
+#   Jun  8 18:09:03 dnsmasq-dhcp[287949]: 905408650 requested options: 6:dns-server, 15:domain-name, 108:ipv6-only,
+#   Jun  8 18:09:03 dnsmasq-dhcp[287949]: 905408650 requested options: 114, 119:domain-search, 162, 252
+#   Jun  8 18:09:03 dnsmasq-dhcp[287949]: 905408650 client provides name: Joes-iPhone
+#   Jun  8 18:09:03 dnsmasq-dhcp[287949]: 905408650 vendor class: ...
+#   Jun  8 18:09:03 dnsmasq-dhcp[287949]: 905408650 DHCPREQUEST(wlan-ap) 10.0.0.104 46:cb:c9:7e:29:c8
+#   Jun  8 18:09:03 dnsmasq-dhcp[287949]: 905408650 DHCPACK(wlan-ap) 10.0.0.104 46:cb:c9:7e:29:c8 [hostname]
+#   Jun  8 18:09:08 dnsmasq[287949]: query[A] init.itunes.apple.com from 10.0.0.104
+#
+# Key shape choices for our parser:
+#   * DHCP types are UPPERCASE (DHCPDISCOVER/OFFER/REQUEST/ACK/NAK).
+#     Older dnsmasq used lowercase ``dhcp-discover``; we accept both.
+#   * Each transaction is keyed by the numeric ID prefix
+#     (``905408650`` above). Multi-line ``requested options`` lines
+#     share the same ID — we accumulate opt55 per-ID and flush on
+#     DHCPACK.
+#   * DHCPDISCOVER lines have no IP (only MAC). DHCPOFFER/REQUEST/ACK
+#     have both. Hostname is only on DHCPACK and only if the client
+#     sent option 12. iOS sends ``*`` (privacy) so often missing.
 
-_RE_DHCP_REQ = re.compile(
-    r"dhcp-(?:request|discover|inform|ack)\([^)]*\)\s+"
-    r"(?P<ip>\d+\.\d+\.\d+\.\d+)\s+"
+_RE_DHCP = re.compile(
+    r"(?P<txn>\d+)\s+"
+    r"(?:DHCP(?P<typeu>DISCOVER|OFFER|REQUEST|ACK|NAK|INFORM|RELEASE)"
+    r"|dhcp-(?P<typel>discover|offer|request|ack|nak|inform|release))"
+    r"\((?P<iface>[^)]+)\)\s+"
+    r"(?:(?P<ip>\d+\.\d+\.\d+\.\d+)\s+)?"
     r"(?P<mac>[0-9a-fA-F:]{17})"
     r"(?:\s+(?P<hostname>\S+))?"
 )
-_RE_REQUESTED = re.compile(r"requested options:\s+(?P<opts>[\d:a-zA-Z, \-]+)")
-_RE_VENDOR    = re.compile(r"vendor class:\s+(?P<vc>.+)")
-_RE_NAME      = re.compile(r"client provides name:\s+(?P<name>\S+)")
-_RE_QUERY     = re.compile(
+_RE_REQUESTED = re.compile(
+    r"(?:(?P<txn>\d+)\s+)?requested options:\s+(?P<opts>[\d:a-zA-Z, \-]+)"
+)
+_RE_VENDOR = re.compile(
+    r"(?:(?P<txn>\d+)\s+)?vendor class:\s+(?P<vc>.+)"
+)
+_RE_NAME = re.compile(
+    r"(?:(?P<txn>\d+)\s+)?client provides name:\s+(?P<name>\S+)"
+)
+_RE_QUERY = re.compile(
     r"query\[(?P<qtype>[A-Z]+)\]\s+(?P<name>\S+)\s+from\s+"
     r"(?P<src>\d+\.\d+\.\d+\.\d+)"
 )
@@ -122,9 +156,19 @@ _RE_QUERY     = re.compile(
 def _extract_opt55(reqline: str) -> str | None:
     """Pull the numeric option codes out of 'requested options:' text.
 
-    dnsmasq formats as ``1:netmask, 3:router, 6:dns-server, ...``;
-    we want ``"1,3,6,..."`` for fingerprint matching."""
-    nums = re.findall(r"\b(\d+):", reqline)
+    dnsmasq's verbose format is comma-separated chunks like
+    ``1:netmask, 121:classless-static-route, 3:router`` — but some
+    options come through as just bare numbers (no colon + name) when
+    dnsmasq doesn't have a friendly name for them, e.g. iOS sends
+    options 114 and 162 which often appear as ``114,`` and ``162,``
+    in the log. Match the leading digit run of each comma-separated
+    chunk to handle both shapes."""
+    nums: list[str] = []
+    for chunk in reqline.split(","):
+        chunk = chunk.strip()
+        m = re.match(r"^(\d+)", chunk)
+        if m:
+            nums.append(m.group(1))
     return ",".join(nums) if nums else None
 
 
@@ -146,10 +190,19 @@ class ClientReconService:
         self._tail_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._tail_path: Path | None = None
-        # In-flight DHCP state for the multi-line records dnsmasq emits.
-        # Cleared after each dhcp-ack so different clients don't bleed
-        # into each other.
-        self._pending_dhcp: dict[str, Any] = {}
+        # In-flight DHCP state keyed by transaction ID (or "mac:<mac>"
+        # for old-format dnsmasq that doesn't emit txn IDs). Each entry
+        # accumulates {mac, ip, hostname, opt55_parts, vendor_class}
+        # across the multiple log lines a single DHCP exchange produces.
+        # Flushed to an upsert_dhcp call on the DHCPACK line.
+        self._pending_txn: dict[str, dict[str, Any]] = {}
+        # Lease-file poller state. Set by start_lease_poller; cleared
+        # by stop_lease_poller. The poller is the *primary* source of
+        # truth for "who's connected right now" — log parsing is
+        # enrichment only.
+        self._lease_path: Path | None = None
+        self._lease_thread: threading.Thread | None = None
+        self._lease_stop = threading.Event()
 
     # ---------- Persistence ----------
     def _load_persisted(self) -> dict[str, dict[str, Any]]:
@@ -301,6 +354,84 @@ class ClientReconService:
     def stop_tailer(self) -> None:
         self._stop_event.set()
 
+    # ---------- Lease-file poller (primary client source) ----------
+    def start_lease_poller(self, lease_path: Path,
+                           interval: float = 3.0) -> tuple[bool, str]:
+        """Poll dnsmasq's lease file every ``interval`` seconds and
+        upsert any new clients. The lease file is the authoritative
+        source for "who's connected right now" — log parsing might
+        miss transactions (e.g. older clients that renew without a
+        full DISCOVER), but every active client has a lease row."""
+        with self._lock:
+            if self._lease_thread is not None and self._lease_thread.is_alive():
+                return True, f"already polling {self._lease_path}"
+            self._lease_path = lease_path
+            self._lease_stop.clear()
+
+        try:
+            from flask import current_app
+            app = current_app._get_current_object()
+        except Exception:
+            app = None
+
+        def _run() -> None:
+            ctx = app.app_context() if app is not None else None
+            if ctx:
+                ctx.push()
+            try:
+                while not self._lease_stop.is_set():
+                    try:
+                        self._poll_leases(lease_path)
+                    except Exception:
+                        log.exception("client_recon lease-poll tick failed")
+                    self._lease_stop.wait(interval)
+            finally:
+                if ctx:
+                    ctx.pop()
+
+        t = threading.Thread(target=_run, name="client-recon-lease",
+                             daemon=True)
+        with self._lock:
+            self._lease_thread = t
+        t.start()
+        return True, f"polling {lease_path} every {interval}s"
+
+    def stop_lease_poller(self) -> None:
+        self._lease_stop.set()
+
+    def _poll_leases(self, lease_path: Path) -> None:
+        """Read dnsmasq's lease file (format: ``<expiry> <mac> <ip>
+        <hostname> <client_id>`` per line) and upsert anything new.
+        Hostname ``*`` means the client didn't send DHCP option 12 —
+        we treat that as None, not the literal asterisk."""
+        if not lease_path.is_file():
+            return
+        try:
+            text = lease_path.read_text(errors="replace")
+        except OSError:
+            return
+        for line in text.splitlines():
+            parts = line.strip().split()
+            if len(parts) < 3:
+                continue
+            mac = parts[1].lower()
+            ip = parts[2]
+            hostname = parts[3] if len(parts) >= 4 else None
+            if hostname == "*":
+                hostname = None
+            with self._lock:
+                existing = self._clients.get(mac)
+            if existing and existing.get("ip") == ip and (
+                hostname is None or existing.get("hostname") == hostname
+            ):
+                # No change — skip the upsert to avoid touching last_seen
+                # unnecessarily from the poller. (Real DHCP exchanges
+                # in the log keep last_seen fresh.)
+                continue
+            # New client or changed IP/hostname — upsert (this also
+            # fires the client:upsert SocketIO event)
+            self.upsert_dhcp(mac=mac, ip=ip, hostname=hostname)
+
     def _tail_loop(self, log_path: Path) -> None:
         """Follow log_path à la tail -F: handle file-not-yet-present,
         truncation, and rotation."""
@@ -354,63 +485,117 @@ class ClientReconService:
         log.info("client_recon tailer exiting")
 
     def _handle_line(self, line: str) -> None:
-        """Single log-line dispatch. dnsmasq emits DHCP info across
-        several lines per exchange; we accumulate in self._pending_dhcp
-        keyed by MAC and flush on the matching ack."""
+        """Single log-line dispatch.
+
+        dnsmasq emits DHCP info across several lines per exchange, all
+        sharing a numeric transaction-ID prefix (e.g. ``905408650``).
+        We accumulate per-transaction state in ``self._pending_txn``
+        and flush to an upsert on the DHCPACK line. Continuation lines
+        for ``requested options:`` (which dnsmasq wraps at ~70 chars)
+        are concatenated by transaction ID to recover the full opt55
+        fingerprint.
+
+        Falls back to MAC-keyed accumulation for older dnsmasq versions
+        that don't emit the transaction ID prefix.
+        """
         # 1. DNS query — single-line, attribute and move on
         m = _RE_QUERY.search(line)
         if m:
             self.record_query(m.group("src"), m.group("qtype"), m.group("name"))
             return
 
-        # 2. DHCP request/discover/ack — record MAC+IP+hostname
-        m = _RE_DHCP_REQ.search(line)
+        # 2. DHCP DISCOVER/OFFER/REQUEST/ACK — populate per-txn record
+        m = _RE_DHCP.search(line)
         if m:
+            dhcp_type = (m.group("typeu") or m.group("typel") or "").lower()
+            txn = m.group("txn")
             mac = m.group("mac").lower()
-            self._pending_dhcp.setdefault(mac, {})
-            self._pending_dhcp[mac].update({
-                "ip":       m.group("ip"),
-                "hostname": m.group("hostname"),
-            })
-            # On dhcp-ack lines: flush
-            if "dhcp-ack" in line:
-                p = self._pending_dhcp.pop(mac, {})
+            ip = m.group("ip")
+            hostname = m.group("hostname")
+            # Skip the placeholder hostname dnsmasq uses when the client
+            # sent option 12 as a literal '*' (iOS default for privacy)
+            if hostname == "*":
+                hostname = None
+
+            key = txn or f"mac:{mac}"
+            pending = self._pending_txn.setdefault(key, {"opt55_parts": []})
+            pending["mac"] = mac
+            if ip:
+                pending["ip"] = ip
+            if hostname:
+                pending["hostname"] = hostname
+
+            # Flush on ack
+            if dhcp_type == "ack":
+                p = self._pending_txn.pop(key, {})
+                opt55 = ",".join(p.get("opt55_parts") or []) or None
+                # Strip a trailing comma (we joined with commas + each
+                # continuation line ends with one already)
+                if opt55 and opt55.endswith(","):
+                    opt55 = opt55.rstrip(",")
                 self.upsert_dhcp(
                     mac=mac,
-                    ip=p.get("ip") or m.group("ip"),
+                    ip=p.get("ip") or ip,
                     hostname=p.get("hostname"),
-                    opt55=p.get("opt55"),
+                    opt55=opt55,
                     vendor_class=p.get("vendor_class"),
                 )
             return
 
-        # 3. "client provides name: ..." — pending hostname
-        m = _RE_NAME.search(line)
-        if m:
-            # Hostname lines don't carry the MAC directly; they belong
-            # to whichever DHCP exchange is currently in flight. dnsmasq
-            # processes one client at a time so the most-recent pending
-            # MAC wins.
-            if self._pending_dhcp:
-                last_mac = next(reversed(self._pending_dhcp))
-                self._pending_dhcp[last_mac]["hostname"] = m.group("name")
-            return
-
-        # 4. "requested options: 1:netmask, 3:router, ..."
+        # 3. "requested options: ..." — possibly continuation of a
+        #    multi-line option list. The transaction ID prefix matches
+        #    the DHCP line; accumulate by ID.
         m = _RE_REQUESTED.search(line)
         if m:
-            opt55 = _extract_opt55(m.group("opts"))
-            if opt55 and self._pending_dhcp:
-                last_mac = next(reversed(self._pending_dhcp))
-                self._pending_dhcp[last_mac]["opt55"] = opt55
+            opt_nums = _extract_opt55(m.group("opts"))
+            txn = m.group("txn")
+            if opt_nums:
+                self._append_opt_part(txn, opt_nums)
+            return
+
+        # 4. "client provides name: ..." — pending hostname
+        m = _RE_NAME.search(line)
+        if m:
+            txn = m.group("txn")
+            target = self._lookup_pending(txn)
+            if target is not None:
+                target["hostname"] = m.group("name")
             return
 
         # 5. "vendor class: MSFT 5.0"
         m = _RE_VENDOR.search(line)
-        if m and self._pending_dhcp:
-            last_mac = next(reversed(self._pending_dhcp))
-            self._pending_dhcp[last_mac]["vendor_class"] = m.group("vc").strip()
+        if m:
+            txn = m.group("txn")
+            target = self._lookup_pending(txn)
+            if target is not None:
+                target["vendor_class"] = m.group("vc").strip()
             return
+
+    def _append_opt_part(self, txn: str | None, opt_nums: str) -> None:
+        """Append a chunk of opt55 numbers to the matching transaction's
+        accumulator. Without a txn ID, falls back to the most-recent
+        pending entry."""
+        if txn:
+            pending = self._pending_txn.get(txn)
+            if pending is None:
+                # Continuation line arrived before the corresponding
+                # DHCPDISCOVER (shouldn't normally happen, but be
+                # defensive — pre-create the entry).
+                pending = self._pending_txn.setdefault(
+                    txn, {"opt55_parts": []})
+            pending.setdefault("opt55_parts", []).append(opt_nums)
+        elif self._pending_txn:
+            # Old-format fallback: append to the most-recent pending
+            last_key = next(reversed(self._pending_txn))
+            self._pending_txn[last_key].setdefault("opt55_parts", []).append(opt_nums)
+
+    def _lookup_pending(self, txn: str | None) -> dict[str, Any] | None:
+        if txn:
+            return self._pending_txn.get(txn)
+        if self._pending_txn:
+            last_key = next(reversed(self._pending_txn))
+            return self._pending_txn[last_key]
+        return None
 
     # ---------- SocketIO emit helper ----------
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
