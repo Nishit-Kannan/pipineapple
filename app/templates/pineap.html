@@ -18,10 +18,10 @@
     <button class="tab" data-tab="open">Open SSID</button>
     <button class="tab" data-tab="evil-wpa">Evil WPA</button>
     <button class="tab" data-tab="captive">Captive Portal</button>
-    <button class="tab disabled" disabled title="Session 13">Impersonation</button>
-    <button class="tab disabled" disabled title="Session 13">Filtering</button>
-    <button class="tab disabled" disabled title="Session 13">Clients</button>
-    <button class="tab disabled" disabled title="Session 13">Access Points</button>
+    <button class="tab" data-tab="impersonation">Impersonation</button>
+    <button class="tab" data-tab="filtering">Filtering</button>
+    <button class="tab" data-tab="clients">Clients</button>
+    <button class="tab disabled" disabled title="Session 13+">Access Points</button>
   </div>
 
   {# ---------- Global status pill ---------- #}
@@ -546,6 +546,177 @@
         </table>
       </section>
 
+    </div>
+  </section>
+
+  {# ---------- Impersonation tab (S13) ---------- #}
+  <section id="tab-impersonation" class="tab-panel" hidden>
+    <div class="dash-grid">
+      <section class="card">
+        <div class="card-head">
+          <h2>SSID impersonation</h2>
+          <span class="badge" id="imp-running-pill">—</span>
+        </div>
+        <p class="muted" style="font-size:13px;">
+          The Alfa can only beacon one BSS at a time (mt76x2u cap = 1), so
+          impersonation <strong>rotates</strong> the broadcast SSID through
+          the pool — each name beacons for the dwell window, luring devices
+          probing for it. Pool is managed on the
+          <a href="/pineap/#settings">Settings tab</a>; the SSID filter
+          (Filtering tab) gates which entries rotate. Open lure only.
+        </p>
+        <div class="form-row" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;">
+          <label style="display:flex; align-items:center; gap:6px;">
+            <input type="checkbox" id="imp-enabled"
+                   {% if state.impersonate_enabled %}checked{% endif %}>
+            Enable rotation on next Start
+          </label>
+          <label style="min-width:120px;">
+            <span class="auth-label">Dwell (s)</span>
+            <input id="imp-dwell" type="number" min="2" max="3600"
+                   value="{{ state.impersonate_dwell_secs }}">
+          </label>
+          <label style="min-width:160px;">
+            <span class="auth-label">BSSID strategy</span>
+            <select id="imp-bssid-strategy">
+              <option value="per-ssid" {% if state.impersonate_bssid_strategy=='per-ssid' %}selected{% endif %}>per-SSID (deterministic)</option>
+              <option value="shared"   {% if state.impersonate_bssid_strategy=='shared' %}selected{% endif %}>single shared</option>
+              <option value="random"   {% if state.impersonate_bssid_strategy=='random' %}selected{% endif %}>random per rotation</option>
+            </select>
+          </label>
+        </div>
+        <div style="margin-top:12px;">
+          <button id="imp-save" class="bigbtn">Save impersonation config</button>
+        </div>
+        <p class="muted" style="font-size:13px; margin-top:10px;">
+          Now broadcasting: <code id="imp-current">—</code>
+        </p>
+      </section>
+
+      {# Karma stats (parked from S11 — now consumed) #}
+      <section class="card">
+        <div class="card-head">
+          <h2>Karma / probe responses</h2>
+          <span style="margin-left:auto;">
+            <button id="ka-refresh" class="bigbtn actbtn-muted" style="font-size:11px;">Refresh</button>
+          </span>
+        </div>
+        <p class="muted" style="font-size:12px;">
+          Live stats from the Karma injector (Advanced + Open mode). Probe
+          requests seen vs answered, and the unique clients / SSIDs touched.
+        </p>
+        <dl style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:0; font-size:13px;">
+          <dt class="muted">Probes seen</dt><dd id="ka-seen">0</dd>
+          <dt class="muted">Probes answered</dt><dd id="ka-replied">0</dd>
+          <dt class="muted">Unique clients</dt><dd id="ka-clients">0</dd>
+          <dt class="muted">Unique SSIDs</dt><dd id="ka-ssids">0</dd>
+        </dl>
+      </section>
+    </div>
+  </section>
+
+  {# ---------- Filtering tab (S13) ---------- #}
+  <section id="tab-filtering" class="tab-panel" hidden>
+    <div class="dash-grid">
+      <section class="card">
+        <div class="card-head">
+          <h2>Client filter (by MAC)</h2>
+          <span class="muted">hostapd accept/deny MAC ACL</span>
+        </div>
+        <p class="muted" style="font-size:12px;">
+          <strong>Allow</strong> = only these MACs may associate;
+          <strong>Deny</strong> = everyone except these. Applied on next Start.
+        </p>
+        <label class="auth-label">Mode</label>
+        <select id="cf-client-mode" style="padding:6px; width:100%; max-width:300px;">
+          <option value="off"   {% if state.client_filter_mode=='off' %}selected{% endif %}>off (accept all)</option>
+          <option value="allow" {% if state.client_filter_mode=='allow' %}selected{% endif %}>allow-list</option>
+          <option value="deny"  {% if state.client_filter_mode=='deny' %}selected{% endif %}>deny-list</option>
+        </select>
+        <div class="deny-list-row" style="gap:6px; margin-top:10px;">
+          <input id="cf-client-input" type="text" placeholder="aa:bb:cc:dd:ee:ff" style="flex:1;">
+          <button id="cf-client-add" class="bigbtn">Add MAC</button>
+        </div>
+        <table class="data" id="cf-client-table" style="font-size:12px;">
+          <tbody id="cf-client-tbody">
+            {% for m in state.client_filter_macs %}
+            <tr data-mac="{{ m }}"><td><code>{{ m }}</code></td>
+              <td style="text-align:right;"><button class="actbtn actbtn-muted cf-client-del" data-mac="{{ m }}" style="font-size:11px;">×</button></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>SSID filter</h2>
+          <span class="muted">gates broadcast + impersonation</span>
+        </div>
+        <p class="muted" style="font-size:12px;">
+          <strong>Allow</strong> = only these SSIDs broadcast/rotate;
+          <strong>Deny</strong> = everyone except these. Applied on next Start.
+        </p>
+        <label class="auth-label">Mode</label>
+        <select id="cf-ssid-mode" style="padding:6px; width:100%; max-width:300px;">
+          <option value="off"   {% if state.ssid_filter_mode=='off' %}selected{% endif %}>off (broadcast all)</option>
+          <option value="allow" {% if state.ssid_filter_mode=='allow' %}selected{% endif %}>allow-list</option>
+          <option value="deny"  {% if state.ssid_filter_mode=='deny' %}selected{% endif %}>deny-list</option>
+        </select>
+        <div class="deny-list-row" style="gap:6px; margin-top:10px;">
+          <input id="cf-ssid-input" type="text" placeholder="SSID" style="flex:1;">
+          <button id="cf-ssid-add" class="bigbtn">Add SSID</button>
+        </div>
+        <table class="data" id="cf-ssid-table" style="font-size:12px;">
+          <tbody id="cf-ssid-tbody">
+            {% for s in state.ssid_filter_ssids %}
+            <tr data-ssid="{{ s }}"><td><strong>{{ s }}</strong></td>
+              <td style="text-align:right;"><button class="actbtn actbtn-muted cf-ssid-del" data-ssid="{{ s }}" style="font-size:11px;">×</button></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+
+      <section class="card span-2">
+        <button id="cf-save" class="bigbtn">Save filters</button>
+        <span class="muted" id="cf-save-msg" style="margin-left:10px; font-size:12px;"></span>
+        <p class="muted" style="font-size:11px; margin-top:8px;">
+          Client MAC filtering maps to hostapd's <code>macaddr_acl</code> +
+          <code>accept_mac_file</code>/<code>deny_mac_file</code> on the
+          primary BSS. Changes take effect when you next Start the engine.
+        </p>
+      </section>
+    </div>
+  </section>
+
+  {# ---------- Clients tab (S13) ---------- #}
+  <section id="tab-clients" class="tab-panel" hidden>
+    <div class="dash-grid">
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Connected clients</h2>
+          <span class="muted" id="cl-count">0</span>
+          <span style="margin-left:auto; display:flex; gap:10px; align-items:center;">
+            <label style="font-size:11px;">
+              <input type="checkbox" id="cl-active-only" checked> Active only (10 min)
+            </label>
+            <button id="cl-refresh" class="bigbtn actbtn-muted" style="font-size:11px;">Refresh</button>
+          </span>
+        </div>
+        <p class="muted" style="font-size:12px;">
+          Devices on the rogue AP (from the dnsmasq lease file + verbose
+          log). <strong>Kick</strong> deauthenticates a client via
+          <code>hostapd_cli</code> — it must re-authenticate to rejoin
+          (and will hit the MAC filter if you've denied it).
+        </p>
+        <table class="data" id="cl-table">
+          <thead>
+            <tr><th>MAC</th><th>IP</th><th>Hostname</th><th>OS guess</th><th>Last seen</th><th></th></tr>
+          </thead>
+          <tbody id="cl-tbody">
+            <tr><td colspan="6" class="muted">No clients yet.</td></tr>
+          </tbody>
+        </table>
+      </section>
     </div>
   </section>
 

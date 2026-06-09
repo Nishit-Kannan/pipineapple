@@ -60,6 +60,9 @@ def render_config(
     extra_bsses: list[dict] | None = None,
     primary_bssid: str | None = None,
     hidden: bool = False,
+    macaddr_acl: int | None = None,
+    accept_mac_file: str | None = None,
+    deny_mac_file: str | None = None,
 ) -> str:
     """Render a hostapd.conf for an AP on ``iface``.
 
@@ -77,6 +80,17 @@ def render_config(
     ``hidden`` sets ``ignore_broadcast_ssid=1`` so the primary SSID
     isn't advertised in beacons (clients have to know the name to
     associate). Probe responses still answer when asked by SSID.
+
+    Client MAC filtering (S13 Filtering tab) maps to hostapd's native
+    MAC ACL on the primary BSS:
+
+      * ``macaddr_acl=0`` + ``deny_mac_file`` — accept everyone except
+        the listed MACs (deny-list mode).
+      * ``macaddr_acl=1`` + ``accept_mac_file`` — accept only the listed
+        MACs (allow-list mode).
+
+    Pass ``macaddr_acl=None`` (default) to omit ACL lines entirely
+    (accept all — the management-AP and pre-S13 behaviour).
 
     ``extra_bsses`` is a list of additional virtual APs to advertise
     from the same radio. Each is a dict::
@@ -107,6 +121,12 @@ def render_config(
         # ignore_broadcast_ssid=1: send beacons with empty SSID IE, still
         # respond to directed probes that name the SSID
         lines.append("ignore_broadcast_ssid=1")
+    if macaddr_acl is not None:
+        lines.append(f"macaddr_acl={int(macaddr_acl)}")
+        if macaddr_acl == 0 and deny_mac_file:
+            lines.append(f"deny_mac_file={deny_mac_file}")
+        elif macaddr_acl == 1 and accept_mac_file:
+            lines.append(f"accept_mac_file={accept_mac_file}")
     if country_code:
         lines += [
             f"country_code={country_code}",

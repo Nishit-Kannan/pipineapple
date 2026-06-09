@@ -74,6 +74,11 @@ DNSMASQ_LOG_PATH     = Path("/tmp/pipineapple-pineap-dnsmasq.log")
 DNSMASQ_LEASES_PATH  = Path("/tmp/pipineapple-pineap-dnsmasq.leases")
 DNSMASQ_PID_PATH     = Path("/tmp/pipineapple-pineap-dnsmasq.pid")
 
+# hostapd MAC-ACL files (S13 Filtering). One MAC per line; referenced by
+# the rendered hostapd.conf via accept_mac_file / deny_mac_file.
+ACCEPT_MAC_FILE      = Path("/tmp/pipineapple-pineap-accept-mac")
+DENY_MAC_FILE        = Path("/tmp/pipineapple-pineap-deny-mac")
+
 
 # ---------- Modes ----------
 
@@ -128,6 +133,9 @@ class PineAPService:
         # to any public method triggers _load().
         self._state: dict[str, Any] | None = None
         self._pool:  list[dict[str, Any]] | None = None
+        # Impersonation SSID-rotation thread (S13)
+        self._impersonation_thread: threading.Thread | None = None
+        self._impersonation_stop = threading.Event()
 
     # ---------- Persistence ----------
     def _load(self) -> None:
@@ -199,6 +207,25 @@ class PineAPService:
             # lifecycle; we just track for the UI status pill)
             "karma_running":     False,
             "sentinel_running":  False,
+            # ---- Filtering (S13) ----
+            # Client MAC ACL: "off" (accept all), "allow" (only these),
+            # "deny" (everyone but these) → hostapd macaddr_acl. SSID
+            # filter gates which pool SSIDs the broadcast/impersonation
+            # rotation is allowed to advertise. Both apply on next Start.
+            "client_filter_mode": "off",
+            "client_filter_macs": [],
+            "ssid_filter_mode":   "off",
+            "ssid_filter_ssids":  [],
+            # ---- Impersonation (S13) ----
+            # SSID rotation on the single BSS (mt76x2u multi-BSS cap is 1):
+            # cycle the broadcast SSID through the pool every dwell via
+            # hostapd_cli reload. bssid strategy: per-ssid (deterministic,
+            # default) | shared | random.
+            "impersonate_enabled":        False,
+            "impersonate_dwell_secs":     20,
+            "impersonate_bssid_strategy": "per-ssid",
+            "impersonate_running":        False,
+            "impersonate_current_ssid":   None,
             # Whether recon was scanning when we paused it to claim the
             # monitor radio. Captured at start so teardown only *restores*
             # recon if it was actually running before — otherwise stopping
@@ -413,6 +440,110 @@ class PineAPService:
                  essid, bssid, ch, source_signal_dbm)
         return True, f"cloned {essid!r} (real BSSID {bssid}, ch{ch}) — ready to Start"
 
+    # ---------- Public: Filtering (S13) ----------
+    _FILTER_MODES = ("off", "allow", "deny")
+
+    def set_filters(
+        self,
+        *,
+        client_mode: str | None = None,
+        client_macs: list[str] | None = None,
+        ssid_mode: str | None = None,
+        ssid_ssids: list[str] | None = None,
+    ) -> tuple[bool, str]:
+        """Update the client-MAC and/or SSID allow/deny filters. Lists,
+        when given, replace the stored ones wholesale (the UI owns
+        add/remove). Changes persist and take effect on the next Start —
+        we don't hot-reload hostapd's ACL mid-session on this driver."""
+        with self._lock:
+            self._load()
+            if client_mode is not None:
+                if client_mode not in self._FILTER_MODES:
+                    return False, f"client_mode must be one of {self._FILTER_MODES}"
+                self._state["client_filter_mode"] = client_mode
+            if client_macs is not None:
+                cleaned = []
+                for m in client_macs:
+                    m = (m or "").strip().lower()
+                    if re.match(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$", m):
+                        if m not in cleaned:
+                            cleaned.append(m)
+                    elif m:
+                        return False, f"invalid MAC {m!r}"
+                self._state["client_filter_macs"] = cleaned
+            if ssid_mode is not None:
+                if ssid_mode not in self._FILTER_MODES:
+                    return False, f"ssid_mode must be one of {self._FILTER_MODES}"
+                self._state["ssid_filter_mode"] = ssid_mode
+            if ssid_ssids is not None:
+                self._state["ssid_filter_ssids"] = [
+                    s for s in (x.strip() for x in ssid_ssids) if s]
+            self._state["last_changed"] = time.time()
+            self._save_state()
+        return True, "filters updated (apply on next Start)"
+
+    def _ssid_allowed(self, ssid: str, snap: dict[str, Any]) -> bool:
+        """Apply the SSID allow/deny filter to a single SSID."""
+        mode = snap.get("ssid_filter_mode", "off")
+        lst = snap.get("ssid_filter_ssids") or []
+        if mode == "allow":
+            return ssid in lst
+        if mode == "deny":
+            return ssid not in lst
+        return True
+
+    def _write_mac_acl(self, snap: dict[str, Any]) -> dict[str, Any]:
+        """Materialise the client MAC ACL files from the filter config and
+        return the kwargs to hand hostapd.render_config. ``off`` → no ACL
+        lines (accept all)."""
+        from app.tools._common import stub_mode
+        mode = snap.get("client_filter_mode", "off")
+        macs = snap.get("client_filter_macs") or []
+        if mode == "off" or not macs:
+            return {}
+        path = ACCEPT_MAC_FILE if mode == "allow" else DENY_MAC_FILE
+        body = "\n".join(macs) + "\n"
+        if stub_mode():
+            Path(f"/tmp/pipineapple-pineap-{mode}-mac.preview").write_text(body)
+        else:
+            try:
+                path.write_text(body)
+            except OSError:
+                log.exception("pineap: writing MAC ACL file failed")
+                return {}
+        if mode == "allow":
+            return {"macaddr_acl": 1, "accept_mac_file": str(path)}
+        return {"macaddr_acl": 0, "deny_mac_file": str(path)}
+
+    # ---------- Public: Impersonation (S13) ----------
+    def set_impersonation(
+        self, *, enabled: bool | None = None, dwell_secs: int | None = None,
+        bssid_strategy: str | None = None,
+    ) -> tuple[bool, str]:
+        """Configure the SSID-rotation impersonation. Refuses while
+        running (rotation params are read at Start)."""
+        with self._lock:
+            self._load()
+            if self._state["running"]:
+                return False, "stop PineAP before changing impersonation config"
+            if enabled is not None:
+                self._state["impersonate_enabled"] = bool(enabled)
+            if dwell_secs is not None:
+                try:
+                    d = int(dwell_secs)
+                except (TypeError, ValueError):
+                    return False, "dwell_secs must be an int"
+                if not (2 <= d <= 3600):
+                    return False, "dwell_secs out of range (2-3600)"
+                self._state["impersonate_dwell_secs"] = d
+            if bssid_strategy is not None:
+                if bssid_strategy not in ("per-ssid", "shared", "random"):
+                    return False, "bssid_strategy must be per-ssid|shared|random"
+                self._state["impersonate_bssid_strategy"] = bssid_strategy
+            self._state["last_changed"] = time.time()
+            self._save_state()
+        return True, "impersonation config updated"
+
     # ---------- Public: SSID pool ----------
     def list_pool(self) -> list[dict[str, Any]]:
         """Return all pool entries, pinned first, then newest-last_seen."""
@@ -610,6 +741,8 @@ class PineAPService:
             self._state["evil_wpa_running"]   = False
             self._state["sentinel_running"]   = False
             self._state["captive_portal_active"] = False
+            self._state["impersonate_running"]   = False
+            self._state["impersonate_current_ssid"] = None
             self._state["last_changed"]       = time.time()
             self._save_state()
         msgs.append("stopped")
@@ -757,6 +890,8 @@ class PineAPService:
             ssid = e.get("ssid")
             if not ssid or e.get("hidden") or ssid == primary_ssid:
                 continue
+            if not self._ssid_allowed(ssid, snap):
+                continue
             extras.append({
                 "ssid":   ssid,
                 "bssid":  hostapd_tool.bssid_for_ssid(ssid, salt),
@@ -781,6 +916,10 @@ class PineAPService:
                 self._state["last_rogue_psk"] = rogue_psk
                 self._save_state()
 
+        mac_acl_kwargs = self._write_mac_acl(snap)
+        if mac_acl_kwargs:
+            msgs.append(f"client MAC filter: {snap.get('client_filter_mode')} "
+                        f"({len(snap.get('client_filter_macs') or [])} MACs)")
         hostapd_body = hostapd_tool.render_config(
             iface=iface,
             ssid=primary_ssid,
@@ -790,6 +929,7 @@ class PineAPService:
             primary_bssid=primary_bssid,
             hidden=bool(snap.get("primary_hidden")),
             extra_bsses=extras,
+            **mac_acl_kwargs,
         )
         hostapd_tool.write_config(HOSTAPD_CONFIG_PATH, hostapd_body)
         hostapd_cmd = ["hostapd", str(HOSTAPD_CONFIG_PATH)]
@@ -965,6 +1105,24 @@ class PineAPService:
                 log.exception("pineap: evil_wpa start failed")
                 msgs.append(f"evil_wpa start failed: {e}")
 
+        # ---- 8. Impersonation SSID rotation (S13) ----
+        # Cycle the single BSS through the (filtered) pool. mt76x2u can't
+        # beacon a whole pool at once (cap=1), so we rotate via config
+        # rewrite + hostapd_cli reload every dwell. Open-only lure.
+        if snap.get("impersonate_enabled"):
+            try:
+                self._start_impersonation()
+                with self._lock:
+                    self._state["impersonate_running"] = True
+                    self._save_state()
+                msgs.append(
+                    f"impersonation rotation started (dwell "
+                    f"{snap.get('impersonate_dwell_secs')}s, "
+                    f"{snap.get('impersonate_bssid_strategy')} BSSIDs)")
+            except Exception as e:
+                log.exception("pineap: impersonation start failed")
+                msgs.append(f"impersonation start failed: {e}")
+
         return True, msgs
 
     def _tear_down_broadcast(self) -> list[str]:
@@ -978,6 +1136,15 @@ class PineAPService:
         with self._lock:
             self._load()
             snap = dict(self._state)
+
+        # 0a. Impersonation rotation (S13) — stop the thread before we
+        #     tear hostapd down under it.
+        if snap.get("impersonate_running"):
+            try:
+                self._stop_impersonation()
+                msgs.append("impersonation rotation stopped")
+            except Exception as e:
+                msgs.append(f"impersonation stop failed: {e}")
 
         # 0. Captive portal (S12.5) — take the sentinel out of portal
         #    mode and disarm the verifier so a stale handshake never
@@ -1182,6 +1349,137 @@ class PineAPService:
             log.exception("pineap: open-hostapd flip failed")
             return False, msgs + [f"open hostapd launch failed: {e}"]
         return True, msgs
+
+    # ---------- Impersonation SSID rotation (S13) ----------
+    def _start_impersonation(self) -> None:
+        self._impersonation_stop.clear()
+        try:
+            from flask import current_app
+            app = current_app._get_current_object()
+        except Exception:
+            app = None
+
+        def _run() -> None:
+            ctx = app.app_context() if app is not None else None
+            if ctx:
+                ctx.push()
+            try:
+                self._impersonation_loop()
+            except Exception:
+                log.exception("pineap: impersonation loop crashed")
+            finally:
+                if ctx:
+                    ctx.pop()
+
+        t = threading.Thread(target=_run, name="pineap-impersonate", daemon=True)
+        self._impersonation_thread = t
+        t.start()
+
+    def _stop_impersonation(self) -> None:
+        self._impersonation_stop.set()
+        t = self._impersonation_thread
+        if t is not None and t.is_alive():
+            t.join(timeout=3.0)
+        self._impersonation_thread = None
+
+    def _rotation_bssid(self, ssid: str, snap: dict[str, Any]) -> str:
+        import secrets as _secrets
+        from app.tools import hostapd as hostapd_tool
+        strategy = snap.get("impersonate_bssid_strategy", "per-ssid")
+        salt = snap["bssid_salt"]
+        if strategy == "shared":
+            return hostapd_tool.bssid_for_ssid(snap.get("primary_ssid") or "pineap", salt)
+        if strategy == "random":
+            b0 = (_secrets.randbits(8) | 0x02) & 0xFE
+            rest = [_secrets.randbits(8) for _ in range(5)]
+            return ":".join(f"{b:02x}" for b in (b0, *rest))
+        return hostapd_tool.bssid_for_ssid(ssid, salt)   # per-ssid (default)
+
+    def _impersonation_loop(self) -> None:
+        """Rotate the broadcast SSID through the filtered pool every
+        dwell. Rewrites hostapd.conf + hostapd_cli reload (light); falls
+        back to a full hostapd job restart if reload isn't honoured."""
+        from app.tools import hostapd as hostapd_tool, hostapd_cli
+        from app.tools._common import stub_mode
+
+        while not self._impersonation_stop.is_set():
+            with self._lock:
+                self._load()
+                snap = dict(self._state)
+                pool = list(self._pool or [])
+            iface   = snap["iface"]
+            channel = int(snap["channel"])
+            hw_mode = snap["hw_mode"]
+            dwell   = float(snap.get("impersonate_dwell_secs", 20))
+
+            # Rotation set: pinned-first, non-hidden, SSID-filter-allowed,
+            # de-duplicated. Fall back to the primary SSID if empty.
+            ssids: list[str] = []
+            for e in sorted(pool, key=lambda x: (not x.get("pinned"),
+                                                 -(x.get("last_seen") or 0))):
+                s = e.get("ssid")
+                if (s and not e.get("hidden") and self._ssid_allowed(s, snap)
+                        and s not in ssids):
+                    ssids.append(s)
+            if not ssids:
+                ssids = [snap.get("primary_ssid") or "PineApple"]
+
+            for ssid in ssids:
+                if self._impersonation_stop.is_set():
+                    break
+                bssid = self._rotation_bssid(ssid, snap)
+                body = hostapd_tool.render_config(
+                    iface=iface, ssid=ssid, password=None, channel=channel,
+                    hw_mode=hw_mode, primary_bssid=bssid, hidden=False,
+                    extra_bsses=[], **self._write_mac_acl(snap),
+                )
+                hostapd_tool.write_config(HOSTAPD_CONFIG_PATH, body)
+                ok, _msg = hostapd_cli.reload(iface)
+                if not ok and not stub_mode():
+                    log.info("impersonation: reload not honoured, restarting hostapd")
+                    self._restart_hostapd_job()
+                with self._lock:
+                    self._state["impersonate_current_ssid"] = ssid
+                    self._save_state()
+                self._emit_impersonation(ssid, bssid)
+                self._impersonation_stop.wait(dwell)
+                if self._impersonation_stop.is_set():
+                    break
+
+    def _restart_hostapd_job(self) -> None:
+        """Fallback for the impersonation rotation when hostapd_cli reload
+        doesn't pick up the SSID change: SIGTERM the current hostapd job
+        and relaunch from the freshly-written config."""
+        import signal as _sig
+        from app.services.job_manager import job_manager
+        from app.tools._common import stub_mode
+        if stub_mode():
+            return
+        with self._lock:
+            old = self._state.get("hostapd_job_id")
+        if old:
+            try:
+                job_manager.stop_job(old, grace=2.0, first_signal=_sig.SIGTERM)
+            except Exception:
+                pass
+        try:
+            job = job_manager.start_job(
+                ["hostapd", str(HOSTAPD_CONFIG_PATH)],
+                name="pineap-hostapd-impersonate", tags=["pineap"],
+            )
+            with self._lock:
+                self._state["hostapd_job_id"] = job.id
+                self._save_state()
+        except Exception:
+            log.exception("impersonation: hostapd restart failed")
+
+    def _emit_impersonation(self, ssid: str, bssid: str) -> None:
+        try:
+            from app import socketio
+            socketio.emit("impersonate:rotate",
+                          {"ssid": ssid, "bssid": bssid}, namespace="/")
+        except Exception:
+            pass
 
 
 # ---------- Module singleton ----------

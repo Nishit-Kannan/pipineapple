@@ -205,6 +205,23 @@ def get_client(mac: str):
     return jsonify(c)
 
 
+@bp.route("/clients/<mac>/kick", methods=["POST"])
+def kick_client(mac: str):
+    """Boot a connected client off the rogue AP (S13 Clients tab).
+    Body: ``{"method": "deauth"|"disassoc"}`` (default deauth)."""
+    from app.tools import hostapd_cli
+    data = request.get_json(silent=True) or {}
+    method = (data.get("method") or "deauth").strip()
+    iface = get_service().get_state().get("iface", "wlan-ap")
+    if method == "disassoc":
+        ok, msg = hostapd_cli.disassociate(iface, mac)
+    else:
+        ok, msg = hostapd_cli.deauthenticate(iface, mac)
+    notif = notifications.success if ok else notifications.warning
+    notif(f"client kick {mac}: {msg}", source="pineap")
+    return jsonify({"ok": ok, "msg": msg}), (200 if ok else 400)
+
+
 @bp.route("/clients/clear", methods=["POST"])
 def clear_clients():
     """Drop all persisted client records. Doesn't kick associated
@@ -323,3 +340,46 @@ def captive_portal_clear():
     ok, msg, removed = get_cp().clear_credentials()
     notifications.warning(f"captive creds clear: {msg}", source="pineap")
     return jsonify({"ok": ok, "msg": msg, "removed": removed})
+
+
+# ---------- Filtering (S13) ----------
+
+@bp.route("/filters", methods=["POST"])
+def set_filters():
+    """Update client-MAC / SSID allow-deny filters. Body (all optional)::
+
+        {"client_mode":"off|allow|deny", "client_macs":[...],
+         "ssid_mode":"off|allow|deny",   "ssid_ssids":[...]}
+
+    Lists replace the stored ones; changes apply on the next Start."""
+    data = request.get_json(silent=True) or {}
+    ok, msg = get_service().set_filters(
+        client_mode=data.get("client_mode"),
+        client_macs=data.get("client_macs"),
+        ssid_mode=data.get("ssid_mode"),
+        ssid_ssids=data.get("ssid_ssids"),
+    )
+    notif = notifications.success if ok else notifications.warning
+    notif(f"pineap filters: {msg}", source="pineap")
+    return jsonify({"ok": ok, "msg": msg, "state": get_service().get_state()}), \
+        (200 if ok else 400)
+
+
+# ---------- Impersonation (S13) ----------
+
+@bp.route("/impersonation", methods=["POST"])
+def set_impersonation():
+    """Configure SSID-rotation impersonation. Body (all optional)::
+
+        {"enabled":bool, "dwell_secs":int, "bssid_strategy":"per-ssid|shared|random"}
+    """
+    data = request.get_json(silent=True) or {}
+    ok, msg = get_service().set_impersonation(
+        enabled=data.get("enabled"),
+        dwell_secs=data.get("dwell_secs"),
+        bssid_strategy=data.get("bssid_strategy"),
+    )
+    notif = notifications.success if ok else notifications.warning
+    notif(f"pineap impersonation: {msg}", source="pineap")
+    return jsonify({"ok": ok, "msg": msg, "state": get_service().get_state()}), \
+        (200 if ok else 400)

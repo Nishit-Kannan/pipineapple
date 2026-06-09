@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Campaigns — PiPineapple{% endblock %}
+{% block nav_campaigns %}active{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Campaigns</h1>
+    <p class="muted">
+      Scripted, time-boxed assessment runs. Pick a template, set a window,
+      hit Run — the platform orchestrates recon / PineAP / capture and writes
+      a JSON + HTML report. One campaign at a time. Lab-authorised use only.
+    </p>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="run">Run</button>
+    <button class="tab" data-tab="reports">Reports</button>
+  </div>
+
+  <div id="camp-status-pill-row" class="settings-status muted" hidden></div>
+
+  {# ---------- Run tab ---------- #}
+  <section id="tab-run" class="tab-panel">
+
+    {# Live status — shown while a campaign runs #}
+    <section class="card" id="camp-running-card" hidden>
+      <div class="card-head">
+        <h2>Running: <span id="camp-run-name">—</span></h2>
+        <span class="badge badge-good" id="camp-run-state">running</span>
+        <span style="margin-left:auto;">
+          <button id="camp-stop" class="bigbtn bigbtn-danger">Stop campaign</button>
+        </span>
+      </div>
+      <p class="muted" style="font-size:13px;">
+        Elapsed <span id="camp-run-elapsed">0s</span> ·
+        window <span id="camp-run-window">—</span>
+      </p>
+      <div id="camp-run-steps" class="cmd-output"
+           style="max-height:200px; overflow:auto; font-size:12px;"></div>
+    </section>
+
+    <div class="dash-grid">
+      {% for t in status.templates %}
+      <section class="card camp-template" data-tpl="{{ t.id }}">
+        <div class="card-head">
+          <h2>{{ t.name }}</h2>
+          {% if t.offensive %}
+            <span class="badge badge-warn">offensive</span>
+          {% else %}
+            <span class="badge">passive</span>
+          {% endif %}
+        </div>
+        <p class="muted" style="font-size:13px;">{{ t.blurb }}</p>
+
+        <div class="form-row" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-top:8px;">
+          <label style="min-width:120px;">
+            <span class="auth-label">Window (s)</span>
+            <input class="camp-duration" type="number" min="0" max="86400" value="600">
+          </label>
+          <label style="display:flex; align-items:center; gap:6px;">
+            <input type="checkbox" class="camp-until-stopped"> run until stopped
+          </label>
+        </div>
+
+        {% if t.offensive %}
+        <div class="form-row" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;">
+          <label style="flex:1; min-width:180px;">
+            <span class="auth-label">Target BSSID to deauth (optional, your lab AP)</span>
+            <input class="camp-target" type="text" placeholder="aa:bb:cc:dd:ee:ff">
+          </label>
+          <label style="flex:1; min-width:160px;">
+            <span class="auth-label">Type <code>active</code> to confirm</span>
+            <input class="camp-confirm" type="text" autocomplete="off"
+                   style="font-family:'SF Mono',Menlo,monospace;">
+          </label>
+        </div>
+        <p class="muted" style="font-size:11px; margin-top:4px;">
+          Brings up the PineAP rogue (beacon + Karma) and, with a target,
+          fires broadcast deauth. Offensive — only against gear you own or
+          are authorised to test.
+        </p>
+        {% endif %}
+
+        <div style="margin-top:12px;">
+          <button class="bigbtn camp-run {% if t.offensive %}bigbtn-danger{% endif %}"
+                  data-tpl="{{ t.id }}">Run campaign</button>
+        </div>
+      </section>
+      {% endfor %}
+    </div>
+  </section>
+
+  {# ---------- Reports tab ---------- #}
+  <section id="tab-reports" class="tab-panel" hidden>
+    <div class="card">
+      <div class="card-head">
+        <h2>Past reports</h2>
+        <span class="muted" id="camp-reports-count">{{ reports|length }}</span>
+        <span style="margin-left:auto;">
+          <button id="camp-reports-refresh" class="bigbtn actbtn-muted"
+                  style="font-size:11px;">Refresh</button>
+        </span>
+      </div>
+      <table class="data" id="camp-reports-table">
+        <thead>
+          <tr><th>When</th><th>Template</th><th>Duration</th><th>APs</th>
+              <th>Clients</th><th>Handshakes</th><th>Creds</th><th>Report</th></tr>
+        </thead>
+        <tbody id="camp-reports-tbody">
+          <tr><td colspan="8" class="muted" style="padding:12px;">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

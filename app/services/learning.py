@@ -3211,6 +3211,178 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
             },
         ],
     },
+
+    # ------------------------------------------------------------------
+    # Session 13 — PineAP Impersonation / Filtering / Clients
+    # ------------------------------------------------------------------
+    {
+        "id": "pineap-impersonation-filtering-clients",
+        "title": "PineAP — Impersonation, Filtering & Clients",
+        "added_in_session": 13,
+        "intro": (
+            "The Phase D finale: broadcast a pool of fake SSIDs, control "
+            "who can connect, and manage/kick the clients that do. "
+            "Impersonation rotates the broadcast SSID through the pool "
+            "(the Alfa can only beacon one BSS at a time — cap=1 — so "
+            "rotation replaces true multi-BSS). Filtering maps to "
+            "hostapd's native MAC ACL. The Clients tab kicks associated "
+            "stations over the hostapd control socket."
+        ),
+        "ui_reference": (
+            "PineAP → Impersonation tab (rotation enable + dwell + BSSID "
+            "strategy + Karma stats), Filtering tab (client-MAC + SSID "
+            "allow/deny), Clients tab (connected list + Kick)."
+        ),
+        "wrapper_modules": [
+            "app/tools/hostapd.py (macaddr_acl + accept/deny_mac_file)",
+            "app/tools/hostapd_cli.py (deauthenticate/disassociate/reload)",
+            "app/services/pineap.py (filters, impersonation rotation)",
+            "app/routes/pineap.py (/filters, /impersonation, /clients/<mac>/kick)",
+        ],
+        "commands": [
+            {
+                "command": "(concept) SSID rotation vs multi-BSS",
+                "description": (
+                    "A real Pineapple beacons the whole impersonation pool "
+                    "at once via multiple BSSes. The mt76x2u Alfa under Pi "
+                    "OS Trixie practically caps at 1 BSS (S11 finding), so "
+                    "we ROTATE instead: rewrite hostapd.conf with the next "
+                    "pool SSID + its BSSID and `hostapd_cli reload` every "
+                    "dwell. Each SSID beacons for its window; a device "
+                    "probing for it can latch on while it's up. Cheaper "
+                    "than a full daemon restart; falls back to a job "
+                    "restart if a hostapd build ignores SSID changes on "
+                    "reload."
+                ),
+                "notes": (
+                    "BSSID strategy: per-ssid (deterministic salted MAC, "
+                    "default — returning victims see a stable BSSID), "
+                    "shared (one MAC for all — a tell), or random "
+                    "(fresh per rotation — evades tracking, no stability)."
+                ),
+            },
+            {
+                "command": "(reference) hostapd MAC ACL",
+                "description": (
+                    "Client filtering uses hostapd's native ACL on the "
+                    "primary BSS:\n"
+                    "  allow-list: macaddr_acl=1 + accept_mac_file=<path>\n"
+                    "  deny-list:  macaddr_acl=0 + deny_mac_file=<path>\n"
+                    "Each file is one MAC per line. PiPineapple writes them "
+                    "to /tmp/pipineapple-pineap-{accept,deny}-mac and "
+                    "references them in the rendered config. Applied on "
+                    "Start (we don't hot-reload the ACL mid-session on this "
+                    "driver)."
+                ),
+                "example_output": (
+                    "macaddr_acl=1\n"
+                    "accept_mac_file=/tmp/pipineapple-pineap-accept-mac\n"
+                    "# accept-mac file:\n"
+                    "aa:bb:cc:dd:ee:ff\n11:22:33:44:55:66"
+                ),
+            },
+            {
+                "command": "sudo hostapd_cli -i wlan-ap deauthenticate <mac>",
+                "description": (
+                    "Kick a connected client off the rogue AP (the Clients "
+                    "tab's Kick button). deauth forces a full re-auth; "
+                    "`disassociate <mac>` is the gentler boot. Pair with a "
+                    "deny-list entry to keep them out."
+                ),
+                "notes": (
+                    "`hostapd_cli -i wlan-ap all_sta` lists currently-"
+                    "associated stations straight from the daemon — a "
+                    "ground-truth cross-check against the lease-file view."
+                ),
+            },
+            {
+                "command": "sudo hostapd_cli -i wlan-ap reload",
+                "description": (
+                    "Re-read hostapd.conf into the running daemon. The "
+                    "impersonation rotation rewrites the config (next SSID "
+                    "+ BSSID) then calls this every dwell to swap the "
+                    "broadcast SSID without a full restart."
+                ),
+            },
+            {
+                "command": "cat /tmp/pipineapple-pineap-deny-mac",
+                "description": (
+                    "Inspect the generated deny-list MAC file hostapd is "
+                    "enforcing. Editing the list in the Filtering tab + "
+                    "restarting regenerates it."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
+    # Session 14 — Campaigns (scripted assessment runs + reports)
+    # ------------------------------------------------------------------
+    {
+        "id": "campaigns",
+        "title": "Campaigns — scripted runs & reports",
+        "added_in_session": 14,
+        "intro": (
+            "A campaign is the abstraction that makes the platform usable "
+            "for a real engagement: pick a template, set a window, hit Run, "
+            "and the platform orchestrates recon / PineAP / capture and "
+            "writes a JSON + HTML report. Three templates — Reconnaissance "
+            "(monitor only), Client Device Assessment Passive (recon + "
+            "in-window handshakes), and Active (PineAP rogue + Karma + "
+            "optional broadcast deauth, ethics-gated). Timed window auto-"
+            "stops; window=0 runs until you Stop."
+        ),
+        "ui_reference": (
+            "Campaigns page → Run tab (template cards + window) + Reports "
+            "tab (past runs, JSON/HTML download)."
+        ),
+        "wrapper_modules": [
+            "app/services/campaigns.py",
+            "app/routes/campaigns.py",
+        ],
+        "commands": [
+            {
+                "command": "(concept) campaign = orchestration + report",
+                "description": (
+                    "The service doesn't invent new attacks — it sequences "
+                    "the ones you already built. recon/passive start the "
+                    "recon scan for the window; active brings up the PineAP "
+                    "rogue (advanced/open) and, with a lab target BSSID, a "
+                    "broadcast-deauth loop. At the deadline (or Stop) it "
+                    "tears everything down and snapshots recon APs/clients, "
+                    "in-window handshakes, rogue clients, captive creds, and "
+                    "Karma stats into report.json + report.html."
+                ),
+                "notes": (
+                    "Radio reality: active brings up PineAP which pauses "
+                    "recon (one radio can't scan + rogue at once), so an "
+                    "active run is rogue-centric. recon/passive use the "
+                    "monitor radios only."
+                ),
+            },
+            {
+                "command": "ls $PIPINEAPPLE_DATA_DIR/campaigns/<id>/",
+                "description": (
+                    "Each run writes report.json (machine-readable, full "
+                    "detail) + report.html (styled, shareable) under its "
+                    "run id. The index.json lists all runs with a compact "
+                    "summary (AP/client/handshake/cred counts)."
+                ),
+                "example_output": "report.html  report.json",
+            },
+            {
+                "command": "(reference) curl the campaign API",
+                "description": (
+                    "POST /campaigns/start {template,duration_secs,confirm?,"
+                    "target_bssid?} → start; POST /campaigns/stop → stop + "
+                    "report; GET /campaigns/status → live run + step log; "
+                    "GET /campaigns/reports → index; GET "
+                    "/campaigns/reports/<id>/<json|html> → download. Active "
+                    "needs confirm='active' (the ethics gate)."
+                ),
+            },
+        ],
+    },
 ]
 
 

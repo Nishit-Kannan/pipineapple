@@ -14,6 +14,7 @@
   <script src="{{ url_for('static', filename='recon.js') }}" defer></script>
   <script src="{{ url_for('static', filename='handshakes.js') }}" defer></script>
   <script src="{{ url_for('static', filename='pineap.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='campaigns.js') }}" defer></script>
 </head>
 <body>
   {# ---------- Title bar ---------- #}
@@ -172,8 +173,9 @@
           <span class="sidenav-label">Handshakes</span>
         </a>
 
-        <a href="#" class="sidenav-item disabled"
-           title="Campaigns — Phase E (Session 14)">
+        <a href="{{ url_for('campaigns.index') }}"
+           class="sidenav-item {% block nav_campaigns %}{% endblock %}"
+           title="Campaigns — scripted assessment runs + reports">
           <span class="sidenav-icon">
             {# play / triangle #}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"

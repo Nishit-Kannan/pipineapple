@@ -265,6 +265,59 @@
       }
     }
 
+    // ---------- Impersonation tab (S13) ----------
+    if ($("imp-save")) {
+      $("imp-save").addEventListener("click", onSaveImpersonation);
+      if ($("ka-refresh")) $("ka-refresh").addEventListener("click", reloadKarma);
+      reloadImpersonation();
+      reloadKarma();
+      const tryWireImp = () => {
+        const sock = window.pipineapple && window.pipineapple.socket;
+        if (!sock) { setTimeout(tryWireImp, 200); return; }
+        sock.on("impersonate:rotate", (p) => {
+          if ($("imp-current") && p && p.ssid) $("imp-current").textContent = p.ssid;
+        });
+      };
+      tryWireImp();
+      if (!_impPollTimer) {
+        _impPollTimer = setInterval(() => {
+          if (impPanelVisible()) { reloadImpersonation(); reloadKarma(); }
+        }, 5000);
+      }
+    }
+
+    // ---------- Filtering tab (S13) ----------
+    if ($("cf-save")) {
+      if ($("cf-client-add")) $("cf-client-add").addEventListener("click", () => {
+        addFilterRow("cf-client-tbody", "mac", ($("cf-client-input").value || "").trim().toLowerCase());
+        $("cf-client-input").value = "";
+      });
+      if ($("cf-ssid-add")) $("cf-ssid-add").addEventListener("click", () => {
+        addFilterRow("cf-ssid-tbody", "ssid", ($("cf-ssid-input").value || "").trim());
+        $("cf-ssid-input").value = "";
+      });
+      // Delegated remove
+      document.querySelectorAll("#cf-client-tbody, #cf-ssid-tbody").forEach((tb) => {
+        tb.addEventListener("click", (e) => {
+          const b = e.target.closest("button");
+          if (b) b.closest("tr").remove();
+        });
+      });
+      $("cf-save").addEventListener("click", onSaveFilters);
+    }
+
+    // ---------- Clients tab (S13) ----------
+    if ($("cl-tbody")) {
+      if ($("cl-refresh")) $("cl-refresh").addEventListener("click", reloadKickClients);
+      if ($("cl-active-only")) $("cl-active-only").addEventListener("change", reloadKickClients);
+      reloadKickClients();
+      if (!_clPollTimer) {
+        _clPollTimer = setInterval(() => {
+          if (clientsPanelVisible()) reloadKickClients();
+        }, 5000);
+      }
+    }
+
     // Honour a #evil-wpa hash — set by the Recon "Clone to PineAP"
     // redirect so the operator lands directly on the Evil WPA tab.
     if (location.hash === "#evil-wpa") {
@@ -611,6 +664,120 @@
     showStatus(res.msg || "cleared", res.ok ? "ok" : "fail");
     reloadCaptiveCreds();
     reloadCaptiveState();
+  }
+
+  // ---------- Impersonation tab (S13) ----------
+  let _impPollTimer = null;
+  const impPanelVisible = () => { const p = $("tab-impersonation"); return !!(p && !p.hidden); };
+
+  async function reloadImpersonation() {
+    try {
+      const st = await (await fetch("/pineap/state")).json();
+      if ($("imp-current")) $("imp-current").textContent = st.impersonate_current_ssid || "—";
+      const pill = $("imp-running-pill");
+      if (pill) {
+        pill.textContent = st.impersonate_running ? "rotating" : (st.impersonate_enabled ? "armed" : "off");
+        pill.className = "badge " + (st.impersonate_running ? "badge-good" : "");
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  async function onSaveImpersonation() {
+    const body = {
+      enabled: !!$("imp-enabled")?.checked,
+      dwell_secs: parseInt($("imp-dwell")?.value || "20", 10),
+      bssid_strategy: $("imp-bssid-strategy")?.value || "per-ssid",
+    };
+    const res = await postJSON("/pineap/impersonation", body);
+    showStatus(res.msg || (res.ok ? "saved" : "failed"), res.ok ? "ok" : "fail");
+  }
+
+  async function reloadKarma() {
+    try {
+      const k = await (await fetch("/pineap/karma/stats")).json();
+      if ($("ka-seen"))    $("ka-seen").textContent    = k.probes_seen ?? k.seen ?? 0;
+      if ($("ka-replied")) $("ka-replied").textContent = k.probes_replied ?? k.replied ?? 0;
+      if ($("ka-clients")) $("ka-clients").textContent = k.unique_clients ?? k.clients ?? 0;
+      if ($("ka-ssids"))   $("ka-ssids").textContent   = k.unique_ssids ?? k.ssids ?? 0;
+    } catch (e) { /* karma not running — leave zeros */ }
+  }
+
+  // ---------- Filtering tab (S13) ----------
+  function addFilterRow(tbodyId, kind, value) {
+    if (!value) return;
+    const tbody = $(tbodyId);
+    if (!tbody) return;
+    const attr = kind === "mac" ? "data-mac" : "data-ssid";
+    // de-dup
+    if (tbody.querySelector(`tr[${attr}="${CSS.escape(value)}"]`)) return;
+    const cell = kind === "mac" ? `<code>${escapeHtml(value)}</code>` : `<strong>${escapeHtml(value)}</strong>`;
+    const tr = document.createElement("tr");
+    tr.setAttribute(attr, value);
+    tr.innerHTML = `<td>${cell}</td><td style="text-align:right;">
+      <button class="actbtn actbtn-muted" style="font-size:11px;">×</button></td>`;
+    tbody.appendChild(tr);
+  }
+
+  async function onSaveFilters() {
+    const macs = Array.from(document.querySelectorAll("#cf-client-tbody tr[data-mac]"))
+      .map((tr) => tr.getAttribute("data-mac"));
+    const ssids = Array.from(document.querySelectorAll("#cf-ssid-tbody tr[data-ssid]"))
+      .map((tr) => tr.getAttribute("data-ssid"));
+    const body = {
+      client_mode: $("cf-client-mode")?.value || "off",
+      client_macs: macs,
+      ssid_mode: $("cf-ssid-mode")?.value || "off",
+      ssid_ssids: ssids,
+    };
+    const res = await postJSON("/pineap/filters", body);
+    const el = $("cf-save-msg");
+    if (el) { el.textContent = res.msg || (res.ok ? "saved" : "failed"); el.classList.toggle("fail", !res.ok); }
+    showStatus(res.msg || "filters saved", res.ok ? "ok" : "fail");
+  }
+
+  // ---------- Clients tab (S13) ----------
+  let _clPollTimer = null;
+  const clientsPanelVisible = () => { const p = $("tab-clients"); return !!(p && !p.hidden); };
+
+  async function reloadKickClients() {
+    const tbody = $("cl-tbody");
+    if (!tbody) return;
+    try {
+      const data = await (await fetch("/pineap/clients")).json();
+      renderKickClients(data.clients || []);
+    } catch (e) { console.error("[pineap] reloadKickClients:", e); }
+  }
+
+  function renderKickClients(clients) {
+    const tbody = $("cl-tbody");
+    if (!tbody) return;
+    const activeOnly = $("cl-active-only")?.checked;
+    const nowSec = Date.now() / 1000;
+    const filtered = activeOnly
+      ? clients.filter((c) => (nowSec - (c.last_seen || 0)) < 600)
+      : clients;
+    if ($("cl-count")) $("cl-count").textContent = String(filtered.length);
+    if (!filtered.length) {
+      tbody.innerHTML = `<tr><td colspan="6" class="muted">No clients${activeOnly && clients.length ? " active in the last 10 min" : ""} yet.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = filtered.map((c) => `<tr>
+      <td><code>${escapeHtml(c.mac)}</code></td>
+      <td><code>${escapeHtml(c.ip || "—")}</code></td>
+      <td>${escapeHtml(c.hostname || "—")}</td>
+      <td>${c.os_guess ? `<span class="badge badge-ok">${escapeHtml(c.os_guess)}</span>` : '<span class="muted">?</span>'}</td>
+      <td class="muted" style="font-size:11px;">${escapeHtml(fmtTs(c.last_seen))}</td>
+      <td style="text-align:right;"><button class="actbtn actbtn-muted cl-kick" data-mac="${escapeHtml(c.mac)}" style="font-size:11px;">Kick</button></td>
+    </tr>`).join("");
+    tbody.querySelectorAll(".cl-kick").forEach((b) => {
+      b.addEventListener("click", async () => {
+        if (!confirm(`Deauthenticate ${b.dataset.mac} off the rogue AP?`)) return;
+        b.disabled = true;
+        const res = await postJSON(`/pineap/clients/${encodeURIComponent(b.dataset.mac)}/kick`, { method: "deauth" });
+        showStatus(res.msg || (res.ok ? "kicked" : "kick failed"), res.ok ? "ok" : "fail");
+        setTimeout(reloadKickClients, 1000);
+      });
+    });
   }
 
   // ---------- Lifecycle ----------
