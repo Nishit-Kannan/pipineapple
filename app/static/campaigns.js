@@ -39,15 +39,24 @@
   }
 
   let _elapsedTimer = null;
+  let _stopping = false;   // true between clicking Stop and the run finishing
 
   function renderStatus(st) {
     const card = $("camp-running-card");
     const run = st && st.run;
     const running = st && st.running && run && run.status === "running";
     if (card) card.hidden = !running;
-    // Disable all Run buttons while a campaign is active.
-    document.querySelectorAll(".camp-run").forEach((b) => { b.disabled = !!st.running; });
+    // Run buttons: grey (disabled) while any campaign runs, blue when idle.
+    document.querySelectorAll(".camp-run").forEach((b) => {
+      b.disabled = !!st.running;
+      if (!st.running) b.classList.remove("is-busy");
+    });
+    // Stop button: blue (ready) while running, red only after Stop is hit.
+    const stopBtn = $("camp-stop");
+    if (stopBtn && st.running && !_stopping) stopBtn.classList.remove("is-busy");
     if (!running) {
+      _stopping = false;
+      if (stopBtn) stopBtn.classList.remove("is-busy");
       if (_elapsedTimer) { clearInterval(_elapsedTimer); _elapsedTimer = null; }
       return;
     }
@@ -136,10 +145,16 @@
     document.querySelectorAll(".camp-run").forEach((btn) => {
       btn.addEventListener("click", () => {
         const card = btn.closest(".camp-template");
-        if (card) onRun(card, btn.dataset.tpl);
+        if (!card) return;
+        btn.classList.add("is-busy");          // optimistic: performing (red)
+        onRun(card, btn.dataset.tpl);
       });
     });
-    if ($("camp-stop")) $("camp-stop").addEventListener("click", onStop);
+    if ($("camp-stop")) $("camp-stop").addEventListener("click", () => {
+      _stopping = true;
+      $("camp-stop").classList.add("is-busy"); // optimistic: stopping (red)
+      onStop();
+    });
     if ($("camp-reports-refresh")) $("camp-reports-refresh").addEventListener("click", reloadReports);
 
     reloadStatus();

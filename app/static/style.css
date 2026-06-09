@@ -20,6 +20,14 @@
   --danger:     #d77;
   --good:       #7d9;
   --info:       #8ab4f8;
+  /* Unified button states: blue = actionable, grey = disabled,
+     red = busy / action in progress. */
+  --btn-ready:       #2f6fed;
+  --btn-ready-hi:    #1f5bd0;
+  --btn-busy:        #d9534f;
+  --btn-busy-hi:     #c2403c;
+  --btn-disabled-bg: #232c39;
+  --btn-disabled-fg: #6b7480;
 
   --sidebar-w:  64px;
   --sidebar-w-expanded: 180px;
@@ -829,39 +837,65 @@ table.data th code {
   flex-wrap: wrap;
 }
 
+/* ---------- Buttons: one state colour-code across the app ----------
+   blue  (--btn-ready)    = can be pressed, performs an action
+   grey  (--btn-disabled) = cannot be pressed right now (:disabled / .is-disabled)
+   red   (--btn-busy)     = its action is currently in progress (.is-busy)
+   Every button also gets a pressed effect so a click always registers. */
+.actbtn,
+.bigbtn {
+  background: var(--btn-ready);
+  color: #fff;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background .12s ease, transform .05s ease, filter .12s ease;
+}
 .actbtn {
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border-2);
-  color: var(--fg);
   padding: 4px 10px;
   border-radius: 3px;
   font-size: 11px;
-  cursor: pointer;
-  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
-
-.actbtn:hover { background: var(--bg-elev-3); border-color: var(--accent-dim); }
-.actbtn.actbtn-muted { color: var(--fg-muted); }
-.actbtn:disabled { opacity: 0.5; cursor: not-allowed; }
-
 .bigbtn {
-  background: var(--accent);
-  color: #0a0e14;
-  border: 0;
   padding: 10px 18px;
   border-radius: 4px;
   font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
   margin-top: 12px;
 }
 
-.bigbtn:hover { background: #f7d28e; }
-.bigbtn:disabled { opacity: 0.5; cursor: not-allowed; }
-.bigbtn.bigbtn-danger { background: var(--danger); color: #0a0e14; }
-.bigbtn.bigbtn-danger:hover { background: #e58a8a; }
+.actbtn:hover,
+.bigbtn:hover { background: var(--btn-ready-hi); }
+
+/* pressed — universal click feedback */
+.actbtn:active,
+.bigbtn:active { transform: translateY(1px); filter: brightness(0.9); }
+
+/* busy / action in progress — red (toggled via .is-busy by JS) */
+.actbtn.is-busy,
+.bigbtn.is-busy,
+.bigbtn.bigbtn-danger.is-busy { background: var(--btn-busy); color: #fff; }
+.actbtn.is-busy:hover,
+.bigbtn.is-busy:hover { background: var(--btn-busy-hi); }
+
+/* disabled — grey (native :disabled or .is-disabled); wins over busy */
+.actbtn:disabled, .actbtn.is-disabled,
+.bigbtn:disabled, .bigbtn.is-disabled {
+  background: var(--btn-disabled-bg) !important;
+  color: var(--btn-disabled-fg) !important;
+  border-color: transparent !important;
+  cursor: not-allowed;
+  transform: none;
+  filter: none;
+}
+
+/* danger + muted modifiers now follow the same state code — resting blue,
+   red only while busy — so the whole UI is one consistent scheme. */
+.bigbtn.bigbtn-danger { background: var(--btn-ready); color: #fff; }
+.bigbtn.bigbtn-danger:hover { background: var(--btn-ready-hi); }
+.actbtn.actbtn-muted { background: var(--btn-ready); color: #fff; border-color: transparent; }
+.actbtn.actbtn-muted:hover { background: var(--btn-ready-hi); }
 
 .settings-status {
   margin-top: 20px;

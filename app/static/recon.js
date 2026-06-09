@@ -16,6 +16,30 @@
 
   // ---- Helpers ----
   const $ = (id) => document.getElementById(id);
+
+  // Button state: "ready" (blue), "busy" (red, action in progress),
+  // "disabled" (grey). busy is NOT greyed — its action is in effect.
+  function setBtn(btn, mode) {
+    if (!btn) return;
+    btn.disabled = (mode === "disabled");
+    btn.classList.toggle("is-busy", mode === "busy");
+  }
+  // Start/Stop colour map per scan state (the reference for the app):
+  //   idle     → Start blue,  Stop grey
+  //   starting → Start red,   Stop grey
+  //   running  → Start red,   Stop blue
+  //   stopping → Start grey,  Stop red
+  function applyReconBtns(state) {
+    const map = {
+      idle:     ["ready", "disabled"],
+      starting: ["busy", "disabled"],
+      running:  ["busy", "ready"],
+      stopping: ["disabled", "busy"],
+    };
+    const [s, t] = map[state] || ["ready", "disabled"];
+    setBtn($("recon-start"), s);
+    setBtn($("recon-stop"), t);
+  }
   const escapeHtml = (s) =>
     String(s == null ? "" : s)
       .replace(/&/g, "&amp;")
@@ -192,10 +216,7 @@
     if (counts) {
       counts.textContent = `${status.ap_count} APs · ${status.client_count} clients`;
     }
-    const startBtn = $("recon-start");
-    const stopBtn = $("recon-stop");
-    if (startBtn) startBtn.disabled = status.state !== "idle";
-    if (stopBtn)  stopBtn.disabled  = status.state === "idle";
+    applyReconBtns(status.state);
 
     // Duration ticker — only tick while RUNNING. "starting" and
     // "stopping" are transient transitions, not actual scan time.
@@ -231,16 +252,14 @@
   }
 
   async function onStart() {
-    const startBtn = $("recon-start");
-    if (startBtn) startBtn.disabled = true;
+    applyReconBtns("starting");          // optimistic: Start red, Stop grey
     const res = await postJson("/recon/start");
     if (res.status) setStatus(res.status);
-    if (!res.ok && startBtn) startBtn.disabled = false;
+    else if (!res.ok) applyReconBtns("idle");
   }
 
   async function onStop() {
-    const stopBtn = $("recon-stop");
-    if (stopBtn) stopBtn.disabled = true;
+    applyReconBtns("stopping");          // optimistic: Start grey, Stop red
     const res = await postJson("/recon/stop");
     if (res.status) setStatus(res.status);
     // Clear tables immediately for snappy UX

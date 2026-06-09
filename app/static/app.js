@@ -69,6 +69,16 @@
     return `${Math.floor(diff / 86400)}d ago`;
   }
 
+  // ---------- Button state helpers (UI pass) ----------
+  // Shared so page scripts drive the one colour-code: blue actionable,
+  // grey disabled, red busy. busy = action in progress (NOT greyed).
+  function setBtnBusy(el, busy) { if (el) el.classList.toggle("is-busy", !!busy); }
+  function setBtnDisabled(el, dis) {
+    if (!el) return;
+    el.disabled = !!dis;
+    if (dis) el.classList.remove("is-busy");
+  }
+
   // ---------- Live indicator ----------
   // Three states: "up" (connected), "connecting" (initial / mid-reconnect),
   // "down" (disconnect_error or socket.io client absent). We use
@@ -365,6 +375,17 @@
 
   // ---------- Boot ----------
   function init() {
+    // Universal click feedback — a brief red "performing" pulse on any
+    // actionable button that isn't managed by page-level lifecycle state
+    // (those carry data-stateful and own their own colour). The :active
+    // CSS handles the press; this makes instant actions flash busy too.
+    document.addEventListener("click", (e) => {
+      const b = e.target.closest(".bigbtn, .actbtn");
+      if (!b || b.disabled || b.dataset.stateful || b.classList.contains("is-busy")) return;
+      b.classList.add("is-busy");
+      setTimeout(() => b.classList.remove("is-busy"), 450);
+    }, true);
+
     // Notification drawer button wiring
     const btn = $("#notif-btn");
     if (btn) btn.addEventListener("click", () => toggleDrawer());
@@ -471,8 +492,8 @@
       socket.emit("terminal:request_history");
     });
 
-    // Expose for debugging from the browser console
-    window.pipineapple = { socket, notifState, termState };
+    // Expose for debugging + page scripts (button helpers).
+    window.pipineapple = { socket, notifState, termState, setBtnBusy, setBtnDisabled };
   }
 
   if (document.readyState === "loading") {

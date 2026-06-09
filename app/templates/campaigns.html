@@ -28,7 +28,7 @@
         <h2>Running: <span id="camp-run-name">—</span></h2>
         <span class="badge badge-good" id="camp-run-state">running</span>
         <span style="margin-left:auto;">
-          <button id="camp-stop" class="bigbtn bigbtn-danger">Stop campaign</button>
+          <button id="camp-stop" class="bigbtn bigbtn-danger" data-stateful="1">Stop campaign</button>
         </span>
       </div>
       <p class="muted" style="font-size:13px;">
@@ -83,7 +83,7 @@
 
         <div style="margin-top:12px;">
           <button class="bigbtn camp-run {% if t.offensive %}bigbtn-danger{% endif %}"
-                  data-tpl="{{ t.id }}">Run campaign</button>
+                  data-stateful="1" data-tpl="{{ t.id }}">Run campaign</button>
         </div>
       </section>
       {% endfor %}

@@ -23,11 +23,11 @@
     </div>
     <div class="card-body">
       <div class="form-row" style="gap:12px; align-items:center;">
-        <button id="recon-start" class="bigbtn"
+        <button id="recon-start" class="bigbtn" data-stateful="1"
                 {% if status.state != "idle" %}disabled{% endif %}>
           Start scan
         </button>
-        <button id="recon-stop" class="bigbtn actbtn-muted"
+        <button id="recon-stop" class="bigbtn" data-stateful="1"
                 {% if status.state == "idle" %}disabled{% endif %}>
           Stop scan
         </button>

@@ -35,6 +35,20 @@
     return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  // Button state: blue ready / grey disabled / red busy (action in effect).
+  function setBtn(btn, mode) {
+    if (!btn) return;
+    btn.disabled = (mode === "disabled");
+    btn.classList.toggle("is-busy", mode === "busy");
+  }
+  // Start/Stop pair given the engine's running flag:
+  //   running     → Start red (in effect),  Stop blue
+  //   not running → Start blue,             Stop grey
+  function applyStartStop(startId, stopId, running) {
+    setBtn($(startId), running ? "busy" : "ready");
+    setBtn($(stopId), running ? "ready" : "disabled");
+  }
+
   function showStatus(msg, kind = "info") {
     const el = $("pineap-status");
     if (!el) return;
@@ -76,6 +90,9 @@
     });
     if ($("pa-broadcast")) $("pa-broadcast").checked = !!st.broadcast_enabled;
     if ($("pa-capture"))   $("pa-capture").checked   = !!st.capture_enabled;
+    // Lifecycle button colours follow the running flag.
+    applyStartStop("pa-start", "pa-stop", !!st.running);
+    if ($("ew-start")) applyStartStop("ew-start", "ew-stop", !!st.running);
   }
 
   // Tab switching — same pattern as settings.js. Each page with tabs
@@ -805,6 +822,7 @@
   async function onStartConfirmed() {
     closeEthicsModal();
     showStatus("starting…");
+    setBtn($("pa-start"), "busy"); setBtn($("ew-start"), "busy");
     const res = await postJSON("/pineap/start");
     const summary = (res.messages || []).join("; ") || (res.ok ? "started" : "failed");
     showStatus(summary, res.ok ? "ok" : "fail");
@@ -814,6 +832,7 @@
 
   async function onStop() {
     showStatus("stopping…");
+    setBtn($("pa-stop"), "busy"); setBtn($("ew-stop"), "busy");
     const res = await postJSON("/pineap/stop");
     showStatus((res.messages || []).join("; ") || "stopped", res.ok ? "ok" : "fail");
     if (res.state) renderState(res.state);
