@@ -219,6 +219,51 @@
       });
     });
 
+    // Captive-portal credential capture opt-in (Security tab, S12.5)
+    const cpConfirm = $("#cp-confirm-input");
+    const cpEnableBtn = $("#cp-enable-btn");
+    const cpDisableBtn = $("#cp-disable-btn");
+    const cpVerify = $("#cp-verify-select");
+    const cpSetMsg = (m, ok) => {
+      const el = $("#cp-set-msg");
+      if (el) { el.textContent = m || ""; el.classList.toggle("fail", ok === false); }
+    };
+    const cpApplyConfig = (cfg) => {
+      if (!cfg) return;
+      const st = $("#cp-set-status");
+      if (st) { st.textContent = cfg.enabled ? "enabled" : "disabled"; st.classList.toggle("badge-good", !!cfg.enabled); }
+      if ($("#cp-enable-row")) $("#cp-enable-row").hidden = !!cfg.enabled;
+      if ($("#cp-disable-row")) $("#cp-disable-row").hidden = !cfg.enabled;
+      if (cpConfirm) cpConfirm.value = "";
+      if (cpEnableBtn) cpEnableBtn.disabled = true;
+      if (cfg.verify_mode && cpVerify) cpVerify.value = cfg.verify_mode;
+    };
+    if (cpConfirm && cpEnableBtn) {
+      cpConfirm.addEventListener("input", () => {
+        cpEnableBtn.disabled = cpConfirm.value.trim().toLowerCase() !== "phishing";
+      });
+      cpEnableBtn.addEventListener("click", async () => {
+        const res = await postJSON("/settings/captive-portal/enable",
+                                   { enabled: true, confirm: cpConfirm.value.trim() });
+        cpSetMsg(res.msg, res.ok);
+        if (res.ok) { cpApplyConfig(res.config); showStatus("captive portal enabled", "ok"); }
+      });
+    }
+    if (cpDisableBtn) {
+      cpDisableBtn.addEventListener("click", async () => {
+        if (!confirm("Disable captive-portal credential capture?")) return;
+        const res = await postJSON("/settings/captive-portal/enable", { enabled: false });
+        cpSetMsg(res.msg, res.ok);
+        if (res.ok) { cpApplyConfig(res.config); showStatus("captive portal disabled", "ok"); }
+      });
+    }
+    if (cpVerify) {
+      cpVerify.addEventListener("change", async () => {
+        const res = await postJSON("/settings/captive-portal/verify-mode", { mode: cpVerify.value });
+        cpSetMsg(res.msg, res.ok);
+      });
+    }
+
     // Password change form (Security tab)
     const pwForm = $("#change-password-form");
     if (pwForm) {

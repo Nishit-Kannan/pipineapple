@@ -178,6 +178,7 @@ def set_ap_config():
         hw_mode=data.get("hw_mode"),
         security_mode=data.get("security_mode"),
         evil_wpa_deauth=data.get("evil_wpa_deauth"),
+        auto_captive_portal=data.get("auto_captive_portal"),
     )
     notif = notifications.success if ok else notifications.warning
     notif(f"pineap AP config: {msg}", source="pineap")
@@ -288,3 +289,37 @@ def evil_wpa_partials():
     captures (task #113 wires them into the Handshakes page)."""
     from app.services.evil_wpa import get_service as get_evil_wpa
     return jsonify({"partials": get_evil_wpa().list_partials()})
+
+
+# ---------- Captive portal (S12.5) ----------
+
+@bp.route("/captive-portal/state", methods=["GET"])
+def captive_portal_state():
+    """Captive-portal status: global opt-in, verify mode, whether the
+    portal is live (post bait-switch), armed SSID, attempt/verified
+    counts. Merged with the pineap runtime flag."""
+    from app.services.captive_portal import get_service as get_cp
+    stats = get_cp().get_stats()
+    stats["pineap_portal_active"] = bool(
+        get_service().get_state().get("captive_portal_active"))
+    return jsonify(stats)
+
+
+@bp.route("/captive-portal/credentials", methods=["GET"])
+def captive_portal_credentials():
+    """Harvested credential attempts, newest first, each with its
+    verify-against-handshake result."""
+    from app.services.captive_portal import get_service as get_cp
+    try:
+        limit = int(request.args.get("limit", 200))
+    except (TypeError, ValueError):
+        limit = 200
+    return jsonify({"credentials": get_cp().list_credentials(limit=limit)})
+
+
+@bp.route("/captive-portal/clear", methods=["POST"])
+def captive_portal_clear():
+    from app.services.captive_portal import get_service as get_cp
+    ok, msg, removed = get_cp().clear_credentials()
+    notifications.warning(f"captive creds clear: {msg}", source="pineap")
+    return jsonify({"ok": ok, "msg": msg, "removed": removed})

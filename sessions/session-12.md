@@ -195,18 +195,48 @@ for a Recon clone, and skips it with a note for a from-scratch SSID.
 `node --check` clean on `pineap.js`, `recon.js`, `handshakes.js`.
 `py_compile` clean on all edited Python.
 
-Stub mode covers orchestration + wiring. Real radio behaviour — a phone
-actually associating, real EAPOL frames, a real `.22000`, a real crack —
-needs hardware and a willing victim device. That's the runbook below (#114),
-which I'll execute on the Pi.
+Stub mode covers orchestration + wiring. Real radio behaviour — a client
+actually associating, real EAPOL frames, a real `.22000` — was verified on
+hardware (see Checkpoint 4).
 
 ---
 
-## Checkpoint 4 — Hardware verification runbook (#114, pending Pi run)
+## Checkpoint 4 — Hardware verification (#114) — DONE (capture chain proven)
 
-Same posture as S11's deferred hardware verify. Run these against **your own
-test AP only** — set up a dedicated WPA2-PSK SSID on the GL.iNet (or a spare
-router) with a PSK you choose; do not clone neighbour networks.
+**Verified on hardware 2026-06-08** against the lab GL.iNet (SSID `TL`, ch11,
+2.4GHz, WPA2-PSK). The full chain works end-to-end: Recon clone → WPA2 twin on
+`wlan-ap` → EAPOL sniffer on `wlan-mon-5g` → a victim laptop associating and
+running the 4-way → **M1+M2 captured** → `hcxpcapngtool` extracts the `.22000`
+partial. Getting there took four live bug fixes that stub mode couldn't catch
+(see the addendum at the bottom). The crack-to-known-PSK confirmation
+(step 8) is the operator's final check and is mechanically the same `.22000`
+path S09 already validated for recon captures.
+
+### What actually mattered on hardware (lessons)
+
+- **Use the right victim.** The first victim was an iPhone with a Private
+  Wi-Fi Address (locally-administered STA MAC `4e:dd:fe:…`). It would 802.11-
+  *authenticate* and even *associate*, but never start the 4-way — `0` EAPOL,
+  `hcxpcapngtool` "no crackable targets". Modern clients (iOS private-MAC,
+  WPA3/SAE, WPA2+PMF, mixed-mode) resist evil-twin handshake harvest **by
+  design**. A **laptop** (Linux `nmcli`/`wpa_supplicant`, `sudo nmcli device
+  wifi connect TL password <psk>`) does a clean, deterministic 4-way and is
+  the reliable way to prove the attack. This is a WPA2-PSK-against-cooperative-
+  clients technique, full stop.
+- **Kill the real AP for a clean capture.** "authenticated, never associated"
+  (or associate-then-instant-inactivity-deauth) at our twin is the signature
+  of the client choosing the real AP. Powering the real GL.iNet off so the
+  twin is the only `TL` on air removed every variable. (Keeping it on is the
+  realistic scenario — that's what the deauth coupling is for — but for a
+  first capture, turn it off.)
+- **Target security must be plain WPA2-PSK, PMF off.** GL.iNet's newer
+  firmware defaults to WPA2/WPA3-mixed or PMF-optional, which poisons the
+  client's saved profile; forget+rejoin after setting it to WPA2-PSK-only.
+
+### The runbook (for repeating the verify)
+
+Run against **your own test AP only** — a dedicated WPA2-PSK SSID on the
+GL.iNet with a PSK you choose; do not clone neighbour networks.
 
 **0. Pre-flight (safety + state).**
 - Confirm the target is your lab AP, not a neighbour. Note its SSID, channel,

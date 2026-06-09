@@ -2817,6 +2817,125 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
     },
 
     # ------------------------------------------------------------------
+    # Session 12.5 — Captive-portal credential phishing
+    # ------------------------------------------------------------------
+    {
+        "id": "pineap-captive-portal",
+        "title": "PineAP — Captive-portal phishing (verify against handshake)",
+        "added_in_session": 12.5,
+        "intro": (
+            "The answer to 'modern clients won't hand over a handshake': "
+            "stop cracking, just ask. After Evil WPA captures M1+M2, the "
+            "bait-switch flips the rogue from WPA2 to an Open clone of the "
+            "same SSID; the victim's device rejoins password-free, the "
+            "captive sentinel (now in 'lie' mode) forces the OS captive "
+            "browser, and a fake 'router firmware update' page collects the "
+            "Wi-Fi password. The submitted password is verified INSTANTLY "
+            "against the captured handshake — same maths hashcat does, but "
+            "for one phished guess: PMK = PBKDF2-SHA1(psk, ssid, 4096, 32) "
+            "→ PTK → recompute the M2 MIC → compare. No wordlist, no GPU. "
+            "Default OFF, opt-in behind a stronger ethics gate (type "
+            "'phishing'), lab-use only."
+        ),
+        "ui_reference": (
+            "Settings → Security → Captive-portal credential capture (opt-in "
+            "+ verify mode A/B/C). PineAP → Evil WPA tab → 'launch captive-"
+            "portal phishing' start option. PineAP → Captive Portal tab "
+            "(status + harvested/verified credentials)."
+        ),
+        "wrapper_modules": [
+            "app/tools/wpa_crypto.py (PMK/PTK/MIC verify)",
+            "app/services/captive_portal.py (config, creds, template, arm)",
+            "app/services/captive_sentinel.py (portal/lie mode + POST)",
+            "app/services/pineap.py (bait-switch: WPA→Open flip)",
+            "app/routes/settings.py + app/routes/pineap.py",
+        ],
+        "commands": [
+            {
+                "command": "(concept) Verify a PSK against a captured handshake",
+                "description": (
+                    "Per phished candidate:\n"
+                    "  PMK = PBKDF2-HMAC-SHA1(psk, ssid, 4096, 32)\n"
+                    "  PTK = PRF-512(PMK, \"Pairwise key expansion\",\n"
+                    "        min(AA,SA)||max(AA,SA)||min(An,Sn)||max(An,Sn))\n"
+                    "  KCK = PTK[0:16]\n"
+                    "  MIC'= HMAC(KCK, <M2 EAPOL frame, MIC field zeroed>)[:16]\n"
+                    "  valid ⟺ MIC' == captured MIC\n"
+                    "MIC algorithm by EAPOL key-descriptor version: v1 → "
+                    "HMAC-MD5 (TKIP), v2 → HMAC-SHA1 (CCMP/WPA2, the usual "
+                    "case), v3 → AES-CMAC (802.11w/PMF). Every input comes "
+                    "out of the .22000 line; SNonce is parsed from the M2 "
+                    "EAPOL frame itself."
+                ),
+                "notes": (
+                    "This is exactly one hashcat -m 22000 candidate "
+                    "evaluation. Validated against the IEEE 802.11i PBKDF2 "
+                    "vector (\"password\"/\"IEEE\" → f42c6f…0a12e)."
+                ),
+            },
+            {
+                "command": ("python3 -c \"from app.tools.wpa_crypto import "
+                            "verify_psk_against_line as v; "
+                            "print(v('YOURPSK', open('cap.22000').read().strip()))\""),
+                "description": (
+                    "Verify a guessed password against a real captured "
+                    ".22000 line, by hand. Returns True if it's the actual "
+                    "PSK, False otherwise. The fastest way to confirm the "
+                    "engine on a real capture (e.g. the GL.iNet handshake "
+                    "you already have with a known password)."
+                ),
+            },
+            {
+                "command": "wpa_passphrase <ssid> <passphrase>",
+                "description": (
+                    "Show the PSK (PMK in hex) wpa_supplicant would derive "
+                    "for an SSID+passphrase — the PBKDF2 step on its own. "
+                    "Handy to cross-check derive_pmk() against a system "
+                    "tool. Output's psk= line is the 32-byte PMK in hex."
+                ),
+                "example_output": (
+                    "network={\n\tssid=\"IEEE\"\n\t#psk=\"password\"\n"
+                    "\tpsk=f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e\n}"
+                ),
+            },
+            {
+                "command": "(concept) Captive-portal 'lie' mode",
+                "description": (
+                    "Every OS probes a known URL on join (Apple "
+                    "/hotspot-detect.html → expects 'Success', Android "
+                    "/generate_204 → expects 204, Windows /connecttest.txt). "
+                    "S11's sentinel answered truthfully so the phone treated "
+                    "the rogue as real internet. Portal mode does the "
+                    "opposite: it answers every probe with the landing-page "
+                    "HTML instead of the expected token, so the OS decides "
+                    "it's behind a captive portal and pops its sign-in "
+                    "browser straight onto our page."
+                ),
+            },
+            {
+                "command": "cat $PIPINEAPPLE_DATA_DIR/captive_template.html",
+                "description": (
+                    "Operator custom landing page (optional). If present it "
+                    "overrides the built-in firmware-update template. Use "
+                    "{ssid} and {msg} placeholders and a form POSTing a "
+                    "'psk' field to /portal/submit. Without it, the built-in "
+                    "generic 'Router firmware update' page is served."
+                ),
+            },
+            {
+                "command": "cat $PIPINEAPPLE_DATA_DIR/captive_creds.json | python3 -m json.tool",
+                "description": (
+                    "Harvested credential attempts: each submitted password "
+                    "with client MAC/IP, SSID, and the verify-against-"
+                    "handshake result (true/false/null). The Captive Portal "
+                    "tab renders this live; verify mode A/B/C only changes "
+                    "what the *victim* is told, not what's recorded."
+                ),
+            },
+        ],
+    },
+
+    # ------------------------------------------------------------------
     # Session 12 — PineAP Evil WPA (partial-handshake harvest)
     # ------------------------------------------------------------------
     {
@@ -2999,6 +3118,43 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
                     "S09 notes). The partial harvested by Evil WPA is the "
                     "same kind of 22000 line a full capture produces, so "
                     "it cracks identically."
+                ),
+            },
+            {
+                "command": "(operational) why an Evil WPA capture comes up empty",
+                "description": (
+                    "Hardware-learned checklist when frames/EAPOL stay at "
+                    "0 (S12 first run):\n"
+                    "  1. Sniffer radio actually up + on the AP's channel? "
+                    "`iw dev wlan-mon-5g info` must show the channel and not "
+                    "be down — `iw set channel` is a no-op on a down iface. "
+                    "(The service now re-asserts this in the sniff loop.)\n"
+                    "  2. Is the 4-way even happening? hostapd showing "
+                    "`authenticated` but never `associated` = the client is "
+                    "picking the REAL AP. Power the real AP off so the twin "
+                    "is the only SSID on air.\n"
+                    "  3. Client cooperation: iOS Private-MAC, WPA3/SAE, and "
+                    "WPA2+PMF clients associate but won't complete the 4-way "
+                    "against a WPA2-PSK twin — by design. Use a laptop "
+                    "(`nmcli device wifi connect <ssid> password <psk>`) for "
+                    "a clean, deterministic handshake.\n"
+                    "  4. Clients stop auto-retrying after one PSK failure "
+                    "(our random M3) — forget+rejoin to force a fresh attempt."
+                ),
+                "notes": (
+                    "Evil WPA harvests M1+M2 from WPA2-PSK networks with "
+                    "cooperative clients. It is not a WPA3/PMF attack — those "
+                    "are specifically hardened against handshake capture."
+                ),
+            },
+            {
+                "command": "sudo nmcli device wifi connect TL password <psk>",
+                "description": (
+                    "Drive a clean 4-way from a Linux laptop against the "
+                    "twin — the reliable way to prove capture works. It "
+                    "associates, exchanges M1/M2, fails on M3 (our random "
+                    "PSK), and you've got the partial. Far more predictable "
+                    "than a phone."
                 ),
             },
             {

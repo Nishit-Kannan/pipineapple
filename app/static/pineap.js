@@ -228,6 +228,43 @@
       }
     }
 
+    // ---------- Captive Portal tab (S12.5) ----------
+    if ($("cp-creds-tbody")) {
+      if ($("cp-refresh")) $("cp-refresh").addEventListener("click", () => {
+        reloadCaptiveState();
+        reloadCaptiveCreds();
+      });
+      if ($("cp-creds-clear")) $("cp-creds-clear").addEventListener("click", onClearCaptiveCreds);
+      reloadCaptiveState();
+      reloadCaptiveCreds();
+
+      const tryWireCp = () => {
+        const sock = window.pipineapple && window.pipineapple.socket;
+        if (!sock) { setTimeout(tryWireCp, 200); return; }
+        sock.on("captive:credential", () => {
+          reloadCaptiveCreds();
+          reloadCaptiveState();
+        });
+        sock.on("captive:baitswitch", (p) => {
+          showStatus(
+            (p && p.ok ? "captive portal launched" : "bait-switch skipped")
+              + (p && p.ssid ? ` (${p.ssid})` : ""),
+            p && p.ok ? "ok" : "fail");
+          reloadCaptiveState();
+        });
+      };
+      tryWireCp();
+
+      if (!_cpPollTimer) {
+        _cpPollTimer = setInterval(() => {
+          if (captivePanelVisible()) {
+            reloadCaptiveState();
+            reloadCaptiveCreds();
+          }
+        }, 5000);
+      }
+    }
+
     // Honour a #evil-wpa hash — set by the Recon "Clone to PineAP"
     // redirect so the operator lands directly on the Evil WPA tab.
     if (location.hash === "#evil-wpa") {
@@ -466,6 +503,8 @@
       // was cloned) — disabled means "not applicable", not "false".
       evil_wpa_deauth: ($("ew-deauth") && !$("ew-deauth").disabled)
                          ? !!$("ew-deauth").checked : undefined,
+      auto_captive_portal: $("ew-auto-portal")
+                         ? !!$("ew-auto-portal").checked : undefined,
     };
     const res = await postJSON("/pineap/ap-config", body);
     showStatus(res.msg || (res.ok ? "saved" : "failed"), res.ok ? "ok" : "fail");
@@ -490,6 +529,88 @@
       if (r.state) renderState(r.state);
     }
     openEthicsModal();
+  }
+
+  // ---------- Captive Portal handlers (S12.5) ----------
+  let _cpPollTimer = null;
+
+  function captivePanelVisible() {
+    const p = $("tab-captive");
+    return !!(p && !p.hidden);
+  }
+
+  async function reloadCaptiveState() {
+    try {
+      const r = await fetch("/pineap/captive-portal/state");
+      if (!r.ok) return;
+      renderCaptiveState(await r.json());
+    } catch (e) {
+      console.error("[pineap] reloadCaptiveState:", e);
+    }
+  }
+
+  function renderCaptiveState(s) {
+    if (!s) return;
+    const pill = $("cp-status-pill");
+    const live = !!s.portal_active;
+    if (pill) {
+      pill.textContent = !s.enabled ? "disabled" : (live ? "portal live" : "armed/idle");
+      pill.className = "badge " + (live ? "badge-good" : (s.enabled ? "" : "badge-warn"));
+    }
+    if ($("cp-enabled"))     $("cp-enabled").textContent     = s.enabled ? "on" : "off (Settings → Security)";
+    if ($("cp-verify-mode")) $("cp-verify-mode").textContent = s.verify_mode || "—";
+    if ($("cp-active"))      $("cp-active").textContent      = live ? "yes" : "no";
+    if ($("cp-armed-ssid"))  $("cp-armed-ssid").textContent  = s.armed_ssid || "—";
+    if ($("cp-custom-template")) $("cp-custom-template").textContent = s.has_custom_template ? "yes" : "built-in";
+    if ($("cp-attempts"))    $("cp-attempts").textContent    = s.attempts || 0;
+    if ($("cp-verified"))    $("cp-verified").textContent    = s.verified_count || 0;
+    if ($("cp-disabled-note")) $("cp-disabled-note").hidden  = !!s.enabled;
+  }
+
+  async function reloadCaptiveCreds() {
+    const tbody = $("cp-creds-tbody");
+    if (!tbody) return;
+    try {
+      const r = await fetch("/pineap/captive-portal/credentials?limit=100");
+      const data = await r.json();
+      renderCaptiveCreds(data.credentials || []);
+    } catch (e) {
+      console.error("[pineap] reloadCaptiveCreds:", e);
+    }
+  }
+
+  function renderCaptiveCreds(creds) {
+    const tbody = $("cp-creds-tbody");
+    if (!tbody) return;
+    if ($("cp-creds-count")) $("cp-creds-count").textContent = String(creds.length);
+    if (!creds.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">No credentials harvested yet.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = creds.map((c) => {
+      let v;
+      if (c.verified === true)       v = `<span class="badge badge-ok">verified ✓</span>`;
+      else if (c.verified === false) v = `<span class="badge badge-warn">wrong</span>`;
+      else                            v = `<span class="muted">unknown</span>`;
+      const client = c.client_mac
+        ? `<code>${escapeHtml(c.client_mac)}</code>`
+        : `<span class="muted">${escapeHtml(c.client_ip || "?")}</span>`;
+      return `<tr>
+        <td class="muted">${escapeHtml(fmtTs(c.ts))}</td>
+        <td>${client}</td>
+        <td>${escapeHtml(c.ssid || "—")}</td>
+        <td><code>${escapeHtml(c.psk || "")}</code></td>
+        <td>${v}</td>
+      </tr>`;
+    }).join("");
+  }
+
+  async function onClearCaptiveCreds() {
+    if (!confirm("Clear all harvested credential records?")) return;
+    const res = await postJSON("/pineap/captive-portal/clear");
+    showStatus(res.msg || "cleared", res.ok ? "ok" : "fail");
+    reloadCaptiveCreds();
+    reloadCaptiveState();
   }
 
   // ---------- Lifecycle ----------

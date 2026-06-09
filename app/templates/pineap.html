@@ -17,6 +17,7 @@
     <button class="tab active" data-tab="settings">Settings</button>
     <button class="tab" data-tab="open">Open SSID</button>
     <button class="tab" data-tab="evil-wpa">Evil WPA</button>
+    <button class="tab" data-tab="captive">Captive Portal</button>
     <button class="tab disabled" disabled title="Session 13">Impersonation</button>
     <button class="tab disabled" disabled title="Session 13">Filtering</button>
     <button class="tab disabled" disabled title="Session 13">Clients</button>
@@ -389,6 +390,26 @@
           </p>
         </div>
 
+        {# Captive-portal bait-switch (S12.5) — per-start option. Only
+           usable once the global opt-in is on in Settings → Security. #}
+        <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:10px;">
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="ew-auto-portal"
+                   {% if state.auto_captive_portal %}checked{% endif %}>
+            <span>After capture, launch <strong>captive-portal phishing</strong>
+                  (flip to Open + ask the victim for the password)</span>
+          </label>
+          <p class="muted" style="font-size:11px; margin-top:6px;">
+            On the first harvested partial, auto-flips this AP from WPA2 to
+            an Open clone of the same SSID and serves a fake "firmware
+            update" page that collects the Wi-Fi password — verified live
+            against the captured handshake. Requires the global opt-in in
+            <a href="/settings#security">Settings → Security</a> (off by
+            default). See the <strong>Captive Portal</strong> tab for status
+            + harvested credentials. Lab use only.
+          </p>
+        </div>
+
         <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
           <button id="ew-save" class="bigbtn">Save WPA config</button>
           <span style="margin-left:auto; display:flex; gap:8px;">
@@ -454,6 +475,73 @@
           </thead>
           <tbody id="ew-partials-tbody">
             <tr><td colspan="5" class="muted">No partials harvested yet. Start the engine and have a device with the cloned SSID saved attempt to join.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+    </div>
+  </section>
+
+  {# ---------- Captive Portal tab (S12.5) ---------- #}
+  <section id="tab-captive" class="tab-panel" hidden>
+    <div class="dash-grid">
+
+      {# Status #}
+      <section class="card">
+        <div class="card-head">
+          <h2>Captive portal</h2>
+          <span class="badge" id="cp-status-pill">—</span>
+          <span style="margin-left:auto;">
+            <button id="cp-refresh" class="bigbtn actbtn-muted"
+                    style="font-size:11px;">Refresh</button>
+          </span>
+        </div>
+        <p class="muted" style="font-size:12px;">
+          The bait-switch: after Evil WPA captures M1+M2, the AP flips to
+          an Open clone of the same SSID, the sentinel forces the OS
+          captive browser, and a fake "router firmware update" page
+          collects the Wi-Fi password — <strong>verified instantly
+          against the captured handshake</strong> (no cracking).
+        </p>
+        <dl style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:0; font-size:13px;">
+          <dt class="muted">Global opt-in</dt><dd id="cp-enabled">—</dd>
+          <dt class="muted">Verify mode</dt><dd id="cp-verify-mode">—</dd>
+          <dt class="muted">Portal live</dt><dd id="cp-active">—</dd>
+          <dt class="muted">Armed SSID</dt><dd><code id="cp-armed-ssid">—</code></dd>
+          <dt class="muted">Custom template</dt><dd id="cp-custom-template">—</dd>
+          <dt class="muted">Attempts</dt><dd id="cp-attempts">0</dd>
+          <dt class="muted">Verified hits</dt><dd id="cp-verified">0</dd>
+        </dl>
+        <p class="muted" id="cp-disabled-note" style="font-size:11px; margin-top:10px;" hidden>
+          Credential capture is <strong>off</strong>. Enable it in
+          <a href="/settings#security">Settings → Security</a> (you'll be
+          asked to type <code>phishing</code> to confirm), then arm it via
+          the "launch captive-portal phishing" option on the Evil WPA tab.
+        </p>
+      </section>
+
+      {# Harvested credentials #}
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Harvested credentials</h2>
+          <span class="muted" id="cp-creds-count">0</span>
+          <span style="margin-left:auto;">
+            <button id="cp-creds-clear" class="bigbtn actbtn-muted"
+                    style="font-size:11px;">Clear</button>
+          </span>
+        </div>
+        <p class="muted" style="font-size:12px;">
+          Every password the victim submitted, checked against the captured
+          handshake. <span class="badge badge-ok">verified</span> means it's
+          the real PSK; <span class="badge badge-warn">wrong</span> means it
+          isn't (or no handshake was armed).
+        </p>
+        <table class="data" id="cp-creds-table" style="font-size:11px;">
+          <thead>
+            <tr><th>Time</th><th>Client</th><th>SSID</th><th>Submitted password</th><th>Verified?</th></tr>
+          </thead>
+          <tbody id="cp-creds-tbody">
+            <tr><td colspan="5" class="muted">No credentials harvested yet.</td></tr>
           </tbody>
         </table>
       </section>

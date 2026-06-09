@@ -23,12 +23,14 @@ def index():
     """Settings page with the Adapter Management tab active."""
     svc = get_service()
     net = get_networking()
+    from app.services.captive_portal import get_service as get_cp
     return render_template(
         "settings.html",
         adapters=svc.list_adapters(),
         roles_assigned=svc.get_roles(),
         deny_cidrs=access_control.list_cidrs(),
         networking=net.get_state(),
+        captive_portal=get_cp().get_config(),
     )
 
 
@@ -186,6 +188,35 @@ def remove_deny_cidr():
     notif = notifications.success if ok else notifications.warning
     notif(f"access deny remove: {msg}", source="security")
     return jsonify({"ok": ok, "msg": msg, "deny_cidrs": access_control.list_cidrs()})
+
+
+# ---------- Security tab: captive-portal phishing opt-in (S12.5) ----------
+@bp.route("/captive-portal/enable", methods=["POST"])
+def captive_portal_enable():
+    """Toggle the global captive-portal credential-capture opt-in.
+    Enabling requires ``confirm`` == ``phishing`` (stronger ethics gate
+    than the rogue-AP ``pineap`` confirm)."""
+    from app.services.captive_portal import get_service as get_cp
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get("enabled"))
+    confirm = data.get("confirm")
+    ok, msg = get_cp().set_enabled(enabled, confirm_phrase=confirm)
+    notif = notifications.success if ok else notifications.warning
+    notif(f"captive portal: {msg}", source="security")
+    return jsonify({"ok": ok, "msg": msg, "config": get_cp().get_config()}), \
+        (200 if ok else 400)
+
+
+@bp.route("/captive-portal/verify-mode", methods=["POST"])
+def captive_portal_verify_mode():
+    """Body: ``{"mode": "A"|"B"|"C"}``."""
+    from app.services.captive_portal import get_service as get_cp
+    data = request.get_json(silent=True) or {}
+    ok, msg = get_cp().set_verify_mode((data.get("mode") or "").strip().upper())
+    notif = notifications.info if ok else notifications.warning
+    notif(f"captive verify mode: {msg}", source="security")
+    return jsonify({"ok": ok, "msg": msg, "config": get_cp().get_config()}), \
+        (200 if ok else 400)
 
 
 # ---------- JSON API used by the page's JS ----------
