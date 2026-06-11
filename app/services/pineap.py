@@ -1523,7 +1523,7 @@ class PineAPService:
                 if hb:
                     with self._lock:
                         d_channel = hc or int(self._state.get("channel") or 6)
-                    d_bssid, d_src = hb, "chosen handshake"
+                    d_bssid, d_src = self._fmt_mac(hb), "chosen handshake"
             if not d_bssid:
                 d_bssid, d_channel, d_src = self._resolve_deauth_target(target_ssid)
         with self._lock:
@@ -1651,6 +1651,19 @@ class PineAPService:
             return None, None, f"resolve failed: {e}"
 
     # ---------- Standalone broadcast deauth (direct open-portal path) ----------
+    @staticmethod
+    def _fmt_mac(mac: str | None) -> str | None:
+        """Normalise a MAC to colon-separated lowercase. Handshake BSSIDs
+        come from the .22000 line as bare hex (``aa23c627f0a0``); aireplay
+        needs ``aa:23:c6:27:f0:a0`` or it rejects the target and never
+        injects."""
+        if not mac:
+            return mac
+        h = mac.replace(":", "").replace("-", "").strip().lower()
+        if len(h) == 12 and all(c in "0123456789abcdef" for c in h):
+            return ":".join(h[i:i + 2] for i in range(0, 12, 2))
+        return mac.strip().lower()
+
     def _resolve_deauth_target(self, ssid: str | None
                                ) -> tuple[str | None, int | None, str]:
         """Find a (bssid, channel) to deauth for the direct path. Tries

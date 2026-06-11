@@ -332,8 +332,13 @@ def captive_portal_state():
     counts. Merged with the pineap runtime flag."""
     from app.services.captive_portal import get_service as get_cp
     stats = get_cp().get_stats()
-    stats["pineap_portal_active"] = bool(
-        get_service().get_state().get("captive_portal_active"))
+    st = get_service().get_state()
+    stats["pineap_portal_active"] = bool(st.get("captive_portal_active"))
+    # Surface the direct-portal deauth status here too, so the operator
+    # doesn't have to read it off the EAPOL sniffer card.
+    stats["deauth_running"] = bool(st.get("direct_deauth_running"))
+    stats["deauth_bursts"] = st.get("direct_deauth_bursts") or 0
+    stats["deauth_bssid"] = st.get("direct_deauth_bssid")
     return jsonify(stats)
 
 

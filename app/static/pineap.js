@@ -662,6 +662,11 @@
     if (s.verify_mode && $("cp-verify-select")) $("cp-verify-select").value = s.verify_mode;
     // Status
     if ($("cp-active"))      $("cp-active").textContent      = live ? "yes" : "no";
+    if ($("cp-deauth")) {
+      $("cp-deauth").textContent = s.deauth_running
+        ? `firing → ${s.deauth_bssid || "?"} (${s.deauth_bursts || 0} bursts)`
+        : "off";
+    }
     if ($("cp-armed-ssid"))  $("cp-armed-ssid").textContent  = s.armed_ssid || "—";
     if ($("cp-custom-template")) $("cp-custom-template").textContent = s.has_custom_template ? "yes" : "built-in";
     if ($("cp-attempts"))    $("cp-attempts").textContent    = s.attempts || 0;
