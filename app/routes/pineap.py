@@ -362,6 +362,57 @@ def captive_portal_handshakes():
     return jsonify({"handshakes": get_hs().list_for_picker()})
 
 
+@bp.route("/captive-portal/connected", methods=["GET"])
+def captive_portal_connected():
+    """Clients currently associated to our AP, enriched with an OS/device
+    guess. Merges two signals:
+
+    * **dnsmasq leases / DHCP fingerprint** (client_recon) — MAC, IP,
+      hostname, and an option-55-based ``os_guess``.
+    * **captive sentinel probes** — the OS the device's captive-portal
+      check reveals (Apple/Android/Windows/…) plus its User-Agent, the
+      most reliable device signal we get.
+    """
+    from app.services.client_recon import get_service as get_cr
+    clients = get_cr().list_clients()
+
+    # Index sentinel probes by MAC and IP for enrichment.
+    by_mac: dict[str, dict] = {}
+    by_ip: dict[str, dict] = {}
+    try:
+        from app.services.captive_sentinel import get_service as get_sentinel
+        for p in get_sentinel().list_probes(limit=500):
+            ua = p.get("user_agent") or ""
+            label = p.get("label")
+            if not ua and not label:
+                continue
+            rec = {"ua": ua, "label": label, "ts": p.get("ts")}
+            mac = (p.get("client_mac") or "").lower()
+            ip = p.get("client_ip") or ""
+            # Keep the most recent probe per key.
+            if mac and (mac not in by_mac or (rec["ts"] or 0) > (by_mac[mac]["ts"] or 0)):
+                by_mac[mac] = rec
+            if ip and (ip not in by_ip or (rec["ts"] or 0) > (by_ip[ip]["ts"] or 0)):
+                by_ip[ip] = rec
+    except Exception:
+        pass
+
+    out = []
+    for c in clients:
+        mac = (c.get("mac") or "").lower()
+        probe = by_mac.get(mac) or by_ip.get(c.get("ip") or "")
+        out.append({
+            "mac":        c.get("mac"),
+            "ip":         c.get("ip"),
+            "hostname":   c.get("hostname"),
+            "os_guess":   c.get("os_guess"),        # from DHCP option 55
+            "ua_os":      (probe or {}).get("label"),   # from captive probe
+            "user_agent": (probe or {}).get("ua"),
+            "last_seen":  c.get("last_seen"),
+        })
+    return jsonify({"clients": out})
+
+
 @bp.route("/captive-portal/launch-direct", methods=["POST"])
 def captive_portal_launch_direct():
     """Stand up an OPEN evil-twin + captive portal directly.

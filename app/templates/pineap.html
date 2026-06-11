@@ -526,6 +526,22 @@
           <dt class="muted">Verified hits</dt><dd id="cp-verified">0</dd>
         </dl>
 
+        {# Clients currently associated to our AP + their OS/device guess #}
+        <div style="margin-top:14px; border-top:1px solid var(--border); padding-top:10px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <strong style="font-size:13px;">Connected clients</strong>
+            <span class="muted" id="cp-clients-count" style="font-size:12px;">0</span>
+          </div>
+          <table class="data" id="cp-clients-table" style="font-size:11px; margin-top:6px;">
+            <thead>
+              <tr><th>Client (MAC)</th><th>IP</th><th>Device / OS</th><th>Hostname</th><th>Last seen</th></tr>
+            </thead>
+            <tbody id="cp-clients-tbody">
+              <tr><td colspan="5" class="muted">No clients associated yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
         <div style="margin-top:14px; border-top:1px solid var(--border); padding-top:10px;">
           <p class="muted" style="font-size:12px;">
             <strong>Direct mode</strong> — open evil-twin + portal now.

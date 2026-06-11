@@ -251,6 +251,7 @@
         reloadCaptiveState();
         reloadCaptiveCreds();
         reloadHandshakePicker();
+        reloadConnectedClients();
       });
       if ($("cp-creds-clear")) $("cp-creds-clear").addEventListener("click", onClearCaptiveCreds);
       if ($("cp-direct-launch")) $("cp-direct-launch").addEventListener("click", onLaunchDirectPortal);
@@ -270,6 +271,7 @@
       });
       reloadCaptiveState();
       reloadCaptiveCreds();
+      reloadConnectedClients();
 
       const tryWireCp = () => {
         const sock = window.pipineapple && window.pipineapple.socket;
@@ -299,6 +301,7 @@
             reloadCaptiveState();
             reloadCaptiveCreds();
             reloadHandshakePicker();
+            reloadConnectedClients();
           }
         }, 5000);
       }
@@ -722,6 +725,51 @@
         <td>${escapeHtml(c.ssid || "—")}</td>
         <td><code>${escapeHtml(c.psk || "")}</code></td>
         <td>${v}</td>
+      </tr>`;
+    }).join("");
+  }
+
+  async function reloadConnectedClients() {
+    const tbody = $("cp-clients-tbody");
+    if (!tbody) return;
+    try {
+      const r = await fetch("/pineap/captive-portal/connected");
+      if (!r.ok) return;
+      const data = await r.json();
+      renderConnectedClients(data.clients || []);
+    } catch (e) {
+      console.error("[pineap] reloadConnectedClients:", e);
+    }
+  }
+
+  function osLabel(c) {
+    // Prefer the captive-probe OS family (most reliable for phones), then
+    // the DHCP fingerprint guess, then unknown.
+    const ua = c.ua_os ? String(c.ua_os) : "";
+    const dhcp = c.os_guess && c.os_guess !== "unknown" ? String(c.os_guess) : "";
+    const pretty = { apple: "Apple (iOS/macOS)", android: "Android",
+                     windows: "Windows", firefox: "Firefox/Linux" };
+    let label = ua ? (pretty[ua] || ua) : dhcp;
+    if (!label) label = "unknown";
+    return label;
+  }
+
+  function renderConnectedClients(clients) {
+    const tbody = $("cp-clients-tbody");
+    if (!tbody) return;
+    if ($("cp-clients-count")) $("cp-clients-count").textContent = String(clients.length);
+    if (!clients.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">No clients associated yet.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = clients.map((c) => {
+      const ua = c.user_agent ? `<div class="muted" style="font-size:10px;">${escapeHtml(c.user_agent.slice(0, 60))}</div>` : "";
+      return `<tr>
+        <td><code>${escapeHtml(c.mac || "?")}</code></td>
+        <td>${escapeHtml(c.ip || "—")}</td>
+        <td>${escapeHtml(osLabel(c))}${ua}</td>
+        <td>${escapeHtml(c.hostname || "—")}</td>
+        <td class="muted">${escapeHtml(fmtTs(c.last_seen))}</td>
       </tr>`;
     }).join("");
   }
