@@ -234,7 +234,7 @@
                 title="Dispatch to a remote and run hashcat"
                 ${(c.is_complete || c.has_pmkid || c.crackable) ? "" : "disabled"}>Crack</button>
         <button class="actbtn actbtn-muted hs-eye" data-id="${escapeHtml(c.id)}"
-                style="font-size:11px;" title="Show file paths on disk">👁</button>
+                style="font-size:11px;" title="Show file paths on disk"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
         <button class="actbtn actbtn-muted" data-act="del" data-id="${escapeHtml(c.id)}"
                 style="font-size:11px;" title="Delete">×</button>
       </td>

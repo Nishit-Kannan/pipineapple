@@ -323,6 +323,10 @@ class CrackService:
                 # Determine final status
                 if job.cracked_password:
                     job.status = "done"
+                elif job.last_recovered and job.last_recovered >= 1:
+                    # hashcat reported a recovery even if we couldn't parse
+                    # the password line — still a success, not a failure.
+                    job.status = "done"
                 elif job._stop_event.is_set():
                     job.status = "stopped"
                 elif jm_status and jm_status.value in ("killed",):
@@ -466,6 +470,17 @@ _ETA_RE = re.compile(
 # preserved verbatim.
 _CRACKED_LINE_RE = re.compile(r"^WPA\*[^\r\n:]+:[^\r\n]+$", re.MULTILINE)
 
+# hashcat's ACTUAL m22000 cracked line printed to stdout is the outfile
+# format, NOT the WPA* hash:
+#   <mic_or_pmkid_hex>:<ap_mac>:<sta_mac>:<essid>:<password>
+# e.g. f285...cc:aa23c627f0a0:4eddfe79522e:TL:trav3llit3
+# First three fields are hex; essid has no ':'; password is the rest
+# (and may itself contain ':').
+_CRACKED_22000_RE = re.compile(
+    r"^[0-9a-fA-F]{8,}:[0-9a-fA-F]{12}:[0-9a-fA-F]{12}:[^:\r\n]*:([^\r\n]+)$",
+    re.MULTILINE,
+)
+
 _SPEED_MULT = {
     "H/s": 1, "kH/s": 1_000, "MH/s": 1_000_000,
     "GH/s": 1_000_000_000, "TH/s": 1_000_000_000_000,
@@ -502,19 +517,28 @@ def _parse_status(text: str) -> dict[str, Any]:
 
 
 def _extract_cracked_psk(text: str) -> str | None:
-    """Find a cracked-PSK line like WPA*02*...:hunter2. None if not
-    found in this chunk. Returns just the password (everything after
-    the FIRST ':' on the line — passwords can contain ':' but 22000
-    header fields cannot)."""
+    """Pull the cracked password out of hashcat's output, handling both
+    the real m22000 outfile line (``mic:apmac:stamac:essid:password``)
+    and the older ``WPA*…:password`` shape. Returns the password, or
+    None if no cracked line is in this chunk."""
+    # hashcat's actual cracked stdout line for -m 22000.
+    m = _CRACKED_22000_RE.search(text)
+    if m:
+        psk = m.group(1).strip()
+        if "\t" in psk:
+            psk = psk.split("\t", 1)[0].strip()
+        if psk:
+            return psk
+    # Fallback: WPA*…:password (some versions / --outfile-format variants).
     m = _CRACKED_LINE_RE.search(text)
-    if not m:
-        return None
-    _, _, psk = m.group(0).partition(":")
-    psk = psk.strip()
-    # Guard: tab-separated fields hashcat sometimes appends
-    if "\t" in psk:
-        psk = psk.split("\t", 1)[0].strip()
-    return psk or None
+    if m:
+        _, _, psk = m.group(0).partition(":")
+        psk = psk.strip()
+        if "\t" in psk:
+            psk = psk.split("\t", 1)[0].strip()
+        if psk:
+            return psk
+    return None
 
 
 # ---------- Module singleton ----------
