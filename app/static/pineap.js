@@ -250,6 +250,7 @@
       if ($("cp-refresh")) $("cp-refresh").addEventListener("click", () => {
         reloadCaptiveState();
         reloadCaptiveCreds();
+        reloadHandshakePicker();
       });
       if ($("cp-creds-clear")) $("cp-creds-clear").addEventListener("click", onClearCaptiveCreds);
       if ($("cp-direct-launch")) $("cp-direct-launch").addEventListener("click", onLaunchDirectPortal);
@@ -297,6 +298,7 @@
           if (captivePanelVisible()) {
             reloadCaptiveState();
             reloadCaptiveCreds();
+            reloadHandshakePicker();
           }
         }, 5000);
       }
@@ -721,18 +723,36 @@
     reloadCaptiveState();
   }
 
+  let _pickerSig = null;
   async function reloadHandshakePicker() {
     const sel = $("cp-direct-handshake");
     if (!sel) return;
     try {
       const r = await fetch("/pineap/captive-portal/handshakes");
+      if (!r.ok) { console.warn("[pineap] picker route", r.status); return; }
       const data = await r.json();
+      const hs = data.handshakes || [];
+      // Signature guard — don't clobber the dropdown (or the user's open
+      // selection) unless the underlying set actually changed.
+      const sig = JSON.stringify(hs.map((h) => [h.id, h.crackable]));
+      if (sig === _pickerSig) return;
+      _pickerSig = sig;
       const cur = sel.value;
       const opts = ['<option value="">— none (A) / capture first (B/C) —</option>'];
-      (data.handshakes || []).filter((h) => h.crackable).forEach((h) => {
-        const label = `${h.essid || "(hidden)"} — ${(h.bssid || "").slice(0, 17)}`;
-        opts.push(`<option value="${escapeHtml(h.id)}">${escapeHtml(label)}</option>`);
+      // Show every capture. Crackable ones are selectable; the rest are
+      // listed but disabled so it's clear they exist but can't verify.
+      hs.forEach((h) => {
+        const when = h.started_at ? new Date(h.started_at * 1000).toLocaleString() : "";
+        const base = `${h.essid || "(hidden)"} — ${(h.bssid || "?").slice(0, 17)}${when ? " · " + when : ""}`;
+        if (h.crackable) {
+          opts.push(`<option value="${escapeHtml(h.id)}">${escapeHtml(base)}</option>`);
+        } else {
+          opts.push(`<option value="" disabled>${escapeHtml(base)} (no crackable material)</option>`);
+        }
       });
+      if (!hs.length) {
+        opts.push('<option value="" disabled>— no handshakes captured yet —</option>');
+      }
       sel.innerHTML = opts.join("");
       if (cur) sel.value = cur;  // preserve selection across refresh
     } catch (e) {
