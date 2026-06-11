@@ -301,7 +301,10 @@ def evil_wpa_state():
     from app.services.evil_wpa import get_service as get_evil_wpa
     stats = get_evil_wpa().get_stats()
     st = get_service().get_state()
-    if st.get("direct_deauth_running") and not stats.get("deauth_enabled"):
+    # When the direct open-portal deauth loop is running it's authoritative —
+    # override unconditionally so a stale evil_wpa deauth_enabled flag from a
+    # prior session can't suppress the live direct-portal burst count.
+    if st.get("direct_deauth_running"):
         stats["deauth_enabled"] = True
         stats["deauth_bursts"] = st.get("direct_deauth_bursts") or 0
         stats["deauth_bssid"] = st.get("direct_deauth_bssid")
