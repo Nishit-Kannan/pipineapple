@@ -23,14 +23,12 @@ def index():
     """Settings page with the Adapter Management tab active."""
     svc = get_service()
     net = get_networking()
-    from app.services.captive_portal import get_service as get_cp
     return render_template(
         "settings.html",
         adapters=svc.list_adapters(),
         roles_assigned=svc.get_roles(),
         deny_cidrs=access_control.list_cidrs(),
         networking=net.get_state(),
-        captive_portal=get_cp().get_config(),
     )
 
 

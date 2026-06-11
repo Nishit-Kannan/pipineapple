@@ -407,63 +407,6 @@
         </form>
       </section>
 
-      {# ---------- Captive-portal credential capture (S12.5) ---------- #}
-      <section class="card span-2" id="captive-portal-card">
-        <div class="card-head">
-          <h2>Captive-portal credential capture</h2>
-          <span class="badge badge-warn">offensive · S12.5</span>
-        </div>
-        <p class="muted" style="font-size:13px;">
-          After Evil WPA captures a handshake, optionally flip the rogue to
-          an Open clone and phish the Wi-Fi password via a fake "router
-          firmware update" page — verified live against the captured
-          handshake. <strong>Off by default. Only against networks you own
-          or have written authorisation to test.</strong>
-        </p>
-        <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
-          <strong style="font-size:13px;">Status:</strong>
-          <span class="badge {{ 'badge-good' if captive_portal.enabled else '' }}"
-                id="cp-set-status">{{ 'enabled' if captive_portal.enabled else 'disabled' }}</span>
-        </div>
-
-        <div id="cp-enable-row" style="margin-top:10px;"
-             {% if captive_portal.enabled %}hidden{% endif %}>
-          <label class="muted" style="font-size:13px; display:block;">
-            Type <code>phishing</code> to enable:
-          </label>
-          <div class="deny-list-row" style="gap:6px; margin-top:4px;">
-            <input type="text" id="cp-confirm-input" autocomplete="off"
-                   placeholder="phishing"
-                   style="flex:1; font-family:'SF Mono',Menlo,monospace;">
-            <button id="cp-enable-btn" class="bigbtn bigbtn-danger" disabled>
-              Enable credential capture
-            </button>
-          </div>
-        </div>
-        <div id="cp-disable-row" style="margin-top:10px;"
-             {% if not captive_portal.enabled %}hidden{% endif %}>
-          <button id="cp-disable-btn" class="bigbtn actbtn-muted">
-            Disable credential capture
-          </button>
-        </div>
-
-        <div style="margin-top:14px;">
-          <label class="auth-label" for="cp-verify-select">Verify behaviour</label>
-          <select id="cp-verify-select" style="padding:6px; width:100%; max-width:480px;">
-            <option value="A" {% if captive_portal.verify_mode=='A' %}selected{% endif %}>A — single attempt, always show "success" (default)</option>
-            <option value="B" {% if captive_portal.verify_mode=='B' %}selected{% endif %}>B — multi-try, honest (wrong → retry, correct → success)</option>
-            <option value="C" {% if captive_portal.verify_mode=='C' %}selected{% endif %}>C — multi-try, deceptive (always "retry", never reveal success)</option>
-          </select>
-        </div>
-        <p class="muted" id="cp-set-msg" style="font-size:12px; margin-top:8px;"></p>
-        <p class="muted" style="font-size:11px; margin-top:6px;">
-          Custom landing page: drop HTML at <code>$DATA_DIR/captive_template.html</code>
-          (placeholders <code>{ssid}</code> + <code>{msg}</code>; include a form
-          POSTing <code>psk</code> to <code>/portal/submit</code>). Otherwise a
-          built-in firmware-update page is served.
-        </p>
-      </section>
-
       <section class="card span-2">
         <div class="card-head">
           <h2>Management access deny-list</h2>
