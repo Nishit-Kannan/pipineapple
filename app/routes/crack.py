@@ -126,6 +126,24 @@ def stop_crack(job_id: str):
     return jsonify({"ok": ok, "msg": msg})
 
 
+@bp.route("/jobs/clear", methods=["POST"])
+def clear_jobs():
+    """Delete all finished crack jobs from the history (running jobs kept)."""
+    ok, msg, removed = get_crack_service().clear_finished()
+    notif = notifications.success if ok else notifications.warning
+    notif(f"crack jobs clear: {msg}", source="crack")
+    return jsonify({"ok": ok, "msg": msg, "removed": removed})
+
+
+@bp.route("/<job_id>/delete", methods=["POST"])
+def delete_crack(job_id: str):
+    """Delete one finished crack job. Refuses a running job."""
+    ok, msg = get_crack_service().delete_job(job_id)
+    notif = notifications.success if ok else notifications.warning
+    notif(f"crack delete {job_id[:8]}: {msg}", source="crack")
+    return jsonify({"ok": ok, "msg": msg}), (200 if ok else 400)
+
+
 @bp.route("/jobs", methods=["GET"])
 def list_jobs():
     """All crack jobs (active + history), newest first. Optional

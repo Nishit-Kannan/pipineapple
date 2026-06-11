@@ -242,6 +242,49 @@ class CrackService:
                 return j
         return None
 
+    def delete_job(self, job_id: str) -> tuple[bool, str]:
+        """Remove a finished crack job from the persisted history. Refuses
+        a job that's still running (stop it first)."""
+        with self._lock:
+            if job_id in self._active:
+                return False, "job is still running — stop it first"
+        if not self._jobs_path.is_file():
+            return False, "no crack-job history"
+        try:
+            data = json.loads(self._jobs_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            return False, f"crack_jobs.json read failed: {e}"
+        jobs = data.get("jobs") or []
+        new = [j for j in jobs if j.get("id") != job_id]
+        if len(new) == len(jobs):
+            return False, f"no job {job_id}"
+        data["jobs"] = new
+        tmp = self._jobs_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(self._jobs_path)
+        return True, f"deleted job {job_id[:8]}…"
+
+    def clear_finished(self) -> tuple[bool, str, int]:
+        """Drop all non-running jobs from the history. Running jobs (the
+        active overlay) are untouched."""
+        with self._lock:
+            active_ids = set(self._active.keys())
+        if not self._jobs_path.is_file():
+            return True, "no crack-job history", 0
+        try:
+            data = json.loads(self._jobs_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            return False, f"crack_jobs.json read failed: {e}", 0
+        jobs = data.get("jobs") or []
+        kept = [j for j in jobs
+                if j.get("status") == "running" or j.get("id") in active_ids]
+        removed = len(jobs) - len(kept)
+        data["jobs"] = kept
+        tmp = self._jobs_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(self._jobs_path)
+        return True, f"cleared {removed} finished job(s)", removed
+
     # ---------- Internals ----------
     def _parser_loop(self, job: _CrackJob) -> None:
         """Tail the per-job log file, parse hashcat status blocks,

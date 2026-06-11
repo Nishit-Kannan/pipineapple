@@ -59,6 +59,11 @@
     // Crack panel buttons (only if those elements exist — they do once
     // we've added the new card to the template)
     if ($("crack-refresh")) $("crack-refresh").addEventListener("click", reloadCracks);
+    if ($("crack-clear")) $("crack-clear").addEventListener("click", async () => {
+      if (!confirm("Delete all finished crack jobs?")) return;
+      await fetch("/crack/jobs/clear", { method: "POST" });
+      reloadCracks();
+    });
     if ($("crack-modal-cancel")) $("crack-modal-cancel").addEventListener("click", closeCrackModal);
     if ($("crack-modal-backdrop")) $("crack-modal-backdrop").addEventListener("click", closeCrackModal);
     if ($("crack-modal-target")) $("crack-modal-target").addEventListener("change", () => {
@@ -385,7 +390,7 @@
         : (j.status === "exhausted" ? `<span class="muted">wordlist exhausted</span>` : `<span class="muted">—</span>`);
       const stopBtn = j.status === "running"
         ? `<button class="actbtn actbtn-muted crack-stop" data-id="${escapeHtml(j.id)}" style="font-size:11px;">Stop</button>`
-        : "";
+        : `<button class="actbtn actbtn-muted crack-del" data-id="${escapeHtml(j.id)}" style="font-size:11px;">Delete</button>`;
       return `<tr data-id="${escapeHtml(j.id)}">
         <td class="muted" style="font-size:11px;">${escapeHtml(fmtTs(j.started_at))}</td>
         <td><strong>${escapeHtml(j.capture_essid || "<unknown>")}</strong>
@@ -406,6 +411,14 @@
         if (!confirm("Stop this crack job?")) return;
         b.disabled = true;
         await fetch(`/crack/${encodeURIComponent(b.dataset.id)}/stop`, { method: "POST" });
+        reloadCracks();
+      });
+    });
+    tbody.querySelectorAll(".crack-del").forEach(b => {
+      b.addEventListener("click", async () => {
+        if (!confirm("Delete this crack job from the history?")) return;
+        b.disabled = true;
+        await fetch(`/crack/${encodeURIComponent(b.dataset.id)}/delete`, { method: "POST" });
         reloadCracks();
       });
     });
