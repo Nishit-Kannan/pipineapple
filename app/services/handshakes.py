@@ -440,6 +440,7 @@ class HandshakesService:
         # Enrich with on-disk size so the UI can show pcap size + flag
         # empties. Missing file → size None (the pcap was deleted but
         # the index entry survived).
+        import os
         for c in captures:
             rel = c.get("pcap_relative_path")
             if rel:
@@ -448,6 +449,17 @@ class HandshakesService:
                     c["pcap_size_bytes"] = p.stat().st_size
                 except OSError:
                     c["pcap_size_bytes"] = None
+                # Absolute on-disk paths for the UI "show paths" (eye)
+                # affordance. normpath collapses the ../ in external
+                # (Evil WPA) relative paths to a clean absolute path.
+                c["pcap_abs_path"] = os.path.normpath(str(p))
+                rel22 = c.get("hash_22000_relative_path")
+                if rel22:
+                    c["hash_22000_abs_path"] = os.path.normpath(str(self._dir / rel22))
+                else:
+                    # where resolve_or_build_22000 caches it on demand
+                    c["hash_22000_abs_path"] = os.path.normpath(
+                        str(p.with_suffix(".22000")))
         captures.sort(key=lambda d: d.get("started_at") or 0, reverse=True)
         return captures
 

@@ -174,6 +174,15 @@
       });
     });
 
+    // Eye toggle — reveal/hide the on-disk paths row for this capture
+    tbody.querySelectorAll(".hs-eye").forEach((b) => {
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const row = tbody.querySelector(`.hs-paths[data-for="${CSS.escape(b.dataset.id)}"]`);
+        if (row) row.hidden = !row.hidden;
+      });
+    });
+
     // Per-row checkboxes
     tbody.querySelectorAll("input[type=checkbox][data-cid]").forEach((cb) => {
       cb.addEventListener("change", () => {
@@ -224,8 +233,17 @@
                 style="font-size:11px;"
                 title="Dispatch to a remote and run hashcat"
                 ${(c.is_complete || c.has_pmkid || c.crackable) ? "" : "disabled"}>Crack</button>
+        <button class="actbtn actbtn-muted hs-eye" data-id="${escapeHtml(c.id)}"
+                style="font-size:11px;" title="Show file paths on disk">👁</button>
         <button class="actbtn actbtn-muted" data-act="del" data-id="${escapeHtml(c.id)}"
                 style="font-size:11px;" title="Delete">×</button>
+      </td>
+    </tr>
+    <tr class="hs-paths" data-for="${escapeHtml(c.id)}" hidden>
+      <td colspan="11" style="background:rgba(0,0,0,0.12); padding:8px 12px; font-size:11px;">
+        <div>pcap: <code>${escapeHtml(c.pcap_abs_path || "—")}</code></div>
+        <div>.22000: <code>${escapeHtml(c.hash_22000_abs_path || "(built on demand)")}</code>
+          ${c.hash_22000_relative_path ? "" : '<span class="muted"> — created when you crack/download</span>'}</div>
       </td>
     </tr>`;
   }
