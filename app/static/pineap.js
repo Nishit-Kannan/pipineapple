@@ -665,6 +665,11 @@
     if ($("cp-custom-template")) $("cp-custom-template").textContent = s.has_custom_template ? "yes" : "built-in";
     if ($("cp-attempts"))    $("cp-attempts").textContent    = s.attempts || 0;
     if ($("cp-verified"))    $("cp-verified").textContent    = s.verified_count || 0;
+    // Launch button reflects the action's state (consistent with Start/Stop):
+    //   portal live  → red ("its action is in effect")
+    //   portal idle  → blue ("can be pressed")
+    const launchBtn = $("cp-direct-launch");
+    if (launchBtn) setBtn(launchBtn, (live || s.pineap_portal_active) ? "busy" : "ready");
   }
 
   async function onCaptiveEnable(enabled) {
@@ -781,7 +786,10 @@
     const res = await postJSON("/pineap/captive-portal/launch-direct", body);
     const summary = (res.messages || []).join("; ") || (res.ok ? "portal up" : "failed");
     showStatus(summary, res.ok ? "ok" : "fail");
-    setBtn(btn, "ready");
+    // Don't force the button back to blue here — renderCaptiveState owns its
+    // colour now (red while the portal is live, blue once torn down). On a
+    // failed launch, reset it so it isn't stuck red.
+    if (!res.ok) setBtn(btn, "ready");
     reloadCaptiveState();
     if (res.state) renderState(res.state);
   }
