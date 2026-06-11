@@ -626,6 +626,24 @@ class HandshakesService:
             return None, essid, f"read .22000 failed: {e}"
         return None, essid, "no usable hash line in .22000"
 
+    def get_capture_target(self, capture_id: str
+                           ) -> tuple[str | None, int | None]:
+        """The real AP's (bssid, channel) for a captured handshake — used to
+        aim the direct-portal deauth loop when the operator picks a handshake
+        (the capture already pins the target AP). Channel may be None for
+        external (Evil WPA) partials that didn't record one."""
+        cap = next((c for c in self.list_captures()
+                    if c.get("id") == capture_id), None)
+        if cap is None:
+            return None, None
+        bssid = cap.get("bssid")
+        ch = cap.get("channel_at_capture") or cap.get("channel")
+        try:
+            ch = int(ch) if ch else None
+        except (TypeError, ValueError):
+            ch = None
+        return bssid, ch
+
     def list_for_picker(self) -> list[dict[str, Any]]:
         """Compact capture list for the direct-portal handshake picker:
         id, essid, bssid, when, and whether it has crackable material

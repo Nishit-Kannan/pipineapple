@@ -1511,7 +1511,21 @@ class PineAPService:
         # lose the BSSID/channel we need to deauth.
         d_bssid = d_channel = d_src = None
         if deauth:
-            d_bssid, d_channel, d_src = self._resolve_deauth_target(target_ssid)
+            # A picked handshake already pins the real AP — use its BSSID
+            # (and channel, falling back to the configured one) as the deauth
+            # target. Otherwise fall back to Recon / cloned-target lookup.
+            if handshake_id:
+                try:
+                    from app.services.handshakes import get_service as get_hs
+                    hb, hc = get_hs().get_capture_target(handshake_id)
+                except Exception:
+                    hb = hc = None
+                if hb:
+                    with self._lock:
+                        d_channel = hc or int(self._state.get("channel") or 6)
+                    d_bssid, d_src = hb, "chosen handshake"
+            if not d_bssid:
+                d_bssid, d_channel, d_src = self._resolve_deauth_target(target_ssid)
         with self._lock:
             running = self._state.get("running")
 
