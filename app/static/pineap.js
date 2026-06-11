@@ -253,6 +253,7 @@
       });
       if ($("cp-creds-clear")) $("cp-creds-clear").addEventListener("click", onClearCaptiveCreds);
       if ($("cp-direct-launch")) $("cp-direct-launch").addEventListener("click", onLaunchDirectPortal);
+      reloadHandshakePicker();
       // Enable / verify-mode (moved here from Settings → Security)
       if ($("cp-enable-input")) $("cp-enable-input").addEventListener("input", (e) => {
         if ($("cp-enable-btn")) $("cp-enable-btn").disabled =
@@ -282,6 +283,11 @@
               + (p && p.ssid ? ` (${p.ssid})` : ""),
             p && p.ok ? "ok" : "fail");
           reloadCaptiveState();
+        });
+        sock.on("captive:captured", (p) => {
+          showStatus("password captured ✓ — tearing down evil twin", "ok");
+          showTeardownProgress(p && p.teardown_secs, p && p.ssid);
+          reloadCaptiveCreds();
         });
       };
       tryWireCp();
@@ -715,18 +721,77 @@
     reloadCaptiveState();
   }
 
+  async function reloadHandshakePicker() {
+    const sel = $("cp-direct-handshake");
+    if (!sel) return;
+    try {
+      const r = await fetch("/pineap/captive-portal/handshakes");
+      const data = await r.json();
+      const cur = sel.value;
+      const opts = ['<option value="">— none (A) / capture first (B/C) —</option>'];
+      (data.handshakes || []).filter((h) => h.crackable).forEach((h) => {
+        const label = `${h.essid || "(hidden)"} — ${(h.bssid || "").slice(0, 17)}`;
+        opts.push(`<option value="${escapeHtml(h.id)}">${escapeHtml(label)}</option>`);
+      });
+      sel.innerHTML = opts.join("");
+      if (cur) sel.value = cur;  // preserve selection across refresh
+    } catch (e) {
+      console.error("[pineap] reloadHandshakePicker:", e);
+    }
+  }
+
   async function onLaunchDirectPortal() {
     const ssid = ($("cp-direct-ssid")?.value || "").trim();
-    if (!confirm("Stand up an OPEN evil-twin + captive portal now? "
-        + "(Lab use only — submitted passwords won't be verified without a handshake.)")) return;
+    const deauth = !!$("cp-direct-deauth")?.checked;
+    const handshakeId = ($("cp-direct-handshake")?.value || "").trim();
+    const verifyMode = ($("cp-verify-select")?.value || "A");
+    let note = "Stand up an OPEN evil-twin + captive portal now? (Lab use only.)";
+    if (verifyMode !== "A" && !handshakeId) {
+      note = "Verify mode " + verifyMode + " needs a handshake. No handshake "
+        + "picked — the WPA2 twin will capture one first, then flip to the "
+        + "open portal automatically. Continue? (Needs the SSID visible in Recon.)";
+    }
+    if (deauth) note += "\n\nBroadcast deauth at the real AP will be fired to pull clients over.";
+    if (!confirm(note)) return;
     const btn = $("cp-direct-launch");
     setBtn(btn, "busy");
-    const res = await postJSON("/pineap/captive-portal/launch-direct", ssid ? { ssid } : {});
+    const body = { deauth };
+    if (ssid) body.ssid = ssid;
+    if (handshakeId) body.handshake_id = handshakeId;
+    const res = await postJSON("/pineap/captive-portal/launch-direct", body);
     const summary = (res.messages || []).join("; ") || (res.ok ? "portal up" : "failed");
     showStatus(summary, res.ok ? "ok" : "fail");
     setBtn(btn, "ready");
     reloadCaptiveState();
     if (res.state) renderState(res.state);
+  }
+
+  // Post-capture teardown progress bar (item 4). Runs an ~N-second
+  // progress animation while the backend tears the evil twin down.
+  let _teardownTimer = null;
+  function showTeardownProgress(secs, ssid) {
+    const box = $("cp-teardown"), bar = $("cp-teardown-bar"), msg = $("cp-teardown-msg");
+    if (!box || !bar) return;
+    const total = (secs && secs > 0 ? secs : 8) * 1000;
+    box.hidden = false;
+    if (msg) msg.textContent = `Captured PSK for ${ssid || "the network"} — `
+      + `tearing down the evil twin so the device returns to its real AP…`;
+    const t0 = Date.now();
+    if (_teardownTimer) clearInterval(_teardownTimer);
+    _teardownTimer = setInterval(() => {
+      const pct = Math.min(100, ((Date.now() - t0) / total) * 100);
+      bar.style.width = pct.toFixed(0) + "%";
+      if (pct >= 100) {
+        clearInterval(_teardownTimer);
+        _teardownTimer = null;
+        if (msg) msg.textContent = "Evil twin torn down. The victim's device "
+          + "should now reconnect to its real AP.";
+        reloadCaptiveState();
+        reloadCaptiveCreds();
+        fetch("/pineap/state").then((r) => r.json()).then((s) => renderState(s)).catch(() => {});
+        setTimeout(() => { if (box) box.hidden = true; }, 6000);
+      }
+    }, 200);
   }
 
   // ---------- Impersonation tab (S13) ----------

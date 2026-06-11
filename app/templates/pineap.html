@@ -527,15 +527,39 @@
 
         <div style="margin-top:14px; border-top:1px solid var(--border); padding-top:10px;">
           <p class="muted" style="font-size:12px;">
-            <strong>Direct mode</strong> — open evil-twin + portal now, no
-            handshake (passwords recorded, not verified).
+            <strong>Direct mode</strong> — open evil-twin + portal now.
+            Verification needs a handshake: in <strong>mode A</strong> none is
+            needed; in <strong>B/C</strong>, pick a captured handshake below —
+            or leave it blank and the twin will capture one first (WPA2), then
+            flip to the open portal automatically.
           </p>
           <div class="form-row" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
-            <label style="flex:1; min-width:160px;">
+            <label style="flex:1; min-width:140px;">
               <span class="auth-label">SSID (blank = configured primary)</span>
               <input id="cp-direct-ssid" type="text" placeholder="e.g. TL">
             </label>
+            <label style="flex:1; min-width:160px;">
+              <span class="auth-label">Verify against handshake (B/C)</span>
+              <select id="cp-direct-handshake" style="padding:5px; width:100%;">
+                <option value="">— none (A) / capture first (B/C) —</option>
+              </select>
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+              <input type="checkbox" id="cp-direct-deauth" checked>
+              <span>Deauth real AP</span>
+            </label>
             <button id="cp-direct-launch" class="bigbtn bigbtn-danger" data-stateful="1">Launch open portal</button>
+          </div>
+        </div>
+
+        {# Post-capture teardown progress (shown on a verified hit) #}
+        <div id="cp-teardown" hidden style="margin-top:14px; border-top:1px solid var(--border); padding-top:12px;">
+          <p style="font-size:13px; margin:0 0 8px;">
+            <span class="badge badge-ok">password captured ✓</span>
+            <span id="cp-teardown-msg" style="margin-left:8px;">Tearing down the evil twin so the device returns to its real AP…</span>
+          </p>
+          <div style="height:10px; background:var(--btn-disabled-bg,#232c39); border-radius:6px; overflow:hidden;">
+            <div id="cp-teardown-bar" style="height:100%; width:0%; background:var(--btn-ready,#2f6fed); transition:width .2s linear;"></div>
           </div>
         </div>
       </section>

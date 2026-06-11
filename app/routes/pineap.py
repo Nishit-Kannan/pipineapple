@@ -334,14 +334,32 @@ def captive_portal_credentials():
     return jsonify({"credentials": get_cp().list_credentials(limit=limit)})
 
 
+@bp.route("/captive-portal/handshakes", methods=["GET"])
+def captive_portal_handshakes():
+    """Captured handshakes for the direct-launch picker (B/C verify).
+    Each entry: id, essid, bssid, started_at, crackable."""
+    from app.services.handshakes import get_service as get_hs
+    return jsonify({"handshakes": get_hs().list_for_picker()})
+
+
 @bp.route("/captive-portal/launch-direct", methods=["POST"])
 def captive_portal_launch_direct():
-    """Stand up an OPEN evil-twin + captive portal directly (no WPA
-    handshake needed). Body: ``{"ssid": "..."}`` (optional — defaults to
-    the configured primary SSID)."""
+    """Stand up an OPEN evil-twin + captive portal directly.
+
+    Body (all optional)::
+
+        {"ssid": "...",          # defaults to configured primary
+         "deauth": true,          # broadcast deauth at the real AP
+         "handshake_id": "..."}   # arm verification against this capture
+
+    For verify mode B/C with no ``handshake_id``, the launch falls back to
+    the WPA2 capture-first flow (needs the SSID visible in Recon)."""
     data = request.get_json(silent=True) or {}
     ok, messages = get_service().launch_captive_portal_direct(
-        ssid=(data.get("ssid") or "").strip() or None)
+        ssid=(data.get("ssid") or "").strip() or None,
+        deauth=bool(data.get("deauth", True)),
+        handshake_id=(data.get("handshake_id") or "").strip() or None,
+    )
     summary = "; ".join(messages)
     notif = notifications.success if ok else notifications.warning
     notif(f"captive portal (direct): {summary}", source="pineap")

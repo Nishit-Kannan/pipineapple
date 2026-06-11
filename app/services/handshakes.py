@@ -598,6 +598,53 @@ class HandshakesService:
             return None, msg
         return out_path, msg
 
+    def get_hash_line(self, capture_id: str
+                      ) -> tuple[str | None, str | None, str]:
+        """Resolve a capture (by id) to its single ``.22000`` hash line +
+        ESSID, building the file on demand. Returns ``(line, essid, msg)``.
+        ``line`` is None on failure (no such capture / no crackable
+        material). Used by the direct captive-portal launch to arm
+        verification against a previously captured handshake."""
+        cap = next((c for c in self.list_captures()
+                    if c.get("id") == capture_id), None)
+        if cap is None:
+            return None, None, f"no capture with id {capture_id}"
+        essid = cap.get("essid_at_capture") or cap.get("essid")
+        # Prefer a registered single-line .22000 (Evil WPA partials).
+        line = (cap.get("hash_line") or "").strip()
+        if line:
+            return line, essid, "using registered hash line"
+        path, msg = self.resolve_or_build_22000(cap)
+        if path is None:
+            return None, essid, msg
+        try:
+            for raw in path.read_text().splitlines():
+                raw = raw.strip()
+                if raw:
+                    return raw, essid, f"read first line of {path.name}"
+        except OSError as e:
+            return None, essid, f"read .22000 failed: {e}"
+        return None, essid, "no usable hash line in .22000"
+
+    def list_for_picker(self) -> list[dict[str, Any]]:
+        """Compact capture list for the direct-portal handshake picker:
+        id, essid, bssid, when, and whether it has crackable material
+        (a complete/partial pair or a registered hash line)."""
+        out: list[dict[str, Any]] = []
+        for c in self.list_captures():
+            crackable = bool(
+                c.get("hash_line") or c.get("is_complete")
+                or c.get("is_partial") or c.get("complete_pairs")
+                or c.get("partial_pairs"))
+            out.append({
+                "id":        c.get("id"),
+                "essid":     c.get("essid_at_capture") or c.get("essid") or "",
+                "bssid":     c.get("bssid"),
+                "started_at": c.get("started_at"),
+                "crackable": crackable,
+            })
+        return out
+
     # ---------- Internals ----------
     def _resolve_inject_iface(self) -> str | None:
         """Same role/name lookup recon uses."""
