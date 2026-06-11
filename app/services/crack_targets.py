@@ -237,6 +237,15 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9._\-]{1,253}$")
 _USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]{0,31}$")
 _PATH_RE = re.compile(r"^[A-Za-z0-9_\-/.~]{1,512}$")
 
+# Non-login SSH shells get a bare PATH that excludes Homebrew (macOS
+# installs hashcat to /opt/homebrew/bin on Apple Silicon or /usr/local/bin
+# on Intel) and the sbin dirs. Prepend the usual locations so `hashcat`
+# resolves on both the test check and the real crack dispatch.
+REMOTE_PATH_LINE = (
+    "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/local/sbin:"
+    "/usr/sbin:/sbin:$PATH; "
+)
+
 
 class CrackTargetsService:
     """Manage the persisted list of SSH crack targets + the platform's
@@ -350,6 +359,7 @@ class CrackTargetsService:
         # but our _PATH_RE already rejects those characters.
         remote_cmd = (
             "set -e; "
+            + REMOTE_PATH_LINE +
             "command -v hashcat >/dev/null || { echo 'hashcat-not-installed'; exit 11; }; "
             f"[ -r '{wordlist}' ] || {{ echo 'wordlist-not-readable'; exit 12; }}; "
             "hashcat --version | head -1; "

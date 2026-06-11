@@ -146,7 +146,9 @@ class CrackService:
         #    --status with --status-timer emits the periodic blocks
         #    our parser reads. We chain `rm -f` to clean up the temp
         #    .22000 on the remote regardless of hashcat's exit status.
+        from app.services.crack_targets import REMOTE_PATH_LINE
         remote_cmd = (
+            REMOTE_PATH_LINE +
             f"hashcat -m 22000 --quiet --status --status-timer={HASHCAT_STATUS_TIMER} "
             f"--potfile-disable {job.hash_path_remote} {target['wordlist_path']}; "
             f"_rc=$?; rm -f {job.hash_path_remote}; exit $_rc"
