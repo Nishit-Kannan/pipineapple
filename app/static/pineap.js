@@ -543,8 +543,9 @@
       $("ew-deauth-bursts").textContent = s.deauth_enabled ? String(s.deauth_bursts || 0) : "—";
     }
     if ($("ew-deauth-target")) {
+      const src = s.deauth_source ? ` (${s.deauth_source})` : "";
       $("ew-deauth-target").textContent = (s.deauth_enabled && s.deauth_bssid)
-        ? `→ ${s.deauth_bssid}` : (s.deauth_enabled ? "" : "(off)");
+        ? `→ ${s.deauth_bssid}${src}` : (s.deauth_enabled ? "" : "(off)");
     }
   }
 

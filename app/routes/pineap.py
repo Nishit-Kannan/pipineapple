@@ -292,9 +292,21 @@ def clone_evil_wpa():
 def evil_wpa_state():
     """Live Evil WPA sniffer state + stats (frames seen, EAPOL seen,
     partials extracted, current session id). Empty fields when not
-    running."""
+    running.
+
+    When the *direct* open-portal path is running its standalone
+    broadcast-deauth loop (no EAPOL sniffer), its burst count + target are
+    merged in here so the EAPOL Sniffer section's deauth readout reflects
+    it — the sniffer's own deauth counters stay zero on that path."""
     from app.services.evil_wpa import get_service as get_evil_wpa
-    return jsonify(get_evil_wpa().get_stats())
+    stats = get_evil_wpa().get_stats()
+    st = get_service().get_state()
+    if st.get("direct_deauth_running") and not stats.get("deauth_enabled"):
+        stats["deauth_enabled"] = True
+        stats["deauth_bursts"] = st.get("direct_deauth_bursts") or 0
+        stats["deauth_bssid"] = st.get("direct_deauth_bssid")
+        stats["deauth_source"] = "direct portal"
+    return jsonify(stats)
 
 
 @bp.route("/evil-wpa/partials", methods=["GET"])
