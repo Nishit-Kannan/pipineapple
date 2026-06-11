@@ -101,13 +101,67 @@ _BUILTIN_TEMPLATE = """<!DOCTYPE html>
 _SUCCESS_PAGE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Update complete</title>
-<style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f2f4f7;
-  color:#1a1a1a;text-align:center;padding-top:14vh}
-  .ok{font-size:46px}h1{font-size:20px}p{color:#444;font-size:14px}</style>
-</head><body><div class="ok">✓</div>
-<h1>Update successful!</h1>
-<p>Your router firmware is up to date. You can close this page.</p>
+<title>Applying update</title>
+<style>
+  body { font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:#f2f4f7;
+         color:#1a1a1a; margin:0; }
+  .card { max-width:380px; margin:10vh auto; background:#fff; border-radius:10px;
+          box-shadow:0 2px 14px rgba(0,0,0,.1); padding:28px 26px; text-align:center; }
+  h1 { font-size:19px; margin:6px 0 4px; }
+  p { font-size:14px; color:#444; line-height:1.5; }
+  .bar { height:10px; background:#e6e9ef; border-radius:6px; overflow:hidden; margin:18px 0 8px; }
+  .fill { height:100%; width:0%; background:#2563eb; border-radius:6px; transition:width .3s ease; }
+  .pct { font-size:12px; color:#8a8f98; }
+  .ok { font-size:46px; color:#16a34a; }
+  .foot { font-size:11px; color:#8a8f98; margin-top:16px; }
+  #done { display:none; }
+</style></head>
+<body>
+  <div class="card">
+    <div id="progress">
+      <div class="spin" style="font-size:30px">⟳</div>
+      <h1>Applying firmware update…</h1>
+      <p id="step">Verifying credentials…</p>
+      <div class="bar"><div class="fill" id="fill"></div></div>
+      <div class="pct" id="pct">0%</div>
+      <div class="foot">Do not turn off your router or disconnect from Wi-Fi
+        during the update.</div>
+    </div>
+    <div id="done">
+      <div class="ok">✓</div>
+      <h1>Update successful!</h1>
+      <p>Your router firmware is up to date. You can close this page.</p>
+    </div>
+  </div>
+  <script>
+    (function() {
+      var steps = [
+        [12, "Verifying credentials…"],
+        [34, "Downloading update package…"],
+        [62, "Installing firmware…"],
+        [85, "Re-establishing secure connection…"],
+        [100, "Finalizing…"]
+      ];
+      var fill = document.getElementById("fill"),
+          pct = document.getElementById("pct"),
+          step = document.getElementById("step");
+      var i = 0;
+      function tick() {
+        if (i >= steps.length) {
+          document.getElementById("progress").style.display = "none";
+          document.getElementById("done").style.display = "block";
+          document.title = "Update complete";
+          return;
+        }
+        var s = steps[i++];
+        fill.style.width = s[0] + "%";
+        pct.textContent = s[0] + "%";
+        step.textContent = s[1];
+        setTimeout(tick, 1300 + Math.random() * 400);
+      }
+      setTimeout(tick, 400);
+    })();
+  </script>
 </body></html>"""
 
 
