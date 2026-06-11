@@ -252,6 +252,7 @@
         reloadCaptiveCreds();
       });
       if ($("cp-creds-clear")) $("cp-creds-clear").addEventListener("click", onClearCaptiveCreds);
+      if ($("cp-direct-launch")) $("cp-direct-launch").addEventListener("click", onLaunchDirectPortal);
       reloadCaptiveState();
       reloadCaptiveCreds();
 
@@ -681,6 +682,20 @@
     showStatus(res.msg || "cleared", res.ok ? "ok" : "fail");
     reloadCaptiveCreds();
     reloadCaptiveState();
+  }
+
+  async function onLaunchDirectPortal() {
+    const ssid = ($("cp-direct-ssid")?.value || "").trim();
+    if (!confirm("Stand up an OPEN evil-twin + captive portal now? "
+        + "(Lab use only — submitted passwords won't be verified without a handshake.)")) return;
+    const btn = $("cp-direct-launch");
+    setBtn(btn, "busy");
+    const res = await postJSON("/pineap/captive-portal/launch-direct", ssid ? { ssid } : {});
+    const summary = (res.messages || []).join("; ") || (res.ok ? "portal up" : "failed");
+    showStatus(summary, res.ok ? "ok" : "fail");
+    setBtn(btn, "ready");
+    reloadCaptiveState();
+    if (res.state) renderState(res.state);
   }
 
   // ---------- Impersonation tab (S13) ----------

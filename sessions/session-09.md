@@ -86,6 +86,47 @@ Real Pi-side smoke test (scp + remote hashcat against rockyou with a known weak 
 
 ---
 
+## Addendum — hardware-verified 2026-06-11 (three real bugs + two UX adds)
+
+Cracked a real Evil WPA partial end-to-end on hardware: clone TL → capture
+M1+M2 (laptop victim) → Crack dispatch → Mac → `hashcat -m 22000` → recovered
+`trav3llit3`. This also closes the S12 crack-to-known-PSK confirmation. Three
+bugs surfaced only on the real remote, all fixed:
+
+1. **Mac-over-SSH PATH.** The Test check (and the crack command) ran bare
+   `hashcat` over a non-login SSH shell, whose PATH excludes Homebrew
+   (`/opt/homebrew/bin` on Apple Silicon, `/usr/local/bin` on Intel) — so a
+   hashcat that's installed reports "not installed". Fixed with a shared
+   `REMOTE_PATH_LINE` (`crack_targets.py`) prepended to both the test and the
+   dispatch command. Applies to Linux/Jetson targets too (covers
+   `/usr/local/bin` + sbin).
+
+2. **Cracked-line parser missed hashcat's real m22000 format.** The job ran,
+   hashcat cracked it (`Status: Cracked`, `Recovered: 1/1`), the per-job log
+   (`/tmp/pipineapple-crack-<id>.log`) showed the password — but the UI marked
+   it **failed at 100%**. Cause: `_extract_cracked_psk` only matched a
+   `WPA*…:password` line, while hashcat actually prints the outfile shape
+   `<mic>:<ap_mac>:<sta_mac>:<essid>:<password>` (e.g.
+   `f285…:aa23c627f0a0:4eddfe79522e:TL:trav3llit3`). Added `_CRACKED_22000_RE`
+   for that format (passwords-with-colons safe), kept the `WPA*` shape as a
+   fallback, and added a finalize safety net: a confirmed `Recovered ≥ 1` is
+   marked **done**, never "failed". This was a pure reporting bug — the crack
+   itself always worked.
+
+3. (operational, not a bug) **macOS GPU over SSH** turned out fine here —
+   Metal was reachable and cracked at ~1.4 kH/s; if a headless Mac ever can't
+   get a device, force CPU with `-D 1` or use a Linux/Jetson target. Recorded
+   in [[HARDWARE-TEST-CHECKLIST]].
+
+Two UX adds while debugging: crack-job **Delete** (per row) + **Clear
+finished** (`crack.py` `delete_job`/`clear_finished` + routes), and an **eye
+icon** on each Handshakes row that reveals the on-disk pcap + `.22000`
+absolute paths (handy with multiple captures). Diagnostic of record: the
+per-job log at `/tmp/pipineapple-crack-<id>.log` holds the verbatim remote
+hashcat output — read it first when a crack "fails".
+
+**Status: crack dispatch + targets — DONE on hardware.**
+
 ## What's next
 
 Phase D — PineAP / rogue AP territory. SSID spoofing (S10), Karma-style probe-responses (S11), the full Evil WPA flow (S12), Evil Enterprise (S13). All offensive surfaces gated behind the ethics-confirm modal pattern from S06.

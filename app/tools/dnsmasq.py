@@ -31,6 +31,7 @@ def render_config(
     forward_dns: bool = False,
     upstream_dns: tuple[str, ...] = ("1.1.1.1", "8.8.8.8"),
     coexist_with_other_dnsmasq: bool = False,
+    dns_hijack_ip: str | None = None,
 ) -> str:
     """Render a minimal dnsmasq.conf bound to one interface.
 
@@ -72,7 +73,17 @@ def render_config(
         # Disable reading /etc/hosts so it doesn't conflict
         "no-hosts",
     ]
-    if forward_dns:
+    if dns_hijack_ip:
+        # Captive-portal mode: resolve EVERY name to the gateway so the
+        # client's OS connectivity probe (captive.apple.com,
+        # connectivitycheck.gstatic.com, …) lands on our sentinel instead
+        # of escaping to the real internet — which is what forces the OS
+        # to pop its captive browser. Catch-all overrides any forwarding.
+        lines += [
+            "no-resolv",
+            f"address=/#/{dns_hijack_ip}",
+        ]
+    elif forward_dns:
         for dns in upstream_dns:
             lines.append(f"server={dns}")
     else:

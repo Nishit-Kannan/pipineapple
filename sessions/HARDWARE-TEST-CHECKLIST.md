@@ -156,10 +156,16 @@ grey/Stop red while stopping) → back to idle.
 
 | Area | Built | Stub-verified | Hardware |
 |------|-------|---------------|----------|
-| S09 crack targets + dispatch | ✓ | ✓ | ☐ (needs remote + hashcat) |
-| S12 Evil WPA capture | ✓ | ✓ | ✓ (laptop) — crack-confirm ☐ |
+| S09 crack targets + dispatch | ✓ | ✓ | ✅ DONE (cracked real PSK 2026-06-11) |
+| S12 Evil WPA capture | ✓ | ✓ | ✅ DONE (laptop) |
+| S12 crack-to-known-PSK confirm | ✓ | ✓ | ✅ DONE (trav3llit3 recovered) |
 | S12 evil-twin deauth | ✓ | ✓ | ✓ (worked in testing) |
-| S12.5 captive portal | ✓ | ✓ | ☐ |
+| **S12.5 captive portal** | ✓ | ✓ | ☐ **← next** |
 | S13 impersonation/filter/clients | ✓ | ✓ | ☐ |
 | S14 campaigns | ✓ | ✓ | ☐ |
 | UI button pass | ✓ | n/a | ☐ (eyeball) |
+
+**Crack-path fixes (2026-06-11, see session-09 addendum):** Mac-over-SSH PATH,
+hashcat m22000 cracked-line parser, per-job log at
+`/tmp/pipineapple-crack-<id>.log` is the go-to diagnostic. Crack-job
+Delete/Clear + the per-row eye icon (shows on-disk paths) are in.

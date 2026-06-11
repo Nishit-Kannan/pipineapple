@@ -334,6 +334,22 @@ def captive_portal_credentials():
     return jsonify({"credentials": get_cp().list_credentials(limit=limit)})
 
 
+@bp.route("/captive-portal/launch-direct", methods=["POST"])
+def captive_portal_launch_direct():
+    """Stand up an OPEN evil-twin + captive portal directly (no WPA
+    handshake needed). Body: ``{"ssid": "..."}`` (optional — defaults to
+    the configured primary SSID)."""
+    data = request.get_json(silent=True) or {}
+    ok, messages = get_service().launch_captive_portal_direct(
+        ssid=(data.get("ssid") or "").strip() or None)
+    summary = "; ".join(messages)
+    notif = notifications.success if ok else notifications.warning
+    notif(f"captive portal (direct): {summary}", source="pineap")
+    return jsonify({
+        "ok": ok, "messages": messages, "state": get_service().get_state(),
+    }), (200 if ok else 400)
+
+
 @bp.route("/captive-portal/clear", methods=["POST"])
 def captive_portal_clear():
     from app.services.captive_portal import get_service as get_cp

