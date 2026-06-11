@@ -1506,6 +1506,12 @@ class PineAPService:
 
         # ---- Open-twin path (mode A, or B/C with a chosen handshake) ----
         msgs: list[str] = []
+        # Resolve the deauth target BEFORE reconfiguring — switching the AP to
+        # "open" wipes the cloned evil_wpa_target metadata, so we'd otherwise
+        # lose the BSSID/channel we need to deauth.
+        d_bssid = d_channel = d_src = None
+        if deauth:
+            d_bssid, d_channel, d_src = self._resolve_deauth_target(target_ssid)
         with self._lock:
             running = self._state.get("running")
 
@@ -1556,7 +1562,8 @@ class PineAPService:
 
         # Optional broadcast deauth at the real AP to pull clients over.
         if deauth:
-            msgs.extend(self._start_direct_deauth(target_ssid))
+            msgs.extend(self._start_direct_deauth(
+                target_ssid, bssid=d_bssid, channel=d_channel, src=d_src))
 
         with self._lock:
             self._state["captive_portal_active"] = True
@@ -1630,17 +1637,44 @@ class PineAPService:
             return None, None, f"resolve failed: {e}"
 
     # ---------- Standalone broadcast deauth (direct open-portal path) ----------
-    def _start_direct_deauth(self, ssid: str | None) -> list[str]:
-        """Spawn a broadcast-deauth loop at the real AP matching ``ssid``
-        (found in Recon) on the spare radio, to push its clients onto our
-        open clone. No-op (warned) on MFP-required targets or when the AP
-        isn't in Recon."""
+    def _resolve_deauth_target(self, ssid: str | None
+                               ) -> tuple[str | None, int | None, str]:
+        """Find a (bssid, channel) to deauth for the direct path. Tries
+        Recon-by-SSID first, then falls back to a cloned Evil WPA target
+        (whose source BSSID/channel are stored in state) if it matches the
+        SSID or no Recon hit was found. Returns ``(bssid, channel, src)``."""
         ap = self._find_recon_ap(ssid)
-        if not ap:
-            return [f"deauth requested but no Recon AP matches {ssid!r} — "
-                    "skipping deauth (run Recon to enable it)"]
-        bssid = ap["bssid"]
-        channel = int(ap["channel"])
+        if ap:
+            return ap["bssid"], int(ap["channel"]), "recon"
+        with self._lock:
+            tgt = (self._state or {}).get("evil_wpa_target") or {}
+            cur_ssid = (self._state or {}).get("primary_ssid")
+        b = tgt.get("source_bssid")
+        ch = tgt.get("source_channel")
+        # Use the cloned target if it matches the requested SSID (or the
+        # current primary, which the open twin clones), and has a channel.
+        if b and ch and (not ssid or tgt.get("source_essid") == ssid
+                         or cur_ssid == tgt.get("source_essid")):
+            return b, int(ch), "cloned target"
+        return None, None, "none"
+
+    def _start_direct_deauth(self, ssid: str | None, *,
+                             bssid: str | None = None,
+                             channel: int | None = None,
+                             src: str | None = None) -> list[str]:
+        """Spawn a broadcast-deauth loop at the real AP matching ``ssid``
+        (from Recon, or a cloned Evil WPA target) on the spare radio, to
+        push its clients onto our open clone. The target may be pre-resolved
+        by the caller (before an "open" flip wipes the cloned target);
+        otherwise it's resolved here. No-op (warned) on MFP-required targets
+        or when no target can be resolved."""
+        if not (bssid and channel):
+            bssid, channel, src = self._resolve_deauth_target(ssid)
+        if not bssid or not channel:
+            return [f"deauth requested but no target AP found for {ssid!r} — "
+                    "skipping deauth. Run a Recon scan that sees this SSID, "
+                    "or clone the target on the Evil WPA tab first."]
+        channel = int(channel)
         with self._lock:
             iface = self._state.get("deauth_iface", DEFAULT_DEAUTH_IFACE)
         self._stop_direct_deauth()
@@ -1673,10 +1707,9 @@ class PineAPService:
             self._state["direct_deauth_bursts"] = 0
             self._state["direct_deauth_bssid"] = bssid
             self._save_state()
-        mfp = " (target advertises MFP-required — frames will be rejected)" \
-            if ap.get("mfp_required") else ""
+        src_note = f" (from {src})" if src and src != "none" else ""
         return [f"broadcast deauth armed at {bssid} (ch{channel}) on "
-                f"{iface}{mfp}"]
+                f"{iface}{src_note}"]
 
     def _direct_deauth_loop(self, iface: str, bssid: str, channel: int) -> None:
         """Prep the spare radio once (monitor + channel) then fire
