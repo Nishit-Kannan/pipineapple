@@ -253,6 +253,19 @@
       });
       if ($("cp-creds-clear")) $("cp-creds-clear").addEventListener("click", onClearCaptiveCreds);
       if ($("cp-direct-launch")) $("cp-direct-launch").addEventListener("click", onLaunchDirectPortal);
+      // Enable / verify-mode (moved here from Settings → Security)
+      if ($("cp-enable-input")) $("cp-enable-input").addEventListener("input", (e) => {
+        if ($("cp-enable-btn")) $("cp-enable-btn").disabled =
+          e.target.value.trim().toLowerCase() !== "phishing";
+      });
+      if ($("cp-enable-btn")) $("cp-enable-btn").addEventListener("click", () => onCaptiveEnable(true));
+      if ($("cp-disable-btn")) $("cp-disable-btn").addEventListener("click", () => {
+        if (confirm("Disable captive-portal credential capture?")) onCaptiveEnable(false);
+      });
+      if ($("cp-verify-select")) $("cp-verify-select").addEventListener("change", async (e) => {
+        const res = await postJSON("/settings/captive-portal/verify-mode", { mode: e.target.value });
+        showStatus(res.msg || "verify mode set", res.ok ? "ok" : "fail");
+      });
       reloadCaptiveState();
       reloadCaptiveCreds();
 
@@ -606,7 +619,8 @@
   let _cpPollTimer = null;
 
   function captivePanelVisible() {
-    const p = $("tab-captive");
+    // Captive portal is now part of the Evil WPA panel.
+    const p = $("tab-evil-wpa");
     return !!(p && !p.hidden);
   }
 
@@ -628,14 +642,31 @@
       pill.textContent = !s.enabled ? "disabled" : (live ? "portal live" : "armed/idle");
       pill.className = "badge " + (live ? "badge-good" : (s.enabled ? "" : "badge-warn"));
     }
-    if ($("cp-enabled"))     $("cp-enabled").textContent     = s.enabled ? "on" : "off (Settings → Security)";
-    if ($("cp-verify-mode")) $("cp-verify-mode").textContent = s.verify_mode || "—";
+    // Enable controls
+    const badge = $("cp-enabled-badge");
+    if (badge) {
+      badge.textContent = s.enabled ? "enabled" : "disabled";
+      badge.className = "badge " + (s.enabled ? "badge-good" : "badge-warn");
+    }
+    if ($("cp-enable-row"))  $("cp-enable-row").hidden  = !!s.enabled;
+    if ($("cp-disable-btn")) $("cp-disable-btn").hidden = !s.enabled;
+    if (s.verify_mode && $("cp-verify-select")) $("cp-verify-select").value = s.verify_mode;
+    // Status
     if ($("cp-active"))      $("cp-active").textContent      = live ? "yes" : "no";
     if ($("cp-armed-ssid"))  $("cp-armed-ssid").textContent  = s.armed_ssid || "—";
     if ($("cp-custom-template")) $("cp-custom-template").textContent = s.has_custom_template ? "yes" : "built-in";
     if ($("cp-attempts"))    $("cp-attempts").textContent    = s.attempts || 0;
     if ($("cp-verified"))    $("cp-verified").textContent    = s.verified_count || 0;
-    if ($("cp-disabled-note")) $("cp-disabled-note").hidden  = !!s.enabled;
+  }
+
+  async function onCaptiveEnable(enabled) {
+    const body = { enabled: enabled };
+    if (enabled) body.confirm = ($("cp-enable-input")?.value || "").trim();
+    const res = await postJSON("/settings/captive-portal/enable", body);
+    showStatus(res.msg || (res.ok ? "updated" : "failed"), res.ok ? "ok" : "fail");
+    if ($("cp-enable-input")) $("cp-enable-input").value = "";
+    if ($("cp-enable-btn")) $("cp-enable-btn").disabled = true;
+    reloadCaptiveState();
   }
 
   async function reloadCaptiveCreds() {

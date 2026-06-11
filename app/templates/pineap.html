@@ -17,7 +17,6 @@
     <button class="tab active" data-tab="settings">Settings</button>
     <button class="tab" data-tab="open">Open SSID</button>
     <button class="tab" data-tab="evil-wpa">Evil WPA</button>
-    <button class="tab" data-tab="captive">Captive Portal</button>
     <button class="tab" data-tab="impersonation">Impersonation</button>
     <button class="tab" data-tab="filtering">Filtering</button>
     <button class="tab" data-tab="clients">Clients</button>
@@ -479,61 +478,64 @@
         </table>
       </section>
 
-    </div>
-  </section>
-
-  {# ---------- Captive Portal tab (S12.5) ---------- #}
-  <section id="tab-captive" class="tab-panel" hidden>
-    <div class="dash-grid">
-
-      {# Status #}
-      <section class="card">
+      {# ---------- Captive portal (merged into the Evil WPA flow) ---------- #}
+      <section class="card span-2">
         <div class="card-head">
-          <h2>Captive portal</h2>
+          <h2>Captive-portal phishing</h2>
           <span class="badge" id="cp-status-pill">—</span>
-          <span style="margin-left:auto;">
-            <button id="cp-refresh" class="bigbtn actbtn-muted"
-                    style="font-size:11px;">Refresh</button>
+          <span style="margin-left:auto; display:flex; gap:8px;">
+            <button id="cp-refresh" class="bigbtn actbtn-muted" style="font-size:11px;">Refresh</button>
           </span>
         </div>
         <p class="muted" style="font-size:12px;">
-          The bait-switch: after Evil WPA captures M1+M2, the AP flips to
-          an Open clone of the same SSID, the sentinel forces the OS
-          captive browser, and a fake "router firmware update" page
-          collects the Wi-Fi password — <strong>verified instantly
-          against the captured handshake</strong> (no cracking).
+          Two ways to run it. <strong>Bait-switch</strong>: tick "launch
+          captive-portal phishing" above before Start — on the first captured
+          handshake the AP flips to an Open clone and serves a fake firmware
+          page, with submitted passwords <strong>verified against the
+          handshake</strong>. <strong>Direct</strong> (below): stand up an open
+          portal now with no handshake (passwords recorded, not verified).
+          Off by default — enable credential capture first.
         </p>
-        <dl style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:0; font-size:13px;">
-          <dt class="muted">Global opt-in</dt><dd id="cp-enabled">—</dd>
-          <dt class="muted">Verify mode</dt><dd id="cp-verify-mode">—</dd>
+
+        {# Enable / verify-mode (moved here from Settings → Security) #}
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:6px;">
+          <strong style="font-size:13px;">Credential capture:</strong>
+          <span class="badge" id="cp-enabled-badge">—</span>
+          <span id="cp-enable-row" style="display:flex; gap:6px; align-items:center;" hidden>
+            <input id="cp-enable-input" type="text" placeholder="type 'phishing'" autocomplete="off"
+                   style="font-family:'SF Mono',Menlo,monospace; width:150px;">
+            <button id="cp-enable-btn" class="bigbtn bigbtn-danger" style="margin-top:0;" disabled>Enable</button>
+          </span>
+          <button id="cp-disable-btn" class="bigbtn actbtn-muted" style="margin-top:0;" hidden>Disable</button>
+          <label style="display:flex; align-items:center; gap:6px; margin-left:auto;">
+            <span class="auth-label" style="margin:0;">Verify</span>
+            <select id="cp-verify-select" style="padding:4px;">
+              <option value="A">A — single, always "success"</option>
+              <option value="B">B — multi-try, honest</option>
+              <option value="C">C — multi-try, deceptive</option>
+            </select>
+          </label>
+        </div>
+
+        <dl style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:12px 0 0; font-size:13px;">
           <dt class="muted">Portal live</dt><dd id="cp-active">—</dd>
           <dt class="muted">Armed SSID</dt><dd><code id="cp-armed-ssid">—</code></dd>
           <dt class="muted">Custom template</dt><dd id="cp-custom-template">—</dd>
           <dt class="muted">Attempts</dt><dd id="cp-attempts">0</dd>
           <dt class="muted">Verified hits</dt><dd id="cp-verified">0</dd>
         </dl>
-        <p class="muted" id="cp-disabled-note" style="font-size:11px; margin-top:10px;" hidden>
-          Credential capture is <strong>off</strong>. Enable it in
-          <a href="/settings#security">Settings → Security</a> (you'll be
-          asked to type <code>phishing</code> to confirm), then arm it via
-          the "launch captive-portal phishing" option on the Evil WPA tab.
-        </p>
 
         <div style="margin-top:14px; border-top:1px solid var(--border); padding-top:10px;">
           <p class="muted" style="font-size:12px;">
-            <strong>Direct mode</strong> — stand up an Open evil-twin +
-            portal right now, no handshake needed (for clients that won't
-            hand one over). Submitted passwords are recorded but
-            <em>not verified</em> (no captured handshake to check against).
+            <strong>Direct mode</strong> — open evil-twin + portal now, no
+            handshake (passwords recorded, not verified).
           </p>
           <div class="form-row" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
             <label style="flex:1; min-width:160px;">
               <span class="auth-label">SSID (blank = configured primary)</span>
               <input id="cp-direct-ssid" type="text" placeholder="e.g. TL">
             </label>
-            <button id="cp-direct-launch" class="bigbtn bigbtn-danger" data-stateful="1">
-              Launch open portal
-            </button>
+            <button id="cp-direct-launch" class="bigbtn bigbtn-danger" data-stateful="1">Launch open portal</button>
           </div>
         </div>
       </section>
@@ -544,15 +546,14 @@
           <h2>Harvested credentials</h2>
           <span class="muted" id="cp-creds-count">0</span>
           <span style="margin-left:auto;">
-            <button id="cp-creds-clear" class="bigbtn actbtn-muted"
-                    style="font-size:11px;">Clear</button>
+            <button id="cp-creds-clear" class="bigbtn actbtn-muted" style="font-size:11px;">Clear</button>
           </span>
         </div>
         <p class="muted" style="font-size:12px;">
           Every password the victim submitted, checked against the captured
-          handshake. <span class="badge badge-ok">verified</span> means it's
-          the real PSK; <span class="badge badge-warn">wrong</span> means it
-          isn't (or no handshake was armed).
+          handshake. <span class="badge badge-ok">verified</span> = the real
+          PSK; <span class="badge badge-warn">wrong</span> = not (or no
+          handshake was armed, e.g. direct mode).
         </p>
         <table class="data" id="cp-creds-table" style="font-size:11px;">
           <thead>

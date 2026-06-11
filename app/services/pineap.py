@@ -133,6 +133,11 @@ class PineAPService:
         # to any public method triggers _load().
         self._state: dict[str, Any] | None = None
         self._pool:  list[dict[str, Any]] | None = None
+        # When True, _start_broadcast renders the rogue dnsmasq with the
+        # captive-portal DNS hijack from the start (avoids a fragile
+        # mid-flight restart that breaks DHCP). Set by the direct-portal
+        # launch around start().
+        self._pending_dns_hijack = False
         # Impersonation SSID-rotation thread (S13)
         self._impersonation_thread: threading.Thread | None = None
         self._impersonation_stop = threading.Event()
@@ -242,6 +247,10 @@ class PineAPService:
             "auto_captive_portal": False,
             # Runtime flag — True while the portal is live post-flip.
             "captive_portal_active": False,
+            # Whether the rogue dnsmasq is currently in DNS-hijack mode
+            # (captive portal). Tracked so the bait-switch knows it doesn't
+            # need a mid-flight dnsmasq restart.
+            "dnsmasq_hijacked": False,
             # Optional "evil-twin" deauth coupling (S12): when True AND a
             # real target BSSID is known (i.e. cloned from Recon), Start
             # also fires broadcast deauth at the real AP on the spare
@@ -741,6 +750,7 @@ class PineAPService:
             self._state["evil_wpa_running"]   = False
             self._state["sentinel_running"]   = False
             self._state["captive_portal_active"] = False
+            self._state["dnsmasq_hijacked"]      = False
             self._state["impersonate_running"]   = False
             self._state["impersonate_current_ssid"] = None
             self._state["last_changed"]       = time.time()
@@ -810,10 +820,25 @@ class PineAPService:
             return False, msgs
 
         # ---- 2. dnsmasq config + launch ----
-        # Forwarding DNS at first start (clients get real internet). The
-        # captive-portal bait-switch later re-renders this with a DNS
-        # hijack via _restart_dnsmasq(hijack=True).
-        dnsmasq_body = self._render_dnsmasq_body(snap, hijack=False)
+        # Hijack DNS from the start when this run is captive-portal-bound
+        # (direct launch, or Evil WPA with auto-captive-portal armed) —
+        # during WPA capture clients never complete association so DNS is
+        # unused anyway, and starting hijacked avoids a mid-flight dnsmasq
+        # restart that breaks DHCP. Otherwise forward (clients get real
+        # internet).
+        want_hijack = self._pending_dns_hijack
+        if not want_hijack and snap.get("auto_captive_portal"):
+            try:
+                from app.services.captive_portal import get_service as get_cp
+                want_hijack = get_cp().is_enabled()
+            except Exception:
+                pass
+        dnsmasq_body = self._render_dnsmasq_body(snap, hijack=want_hijack)
+        if want_hijack:
+            msgs.append("dnsmasq: DNS-hijack on (captive-portal mode)")
+        with self._lock:
+            self._state["dnsmasq_hijacked"] = want_hijack
+            self._save_state()
         dnsmasq_tool.write_config(DNSMASQ_CONFIG_PATH, dnsmasq_body)
         # Remove any stale log file from a previous run. We used to
         # truncate via Python's write_text(""), but that leaves the
@@ -1259,11 +1284,15 @@ class PineAPService:
             cp.disarm()
             return False, msgs
 
-        # 2b. DNS-hijack the rogue dnsmasq so the victim's OS captive
-        #     probe lands on our sentinel instead of escaping upstream
-        #     (without this the portal never pops).
-        ok_d, msg_d = self._restart_dnsmasq(snap, hijack=True)
-        msgs.append(f"dns-hijack: {msg_d}")
+        # 2b. DNS hijack: dnsmasq is normally already hijacked because
+        #     auto_captive_portal armed this run (see _start_broadcast), so
+        #     no fragile mid-flight restart is needed. Only restart if it
+        #     somehow isn't (e.g. the opt-in was toggled on after start).
+        if not snap.get("dnsmasq_hijacked"):
+            ok_d, dmsgs = self._restart_dnsmasq(snap, hijack=True)
+            msgs.extend(dmsgs)
+        else:
+            msgs.append("dns-hijack: already active (started hijacked)")
 
         # 3. Put the captive sentinel into portal/lie mode, handing it the
         #    portal service instance (the handler runs without app context).
@@ -1382,6 +1411,7 @@ class PineAPService:
             job = job_manager.start_job(cmd, name="pineap-dnsmasq", tags=["pineap"])
             with self._lock:
                 self._state["dnsmasq_job_id"] = job.id
+                self._state["dnsmasq_hijacked"] = hijack
                 self._save_state()
             return True, [f"dnsmasq re-rendered (hijack={hijack}, job {job.id})"]
         except Exception as e:
@@ -1415,30 +1445,37 @@ class PineAPService:
                                        security_mode="open")
             msgs.append(f"ap-config: {m}")
             self.set_mode("active")
-            ok, sub = self.start()
+            # Start dnsmasq already hijacked — no fragile restart, DHCP
+            # stays intact (the bug that left clients on 169.254.x.x).
+            self._pending_dns_hijack = True
+            try:
+                ok, sub = self.start()
+            finally:
+                self._pending_dns_hijack = False
             msgs.extend(sub)
             if not ok:
                 return False, msgs
         else:
-            # Running already — make sure it's an open AP.
+            # Running already — make it an open AP + hijack dnsmasq (the
+            # one case that still needs a restart; dnsmasq was forwarding).
             with self._lock:
                 snap = dict(self._state)
             ok, sub = self._rerender_hostapd_open(snap)
             msgs.extend(sub)
             if not ok:
                 return False, msgs
+            ok_d, dmsgs = self._restart_dnsmasq(snap, hijack=True)
+            msgs.extend(dmsgs)
 
         with self._lock:
             self._load()
             snap = dict(self._state)
 
-        # Arm the portal with no handshake (verification unavailable),
-        # hijack DNS, and flip the sentinel to portal mode.
+        # Arm the portal with no handshake (verification unavailable) and
+        # flip the sentinel to portal mode. dnsmasq is already hijacked.
         cp.arm(None, target_ssid)
         msgs.append(f"portal armed for {target_ssid!r} (no handshake — "
                     "submitted creds recorded, not verified)")
-        ok_d, dmsgs = self._restart_dnsmasq(snap, hijack=True)
-        msgs.extend(dmsgs)
         try:
             from app.services.captive_sentinel import get_service as get_sentinel
             get_sentinel().set_portal_mode(True, portal=cp)
