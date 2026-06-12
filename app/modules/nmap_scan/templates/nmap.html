@@ -36,6 +36,7 @@
         <span class="auth-label">Target</span>
         <select id="nm-source" style="padding:5px; width:100%;">
           <option value="subnet">Lab subnet ({{ lab_cidr }})</option>
+          <option value="uplink">Uplink network{% if uplink_cidr %} ({{ uplink_cidr }}){% endif %}</option>
           <option value="clients">PineAP clients (current leases)</option>
           <option value="custom">Custom (IP / CIDR)</option>
         </select>

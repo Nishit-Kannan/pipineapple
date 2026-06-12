@@ -58,9 +58,14 @@ class NmapService:
     def resolve_target(self, source: str, custom: str | None,
                        lab_cidr: str) -> tuple[str | None, str]:
         """Map a target source to an nmap target string.
-        ``source`` ∈ {clients, subnet, custom}. Returns (target, message)."""
+        ``source`` ∈ {clients, subnet, uplink, custom}. Returns (target, msg)."""
         if source == "subnet":
             return lab_cidr, f"lab subnet {lab_cidr}"
+        if source == "uplink":
+            cidr = self.uplink_cidr()
+            if not cidr:
+                return None, "couldn't determine the uplink subnet"
+            return cidr, f"uplink network {cidr}"
         if source == "clients":
             ips = self._pineap_client_ips()
             if not ips:
@@ -72,6 +77,42 @@ class NmapService:
                 return None, "custom target is empty"
             return t, f"custom target {t}"
         return None, f"unknown target source {source!r}"
+
+    def uplink_cidr(self) -> str | None:
+        """The /N network of the Pi's *primary* uplink — the interface
+        holding the lowest-metric default route (your wired travel-router
+        link, not the home wifi or the rogue AP). Returns a CIDR string or
+        None. Stub mode returns a sample so the Mac can exercise it."""
+        from app.tools._common import run, stub_mode
+        from app.tools import iproute
+        if stub_mode():
+            return "192.168.8.0/24"
+        # 1. Find the default-route interface with the smallest metric.
+        dev = None
+        try:
+            import json as _json
+            res = run(["ip", "-j", "route"], timeout=3.0, source="nmap")
+            routes = _json.loads(res.stdout or "[]")
+            defaults = [r for r in routes if r.get("dst") == "default" and r.get("dev")]
+            defaults.sort(key=lambda r: r.get("metric") or 0)
+            if defaults:
+                dev = defaults[0]["dev"]
+        except Exception:
+            log.exception("nmap: uplink route lookup failed")
+        # 2. Map that interface to its private IPv4 network.
+        for iface in iproute.list_interfaces():
+            if dev and iface.get("name") != dev:
+                continue
+            for cidr in iface.get("addresses", []):
+                try:
+                    net = ipaddress.ip_network(cidr, strict=False)
+                except ValueError:
+                    continue
+                if net.version == 4 and net.is_private and not net.is_loopback:
+                    return str(net)
+            if dev:  # matched the default dev but no private v4 → stop
+                break
+        return None
 
     def _pineap_client_ips(self) -> list[str]:
         try:

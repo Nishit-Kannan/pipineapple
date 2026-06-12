@@ -38,6 +38,7 @@ def index():
         "nmap.html",
         profiles=[{"id": k, "label": v["label"]} for k, v in tools.PROFILES.items()],
         lab_cidr=_lab_cidr(),
+        uplink_cidr=get_service().uplink_cidr(),
         nmap_ok=avail_ok,
         nmap_detail=avail_detail,
     )
