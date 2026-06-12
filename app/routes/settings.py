@@ -217,6 +217,23 @@ def captive_portal_verify_mode():
         (200 if ok else 400)
 
 
+# ---------- System tab: power control ----------
+@bp.route("/system/reboot", methods=["POST"])
+def system_reboot():
+    from app.tools import power
+    ok, msg = power.reboot()
+    notifications.warning(f"system: {msg}", source="system")
+    return jsonify({"ok": ok, "msg": msg})
+
+
+@bp.route("/system/shutdown", methods=["POST"])
+def system_shutdown():
+    from app.tools import power
+    ok, msg = power.shutdown()
+    notifications.warning(f"system: {msg}", source="system")
+    return jsonify({"ok": ok, "msg": msg})
+
+
 # ---------- JSON API used by the page's JS ----------
 @bp.route("/adapters")
 def adapters_json():

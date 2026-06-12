@@ -429,6 +429,52 @@
       toggleDrawer(false);
     });
 
+    // ---------- Power menu (reboot / shutdown) ----------
+    const powerBtn = $("#power-btn");
+    const powerMenu = $("#power-menu");
+    function togglePower(show) {
+      if (!powerMenu) return;
+      const open = show === undefined ? powerMenu.hidden : show;
+      powerMenu.hidden = !open;
+      if (powerBtn) powerBtn.setAttribute("aria-expanded", String(open));
+    }
+    if (powerBtn) powerBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePower(); });
+    document.addEventListener("click", (e) => {
+      if (!powerMenu || powerMenu.hidden) return;
+      if (powerMenu.contains(e.target) || (powerBtn && powerBtn.contains(e.target))) return;
+      togglePower(false);
+    });
+
+    // Delegate power actions — works for the title-bar menu AND the
+    // Settings → System card (both use [data-power-action]).
+    async function doPower(action) {
+      const isShutdown = action === "shutdown";
+      const word = isShutdown ? "shut down" : "reboot";
+      let msg = `Are you sure you want to ${word} the Pi?`;
+      if (isShutdown) {
+        msg += "\n\nIt will power off completely and need a physical power "
+             + "cycle to come back. You'll lose this connection.";
+      } else {
+        msg += "\n\nYou'll lose this connection until it's back up (~30–60s).";
+      }
+      if (!window.confirm(msg)) return;
+      try {
+        const r = await fetch(`/settings/system/${action}`, { method: "POST" });
+        const data = await r.json().catch(() => ({}));
+        alert(data.msg || (isShutdown ? "Shutting down…" : "Rebooting…"));
+      } catch (_) {
+        // The box is going down — a dropped connection here is expected.
+        alert(isShutdown ? "Shutting down…" : "Rebooting…");
+      }
+    }
+    document.addEventListener("click", (e) => {
+      const el = e.target.closest && e.target.closest("[data-power-action]");
+      if (!el) return;
+      e.preventDefault();
+      togglePower(false);
+      doPower(el.dataset.powerAction);
+    });
+
     // Connect SocketIO if the library is loaded
     if (typeof io === "undefined") {
       console.warn("socket.io client not loaded; live updates disabled");

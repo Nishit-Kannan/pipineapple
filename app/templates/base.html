@@ -56,14 +56,20 @@
           <line x1="12" y1="19" x2="20" y2="19"/>
         </svg>
       </button>
-      <button class="iconbtn" title="More" aria-label="More">
-        {# vertical dots #}
-        <svg viewBox="0 0 24 24" fill="currentColor" class="iconbtn-svg">
-          <circle cx="12" cy="5" r="1.6"/>
-          <circle cx="12" cy="12" r="1.6"/>
-          <circle cx="12" cy="19" r="1.6"/>
-        </svg>
-      </button>
+      <div class="power-wrap">
+        <button id="power-btn" class="iconbtn" title="Power" aria-label="Power" aria-haspopup="true" aria-expanded="false">
+          {# power #}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" class="iconbtn-svg">
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+            <line x1="12" y1="2" x2="12" y2="12"/>
+          </svg>
+        </button>
+        <div id="power-menu" class="power-menu" hidden role="menu">
+          <button class="power-item" data-power-action="reboot" role="menuitem">Reboot</button>
+          <button class="power-item power-item-danger" data-power-action="shutdown" role="menuitem">Shut down</button>
+        </div>
+      </div>
       <a href="{{ url_for('auth.logout') }}" class="iconbtn signout-btn" title="Sign out" aria-label="Sign out">
         {# exit / log-out #}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"

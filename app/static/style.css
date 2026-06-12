@@ -179,6 +179,36 @@ h2 {
 
 .iconbtn:hover { background: var(--bg-elev-2); }
 .iconbtn .icon { font-size: 14px; line-height: 1; }
+
+/* Title-bar power menu */
+.power-wrap { position: relative; display: inline-flex; }
+.power-menu {
+  position: absolute;
+  top: 42px;
+  right: 0;
+  min-width: 150px;
+  background: var(--bg-elev-2, #1c2533);
+  border: 1px solid var(--border, #2a3444);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
+  padding: 4px;
+  z-index: 60;
+}
+.power-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  padding: 8px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.power-item:hover { background: var(--bg-elev-1, #232c39); }
+.power-item-danger { color: #d9534f; }
+.power-item-danger:hover { background: rgba(217, 83, 79, .15); }
 .iconbtn .badge-dot {
   position: absolute;
   top: 8px;

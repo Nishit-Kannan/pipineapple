@@ -17,6 +17,7 @@
     <button class="tab" data-tab="networking">Networking</button>
     <button class="tab" data-tab="security">Security</button>
     <button class="tab" data-tab="crack">Crack Targets</button>
+    <button class="tab" data-tab="system">System</button>
     <button class="tab disabled" disabled title="Session 18">Advanced</button>
     <button class="tab disabled" disabled title="Session 18">Help</button>
   </div>
@@ -501,6 +502,27 @@ loading…</pre>
             <tr class="deny-empty"><td colspan="7" class="muted">loading…</td></tr>
           </tbody>
         </table>
+      </section>
+    </div>
+  </section>
+
+  {# ---------- System tab ---------- #}
+  <section id="tab-system" class="tab-panel" hidden>
+    <div class="dash-grid">
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Power</h2>
+        </div>
+        <p class="muted" style="font-size:13px;">
+          Reboot or shut the Pi down. <strong>Shutdown</strong> powers the
+          device off completely — it will need a physical power cycle to come
+          back, and you'll lose the management connection until then. Both
+          ask for confirmation first.
+        </p>
+        <div class="form-row" style="display:flex; gap:10px; margin-top:8px;">
+          <button class="bigbtn" data-power-action="reboot" style="max-width:200px;">Reboot</button>
+          <button class="bigbtn bigbtn-danger" data-power-action="shutdown" style="max-width:200px;">Shut down</button>
+        </div>
       </section>
     </div>
   </section>
