@@ -3454,6 +3454,76 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
             },
         ],
     },
+    # ------------------------------------------------------------------
+    # Session 16 — Nmap module (post-association recon)
+    # ------------------------------------------------------------------
+    {
+        "id": "nmap-recon",
+        "title": "Nmap (post-association recon)",
+        "added_in_session": 16,
+        "intro": (
+            "Once a client is on your Open AP, or you've cracked a PSK and "
+            "joined the real subnet, nmap maps what's actually on the wire — "
+            "live hosts, open ports, service versions. The module wraps nmap "
+            "with XML output and parses it into sortable tables, fenced to "
+            "private/RFC1918 ranges so it can't be aimed at the public net. "
+            "It's the first real consumer of the Phase F module loader and the "
+            "natural lead-in to host exploitation (the candidate Metasploit "
+            "phase)."
+        ),
+        "ui_reference": "Modules → Nmap (install it first, then restart)",
+        "wrapper_modules": ["app/modules/nmap_scan/tools/nmap.py",
+                            "app/modules/nmap_scan/service.py"],
+        "commands": [
+            {
+                "command": "nmap -sn 10.0.0.0/24",
+                "description": (
+                    "Host discovery only ('ping sweep') — ARP on-link, no port "
+                    "scan. Fastest way to enumerate who's alive on the rogue "
+                    "subnet. The 'discovery' profile."
+                ),
+                "example_output": "Nmap scan report for 10.0.0.50\nHost is up (0.0021s latency).",
+            },
+            {
+                "command": "nmap -F -T4 10.0.0.50",
+                "description": (
+                    "Fast scan — top 100 TCP ports at the -T4 timing template. "
+                    "The 'quick' profile; a good first look at a single host."
+                ),
+            },
+            {
+                "command": "nmap -sV -T4 --host-timeout 120s -oX - 10.0.0.0/24",
+                "description": (
+                    "Service/version detection on the top 1000 ports, emitting "
+                    "XML to stdout. We always use -oX - and parse the XML with "
+                    "xml.etree (stable, structured) rather than scraping the "
+                    "human output. --host-timeout stops one dead host stalling "
+                    "the whole run. The 'services' profile."
+                ),
+                "notes": (
+                    "-sV doesn't need root; -sS (SYN) would. The service runs "
+                    "nmap in a background thread and polls status, since an -sV "
+                    "sweep of a /24 can take minutes."
+                ),
+            },
+            {
+                "command": "nmap -sC -sV -T4 10.0.0.51",
+                "description": (
+                    "-sC runs nmap's default NSE script category (safe, "
+                    "informational scripts) alongside version detection — "
+                    "banners, SMB/HTTP info, etc. The 'scripts' profile. Other "
+                    "categories (vuln, auth, brute) exist but aren't bundled "
+                    "here by default."
+                ),
+                "notes": (
+                    "Scanning *from* the Pi gateway IP (10.0.0.1) sees clients "
+                    "directly on-link; scanning the real subnet after a PSK "
+                    "crack puts you one hop away. The module fences targets to "
+                    "RFC1918 — public IPs are refused."
+                ),
+            },
+        ],
+    },
 ]
 
 

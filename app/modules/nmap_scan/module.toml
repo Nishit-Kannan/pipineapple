@@ -1,0 +1,9 @@
+# Nmap module — post-association recon (Session 16).
+[module]
+name        = "nmap_scan"
+label       = "Nmap"
+version     = "0.1.0"
+description = "Scan PineAP clients or the lab subnet for live hosts, open ports, and service versions. Fenced to private/RFC1918 ranges."
+blueprint   = "routes:bp"
+url_prefix  = "/modules/nmap"
+icon        = "radar"

@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Nmap — PiPineapple{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Nmap</h1>
+    <p class="muted">
+      Post-association recon. Scan the clients on your Open AP / PineAP, or
+      the lab subnet after a PSK crack, for live hosts, open ports, and
+      service versions. Fenced to <strong>private (RFC1918) ranges</strong> —
+      it will refuse public targets.
+    </p>
+  </div>
+
+  <div id="nm-status-msg" class="settings-status" hidden></div>
+
+  <section class="card span-2">
+    <div class="card-head"><h2>Scan</h2><span class="badge" id="nm-pill">idle</span></div>
+    <div class="form-row" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+      <label style="min-width:200px;">
+        <span class="auth-label">Profile</span>
+        <select id="nm-profile" style="padding:5px; width:100%;">
+          {% for p in profiles %}<option value="{{ p.id }}">{{ p.label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label style="min-width:200px;">
+        <span class="auth-label">Target</span>
+        <select id="nm-source" style="padding:5px; width:100%;">
+          <option value="subnet">Lab subnet ({{ lab_cidr }})</option>
+          <option value="clients">PineAP clients (current leases)</option>
+          <option value="custom">Custom (IP / CIDR)</option>
+        </select>
+      </label>
+      <label id="nm-custom-wrap" style="min-width:200px; display:none;">
+        <span class="auth-label">Custom target (private only)</span>
+        <input id="nm-custom" type="text" placeholder="10.0.0.0/24 or 10.0.0.50">
+      </label>
+      <button id="nm-run" class="bigbtn" data-stateful="1" style="margin-top:0;">Run scan</button>
+    </div>
+    <dl style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:12px 0 0; font-size:13px;">
+      <dt class="muted">State</dt><dd id="nm-state">—</dd>
+      <dt class="muted">Target</dt><dd><code id="nm-target">—</code></dd>
+      <dt class="muted">Result</dt><dd id="nm-result">—</dd>
+    </dl>
+  </section>
+
+  <section class="card span-2">
+    <div class="card-head">
+      <h2>Hosts</h2><span class="muted" id="nm-host-count">0</span>
+    </div>
+    <table class="data" id="nm-table" style="font-size:12px;">
+      <thead>
+        <tr>
+          <th data-sort="ip">IP</th>
+          <th data-sort="hostname">Hostname</th>
+          <th data-sort="vendor">MAC / Vendor</th>
+          <th data-sort="nports">Open ports</th>
+          <th>Services</th>
+        </tr>
+      </thead>
+      <tbody id="nm-tbody">
+        <tr><td colspan="5" class="muted">No scan run yet.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <script>
+    (function () {
+      const $ = (id) => document.getElementById(id);
+      if (!$("nm-tbody")) return;
+      let hosts = [], sortKey = "ip", sortAsc = true, pollTimer = null;
+
+      function esc(s) {
+        return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+          ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      }
+      function ipKey(ip) {
+        const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(ip || "");
+        return m ? ((+m[1] << 24) + (+m[2] << 16) + (+m[3] << 8) + (+m[4])) >>> 0 : 1e12;
+      }
+      function status(msg, kind) {
+        const el = $("nm-status-msg"); if (!el) return;
+        el.textContent = msg; el.hidden = !msg;
+        el.className = "settings-status " + (kind === "fail" ? "fail" : kind === "ok" ? "ok" : "muted");
+      }
+
+      function renderRows() {
+        const tbody = $("nm-tbody");
+        $("nm-host-count").textContent = String(hosts.length);
+        if (!hosts.length) {
+          tbody.innerHTML = `<tr><td colspan="5" class="muted">No hosts found.</td></tr>`;
+          return;
+        }
+        const sorted = hosts.slice().sort((a, b) => {
+          let av, bv;
+          if (sortKey === "ip") { av = ipKey(a.ip); bv = ipKey(b.ip); }
+          else if (sortKey === "nports") { av = (a.ports || []).length; bv = (b.ports || []).length; }
+          else { av = (a[sortKey] || "").toLowerCase(); bv = (b[sortKey] || "").toLowerCase(); }
+          if (av < bv) return sortAsc ? -1 : 1;
+          if (av > bv) return sortAsc ? 1 : -1;
+          return 0;
+        });
+        tbody.innerHTML = sorted.map((h) => {
+          const ports = (h.ports || []).map((p) => p.port + "/" + p.proto).join(", ") || "—";
+          const svcs = (h.ports || []).map((p) =>
+            esc(p.port + " " + (p.service || "") + (p.product ? " (" + p.product + " " + (p.version || "") + ")" : ""))
+          ).join("<br>") || "—";
+          const macv = [h.mac, h.vendor].filter(Boolean).map(esc).join(" · ") || "—";
+          return `<tr>
+            <td><code>${esc(h.ip)}</code></td>
+            <td>${esc(h.hostname || "—")}</td>
+            <td class="muted">${macv}</td>
+            <td>${esc(ports)}</td>
+            <td style="font-size:11px;">${svcs}</td>
+          </tr>`;
+        }).join("");
+      }
+
+      function renderStatus(s) {
+        if (!s) return;
+        const pill = $("nm-pill");
+        pill.textContent = s.running ? "scanning…" : (s.ok === true ? "done" : s.ok === false ? "failed" : "idle");
+        pill.className = "badge " + (s.running ? "" : s.ok === true ? "badge-good" : s.ok === false ? "badge-warn" : "");
+        $("nm-state").textContent = s.running ? "scanning…" : (s.message || "—");
+        $("nm-target").textContent = s.target || "—";
+        $("nm-result").textContent = s.ok === null ? "—" : (s.message || "—");
+        const btn = $("nm-run");
+        btn.classList.toggle("is-busy", !!s.running);
+        btn.disabled = !!s.running;
+      }
+
+      async function refresh() {
+        try {
+          const r = await fetch("/modules/nmap/results");
+          const data = await r.json();
+          hosts = data.hosts || [];
+          renderStatus(data.status);
+          renderRows();
+          if (data.status && !data.status.running && pollTimer) {
+            clearInterval(pollTimer); pollTimer = null;
+          }
+        } catch (e) { console.error("[nmap] refresh", e); }
+      }
+
+      $("nm-source").addEventListener("change", (e) => {
+        $("nm-custom-wrap").style.display = e.target.value === "custom" ? "" : "none";
+      });
+
+      $("nm-run").addEventListener("click", async () => {
+        const body = {
+          profile: $("nm-profile").value,
+          source: $("nm-source").value,
+          custom: $("nm-custom").value,
+        };
+        $("nm-run").classList.add("is-busy");
+        try {
+          const r = await fetch("/modules/nmap/scan", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const data = await r.json();
+          status(data.msg + (data.target_desc ? " — " + data.target_desc : ""), data.ok ? "ok" : "fail");
+          renderStatus(data.status);
+          if (data.ok && !pollTimer) pollTimer = setInterval(refresh, 2000);
+        } catch (e) {
+          status("scan request failed: " + e, "fail");
+          $("nm-run").classList.remove("is-busy");
+        }
+      });
+
+      document.querySelectorAll("#nm-table th[data-sort]").forEach((th) => {
+        th.style.cursor = "pointer";
+        th.addEventListener("click", () => {
+          const k = th.dataset.sort;
+          if (sortKey === k) sortAsc = !sortAsc; else { sortKey = k; sortAsc = true; }
+          renderRows();
+        });
+      });
+
+      refresh();
+    })();
+  </script>
+{% endblock %}
