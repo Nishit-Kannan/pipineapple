@@ -43,3 +43,15 @@ def uninstall(name: str):
         f"module uninstall: {msg}", source="modules")
     return jsonify({"ok": ok, "msg": msg, "modules": get_loader().list_modules()}), \
         (200 if ok else 400)
+
+
+@bp.route("/<name>/install-deps", methods=["POST"])
+def install_deps(name: str):
+    """apt-install the module's declared system dependencies. May take a
+    while (apt-get update + install). Only the packages from the module's
+    own manifest are installed."""
+    ok, msg = get_loader().install_requirements(name)
+    (notifications.success if ok else notifications.error)(
+        f"module deps: {msg}", source="modules")
+    return jsonify({"ok": ok, "msg": msg, "modules": get_loader().list_modules()}), \
+        (200 if ok else 400)

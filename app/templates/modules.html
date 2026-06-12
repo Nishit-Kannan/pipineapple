@@ -23,11 +23,11 @@
     </div>
     <table class="data" id="modules-table">
       <thead>
-        <tr><th>Module</th><th>Version</th><th>Description</th><th>Status</th><th></th></tr>
+        <tr><th>Module</th><th>Version</th><th>Description</th><th>Dependencies</th><th>Status</th><th></th></tr>
       </thead>
       <tbody id="modules-tbody">
         {% if not modules %}
-          <tr><td colspan="5" class="muted">No modules found under app/modules/.</td></tr>
+          <tr><td colspan="6" class="muted">No modules found under app/modules/.</td></tr>
         {% endif %}
       </tbody>
     </table>

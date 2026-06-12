@@ -7,3 +7,4 @@ description = "Scan PineAP clients or the lab subnet for live hosts, open ports,
 blueprint   = "routes:bp"
 url_prefix  = "/modules/nmap"
 icon        = "radar"
+requires    = ["nmap"]

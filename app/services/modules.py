@@ -76,8 +76,17 @@ def _load_toml(path: Path) -> dict[str, Any]:
         # strip inline comment outside of quotes
         if val and val[0] not in "\"'":
             val = val.split("#", 1)[0].strip()
-        if (val.startswith('"') and val.endswith('"')) or \
-           (val.startswith("'") and val.endswith("'")):
+        if val.startswith("[") and val.endswith("]"):
+            # simple array of quoted strings: ["a", "b"]
+            inner = val[1:-1].strip()
+            items = []
+            for piece in inner.split(","):
+                piece = piece.strip().strip('"').strip("'").strip()
+                if piece:
+                    items.append(piece)
+            val = items
+        elif (val.startswith('"') and val.endswith('"')) or \
+             (val.startswith("'") and val.endswith("'")):
             val = val[1:-1]
         elif val.lower() in ("true", "false"):
             val = val.lower() == "true"
@@ -99,6 +108,7 @@ class ModuleInfo:
     blueprint: str = "routes:bp"
     url_prefix: str = ""
     icon: str = "package"
+    requires: list[str] = field(default_factory=list)
     path: Path | None = None
     installed: bool = False
     error: str | None = None
@@ -107,7 +117,8 @@ class ModuleInfo:
         return {
             "name": self.name, "label": self.label, "version": self.version,
             "description": self.description, "url_prefix": self.url_prefix,
-            "icon": self.icon, "installed": self.installed, "error": self.error,
+            "icon": self.icon, "requires": list(self.requires),
+            "installed": self.installed, "error": self.error,
         }
 
 
@@ -158,6 +169,7 @@ class ModuleLoader:
                     blueprint=m.get("blueprint") or "routes:bp",
                     url_prefix=m.get("url_prefix") or f"/modules/{name}",
                     icon=m.get("icon") or "package",
+                    requires=[str(x) for x in (m.get("requires") or [])],
                     path=child,
                     installed=name in installed,
                 )
@@ -177,7 +189,52 @@ class ModuleLoader:
         return next((m for m in self.discover() if m.name == name), None)
 
     def list_modules(self) -> list[dict[str, Any]]:
-        return [m.to_dict() for m in self.discover()]
+        out = []
+        for m in self.discover():
+            d = m.to_dict()
+            d["requirements"] = self.requirements_status(m)
+            d["missing_requires"] = [r["name"] for r in d["requirements"]
+                                     if not r["present"]]
+            out.append(d)
+        return out
+
+    # ---------- System dependencies ----------
+    @staticmethod
+    def requirements_status(info: ModuleInfo) -> list[dict[str, Any]]:
+        """For each declared requirement, whether its binary is on PATH.
+        An entry may be ``"pkg"`` (binary == package) or ``"pkg=binary"``
+        when they differ."""
+        import shutil
+        out = []
+        for entry in info.requires:
+            pkg, _, binname = entry.partition("=")
+            binname = binname or pkg
+            out.append({"name": pkg, "bin": binname,
+                        "present": shutil.which(binname) is not None})
+        return out
+
+    def install_requirements(self, name: str) -> tuple[bool, str]:
+        """apt-install the system packages a module declares. Only the
+        packages from THIS module's manifest are ever passed to apt — never
+        anything from the client — so the route can't be used to install
+        arbitrary packages."""
+        from app.tools._common import run, stub_mode
+        info = self.get(name)
+        if info is None:
+            return False, f"no module named {name!r}"
+        pkgs = [e.partition("=")[0] for e in info.requires]
+        if not pkgs:
+            return True, "no system dependencies declared"
+        if stub_mode():
+            log.info("modules: (stub) would apt-install %s", pkgs)
+            return True, f"(stub) would install: {', '.join(pkgs)}"
+        run(["apt-get", "update"], timeout=180, source="modules")
+        res = run(["apt-get", "install", "-y", *pkgs], timeout=600, source="modules")
+        if res.returncode == 0:
+            log.info("modules: installed deps for %s: %s", name, pkgs)
+            return True, f"installed: {', '.join(pkgs)}"
+        detail = (res.stderr or res.stdout or "").strip()[:200]
+        return False, f"apt-get failed (rc={res.returncode}): {detail}"
 
     def installed_modules(self) -> list[dict[str, Any]]:
         """Installed + cleanly-loadable modules — used to render dynamic
