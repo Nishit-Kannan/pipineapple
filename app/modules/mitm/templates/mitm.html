@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}MITM — PiPineapple{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>MITM</h1>
+    <p class="muted">
+      Put the Pi in the middle of a target's traffic via ARP spoofing
+      (optionally DNS-spoof too), and watch the live DNS / HTTP / credential
+      stream from bettercap. <strong>Lab use only.</strong> Fenced to private
+      (RFC1918) targets; off by default — type <code>mitm</code> to arm. ARP
+      spoof only reaches devices on the same subnet as the Pi.
+    </p>
+  </div>
+
+  {% if bettercap_ok %}
+    <p class="muted" style="font-size:12px;">bettercap: <code>{{ bettercap_detail }}</code></p>
+  {% else %}
+    <div class="settings-status fail">
+      bettercap not found on the Pi. Install it from the Modules page, or run
+      <code>sudo apt install bettercap</code> (no restart needed), then reload.
+    </div>
+  {% endif %}
+
+  <div id="mm-msg" class="settings-status" hidden></div>
+
+  <section class="card span-2">
+    <div class="card-head"><h2>Session</h2><span class="badge" id="mm-pill">idle</span></div>
+    <div class="form-row" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+      <label style="min-width:220px;">
+        <span class="auth-label">Pick a target</span>
+        <select id="mm-pick" style="padding:5px; width:100%;">
+          <option value="">— choose a client / host —</option>
+        </select>
+      </label>
+      <label style="flex:1; min-width:200px;">
+        <span class="auth-label">Target(s) — private IP / CIDR / list</span>
+        <input id="mm-targets" type="text" placeholder="e.g. 10.0.0.50  or  192.168.8.0/24">
+      </label>
+      <label style="min-width:140px;">
+        <span class="auth-label">Interface (auto if blank)</span>
+        <input id="mm-iface" type="text" placeholder="auto">
+      </label>
+    </div>
+
+    <div class="form-row" style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; margin-top:8px;">
+      <label style="display:flex; align-items:center; gap:6px;">
+        <input type="checkbox" id="mm-dns"> <span>DNS spoof</span>
+      </label>
+      <label style="min-width:160px;">
+        <span class="auth-label">DNS domains (glob)</span>
+        <input id="mm-dns-domains" type="text" value="*" placeholder="* or *.example.com">
+      </label>
+      <label style="min-width:160px;">
+        <span class="auth-label">Redirect to IP</span>
+        <input id="mm-dns-ip" type="text" placeholder="e.g. 10.0.0.1">
+      </label>
+    </div>
+
+    <div class="form-row" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-top:8px;">
+      <label style="min-width:200px;">
+        <span class="auth-label">Type <code>mitm</code> to arm</span>
+        <input id="mm-confirm" type="text" autocomplete="off"
+               style="font-family:'SF Mono',Menlo,monospace;" placeholder="mitm">
+      </label>
+      <button id="mm-start" class="bigbtn bigbtn-danger" data-stateful="1" style="margin-top:0;" disabled>Start MITM</button>
+      <button id="mm-stop" class="bigbtn bigbtn-danger" data-stateful="1" style="margin-top:0;" hidden>Stop</button>
+    </div>
+
+    <dl style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:12px 0 0; font-size:13px;">
+      <dt class="muted">State</dt><dd id="mm-state">idle</dd>
+      <dt class="muted">Interface</dt><dd><code id="mm-iface-state">—</code></dd>
+      <dt class="muted">Targets</dt><dd><code id="mm-targets-state">—</code></dd>
+      <dt class="muted">Command</dt><dd><code id="mm-command" style="font-size:11px;">—</code></dd>
+    </dl>
+  </section>
+
+  <section class="card span-2">
+    <div class="card-head"><h2>Captured credentials</h2><span class="muted" id="mm-cred-count">0</span></div>
+    <table class="data" id="mm-cred-table" style="font-size:11px;">
+      <thead><tr><th>Time</th><th>Source</th><th>Detail</th></tr></thead>
+      <tbody id="mm-cred-tbody"><tr><td colspan="3" class="muted">Nothing captured yet.</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>DNS</h2><span class="muted" id="mm-dns-count">0</span></div>
+    <table class="data" id="mm-dns-table" style="font-size:11px;">
+      <thead><tr><th>Time</th><th>Source</th><th>Query</th></tr></thead>
+      <tbody id="mm-dns-tbody"><tr><td colspan="3" class="muted">—</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>HTTP</h2><span class="muted" id="mm-http-count">0</span></div>
+    <table class="data" id="mm-http-table" style="font-size:11px;">
+      <thead><tr><th>Time</th><th>Source</th><th>Request</th></tr></thead>
+      <tbody id="mm-http-tbody"><tr><td colspan="3" class="muted">—</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="card span-2">
+    <div class="card-head"><h2>Event log</h2><span class="muted" id="mm-info-count">0</span></div>
+    <pre id="mm-info" class="muted" style="font-size:11px; max-height:160px; overflow:auto; margin:0;"></pre>
+  </section>
+
+  <script>
+    (function () {
+      const $ = (id) => document.getElementById(id);
+      if (!$("mm-cred-tbody")) return;
+      let pollTimer = null;
+      const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      const fmt = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString() : "";
+      function msg(t, k) { const e = $("mm-msg"); if (!e) return; e.textContent = t; e.hidden = !t; e.className = "settings-status " + (k === "fail" ? "fail" : k === "ok" ? "ok" : "muted"); }
+
+      // Populate target picker from clients + nmap hosts.
+      async function loadTargets() {
+        try {
+          const d = await (await fetch("/modules/mitm/targets")).json();
+          const opts = ['<option value="">— choose a client / host —</option>'];
+          if ((d.clients || []).length) {
+            opts.push('<optgroup label="PineAP clients">');
+            d.clients.forEach((c) => opts.push(`<option value="${esc(c.ip)}">${esc(c.label)} (${esc(c.ip)})</option>`));
+            opts.push("</optgroup>");
+          }
+          if ((d.nmap_hosts || []).length) {
+            opts.push('<optgroup label="nmap hosts">');
+            d.nmap_hosts.forEach((h) => opts.push(`<option value="${esc(h.ip)}">${esc(h.label)} (${esc(h.ip)})</option>`));
+            opts.push("</optgroup>");
+          }
+          $("mm-pick").innerHTML = opts.join("");
+        } catch (e) { console.error("[mitm] targets", e); }
+      }
+      $("mm-pick").addEventListener("change", (e) => { if (e.target.value) $("mm-targets").value = e.target.value; });
+      $("mm-confirm").addEventListener("input", (e) => {
+        $("mm-start").disabled = e.target.value.trim().toLowerCase() !== "mitm";
+      });
+
+      function rows(tbody, items, cols, empty) {
+        const b = $(tbody);
+        if (!items.length) { b.innerHTML = `<tr><td colspan="${cols}" class="muted">${empty}</td></tr>`; return; }
+        b.innerHTML = items.map((e) => `<tr>
+          <td class="muted">${esc(fmt(e.ts))}</td>
+          <td><code>${esc(e.src || "—")}</code></td>
+          <td>${esc(e.summary || e.raw || "")}</td></tr>`).join("");
+      }
+      function render(ev, st) {
+        if (st) {
+          const running = !!st.running;
+          $("mm-pill").textContent = running ? "active" : (st.message || "idle");
+          $("mm-pill").className = "badge " + (running ? "badge-good" : "");
+          $("mm-state").textContent = st.message || (running ? "active" : "idle");
+          $("mm-iface-state").textContent = st.iface || "—";
+          $("mm-targets-state").textContent = st.targets || "—";
+          $("mm-command").textContent = st.command || "—";
+          $("mm-start").classList.toggle("is-busy", running);
+          $("mm-start").disabled = running || ($("mm-confirm").value.trim().toLowerCase() !== "mitm");
+          $("mm-stop").hidden = !running;
+        }
+        if (ev) {
+          rows("mm-cred-tbody", ev.cred || [], 3, "Nothing captured yet.");
+          rows("mm-dns-tbody", ev.dns || [], 3, "—");
+          rows("mm-http-tbody", ev.http || [], 3, "—");
+          $("mm-cred-count").textContent = (ev.cred || []).length;
+          $("mm-dns-count").textContent = (ev.dns || []).length;
+          $("mm-http-count").textContent = (ev.http || []).length;
+          $("mm-info-count").textContent = (ev.info || []).length;
+          $("mm-info").textContent = (ev.info || []).map((e) => `${fmt(e.ts)}  ${e.summary || e.raw}`).join("\n");
+        }
+      }
+
+      async function refresh() {
+        try {
+          const d = await (await fetch("/modules/mitm/events")).json();
+          render(d.events, d.status);
+          if (d.status && !d.status.running && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        } catch (e) { console.error("[mitm] refresh", e); }
+      }
+
+      $("mm-start").addEventListener("click", async () => {
+        const body = {
+          targets: $("mm-targets").value,
+          iface: $("mm-iface").value,
+          dns_spoof: $("mm-dns").checked,
+          dns_domains: $("mm-dns-domains").value,
+          dns_redirect_ip: $("mm-dns-ip").value,
+          confirm: $("mm-confirm").value,
+        };
+        $("mm-start").classList.add("is-busy");
+        try {
+          const d = await (await fetch("/modules/mitm/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+          msg(d.msg, d.ok ? "ok" : "fail");
+          render(null, d.status);
+          if (d.ok && !pollTimer) pollTimer = setInterval(refresh, 2000);
+        } catch (e) { msg("start failed: " + e, "fail"); $("mm-start").classList.remove("is-busy"); }
+      });
+      $("mm-stop").addEventListener("click", async () => {
+        $("mm-stop").classList.add("is-busy"); $("mm-stop").disabled = true;
+        try {
+          const d = await (await fetch("/modules/mitm/stop", { method: "POST" })).json();
+          msg(d.msg, d.ok ? "ok" : "fail");
+          render(null, d.status);
+          if (!pollTimer) pollTimer = setInterval(refresh, 2000);
+        } catch (e) { msg("stop failed: " + e, "fail"); }
+      });
+
+      const tryWire = () => {
+        const sock = window.pipineapple && window.pipineapple.socket;
+        if (!sock) { setTimeout(tryWire, 200); return; }
+        sock.on("mitm:event", () => refresh());
+        sock.on("mitm:status", (s) => render(null, s));
+      };
+      tryWire();
+      loadTargets();
+      refresh();
+    })();
+  </script>
+{% endblock %}

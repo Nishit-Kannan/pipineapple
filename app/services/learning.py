@@ -3522,6 +3522,104 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
                     "RFC1918 — public IPs are refused."
                 ),
             },
+            {
+                "command": "nmap <profile flags> <your extra flags> "
+                           "--host-timeout 120s -oX - <target>",
+                "description": (
+                    "How the module assembles the command. The target comes "
+                    "from a preset — lab subnet, the auto-detected **uplink** "
+                    "network (the Pi's lowest-metric default-route interface), "
+                    "current PineAP client leases, or a custom CIDR — and the "
+                    "Extra-flags box is spliced in (parsed with shlex). "
+                    "-iL / -iR are blocked so flags can't escape the "
+                    "private-target fence; -oX - is always kept last so output "
+                    "still parses. The exact command is shown on the page."
+                ),
+                "notes": (
+                    "The binary isn't bundled: the module declares "
+                    "requires=[\"nmap\"], so the Modules page flags it missing "
+                    "and offers a one-click apt install (or run "
+                    "'sudo apt install nmap')."
+                ),
+            },
+            {
+                "command": "kill -TERM <nmap-pid>     # what 'Stop' does",
+                "description": (
+                    "Scans run as a killable child process (Popen), not a "
+                    "blocking call — so the Stop button can SIGTERM the running "
+                    "nmap mid-sweep. A -sV/-A scan of a whole /24 is long; Stop "
+                    "makes it interruptible instead of something you wait out."
+                ),
+            },
+        ],
+    },
+    # ------------------------------------------------------------------
+    # Session 17 — MITM module (bettercap)
+    # ------------------------------------------------------------------
+    {
+        "id": "mitm-bettercap",
+        "title": "MITM (bettercap ARP/DNS spoof)",
+        "added_in_session": 17,
+        "intro": (
+            "Active man-in-the-middle: ARP-spoof a target so its traffic "
+            "routes through the Pi, optionally DNS-spoof chosen domains, and "
+            "read the live DNS / HTTP / credential stream. The module drives "
+            "bettercap non-interactively and parses its event output. Most "
+            "useful against plaintext/legacy devices (lots of IoT); modern "
+            "phones largely defeat it with HSTS + cert pinning. Default OFF, "
+            "RFC1918-fenced, typed 'mitm' confirm. ARP spoof only reaches the "
+            "same L2 subnet as the Pi."
+        ),
+        "ui_reference": "Modules → MITM (install it first; needs bettercap)",
+        "wrapper_modules": ["app/modules/mitm/tools/bettercap.py",
+                            "app/modules/mitm/service.py"],
+        "commands": [
+            {
+                "command": "bettercap -iface <if> -no-colors -eval "
+                           "\"net.probe on; set arp.spoof.targets <ip>; "
+                           "arp.spoof on; net.sniff on; events.stream on\"",
+                "description": (
+                    "How the module launches bettercap — non-interactively via "
+                    "-eval running a caplet. net.probe discovers hosts; "
+                    "arp.spoof.targets + arp.spoof on poison the target←→gateway "
+                    "ARP so traffic flows through us; net.sniff + events.stream "
+                    "print findings to stdout, which we read line by line and "
+                    "bucket into dns / http / cred / info. Needs root."
+                ),
+                "notes": (
+                    "The interface is auto-picked: whichever Pi interface is on "
+                    "the same subnet as the target (wlan-ap for rogue-AP "
+                    "clients, eth0 for uplink hosts). Override on the page."
+                ),
+            },
+            {
+                "command": "set dns.spoof.domains *; set dns.spoof.address "
+                           "<ip>; dns.spoof on",
+                "description": (
+                    "Optional DNS spoofing layered on the ARP MITM: answer DNS "
+                    "queries for the chosen domain glob with an IP you control "
+                    "(e.g. the Pi, to pair with the S12.5 captive portal). "
+                    "Distinct from the rogue-AP dnsmasq hijack — this spoofs a "
+                    "victim you're already ARP-MITMing on an existing network."
+                ),
+            },
+            {
+                "command": "set arp.spoof.targets 10.0.0.50    # the fence",
+                "description": (
+                    "Targets are restricted to private/RFC1918 addresses "
+                    "(never public), but can be a PineAP client, an "
+                    "nmap-discovered host, or any private IP/CIDR you type — the "
+                    "hybrid fence. Starting requires typing 'mitm'. The fence "
+                    "stops accidental public-internet interception; it can't "
+                    "verify you *own* the target, so lab-only discipline still "
+                    "applies."
+                ),
+                "notes": (
+                    "bettercap runs as a killable child process; Stop sends it "
+                    "SIGTERM and restores ARP. requires=[\"bettercap\"] so the "
+                    "Modules page flags it missing + offers apt install."
+                ),
+            },
         ],
     },
 ]

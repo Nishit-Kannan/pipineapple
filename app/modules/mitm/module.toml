@@ -1,0 +1,10 @@
+# MITM module — bettercap ARP/DNS spoof + traffic inspection (Session 17).
+[module]
+name        = "mitm"
+label       = "MITM"
+version     = "0.1.0"
+description = "bettercap ARP + DNS spoof against a selected private/lab target, with live DNS / HTTP / credential inspection. Default OFF, RFC1918-fenced, typed 'mitm' confirm."
+blueprint   = "routes:bp"
+url_prefix  = "/modules/mitm"
+icon        = "shuffle"
+requires    = ["bettercap"]
