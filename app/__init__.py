@@ -127,6 +127,7 @@ def _register_blueprints(app: Flask) -> None:
     from app.routes.dashboard import bp as dashboard_bp
     from app.routes.handshakes import bp as handshakes_bp
     from app.routes.learning import bp as learning_bp
+    from app.routes.modules import bp as modules_bp
     from app.routes.pineap import bp as pineap_bp
     from app.routes.recon import bp as recon_bp
     from app.routes.settings import bp as settings_bp
@@ -137,9 +138,26 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(handshakes_bp)
     app.register_blueprint(learning_bp)
+    app.register_blueprint(modules_bp)
     app.register_blueprint(pineap_bp)
     app.register_blueprint(recon_bp)
     app.register_blueprint(settings_bp)
+
+    # Phase F: dynamically register the blueprints of installed modules
+    # (restart-on-change). A broken module is logged + skipped, never fatal.
+    from app.services.modules import get_loader
+    with app.app_context():
+        get_loader().register_installed(app)
+
+    # Expose installed modules to every template so base.html can render
+    # their sidebar nav items dynamically.
+    @app.context_processor
+    def _inject_modules():
+        # Runs within a request context, so current_app is available.
+        try:
+            return {"installed_modules": get_loader().installed_modules()}
+        except Exception:
+            return {"installed_modules": []}
 
     # Debug routes only in dev/mac configs
     if app.config.get("DEBUG", False):

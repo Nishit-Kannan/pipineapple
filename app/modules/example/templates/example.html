@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Example Module — PiPineapple{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Example Module</h1>
+    <p class="muted">
+      This page is served by a <strong>drop-in module</strong> under
+      <code>app/modules/example/</code> — discovered, installed from the
+      Modules page, and registered at startup by the loader. Its template
+      lives in the module's own <code>templates/</code> folder, not
+      <code>app/templates/</code>.
+    </p>
+  </div>
+
+  <section class="card">
+    <div class="card-head"><h2>Loader proof</h2></div>
+    <p style="font-size:13px;">
+      If you can read this, the blueprint was registered dynamically. The
+      button below hits this module's own JSON endpoint
+      (<code>/modules/example/ping</code>).
+    </p>
+    <button id="ex-ping" class="bigbtn" style="max-width:200px;">Ping module</button>
+    <pre id="ex-out" class="muted" style="margin-top:10px; font-size:12px;"></pre>
+  </section>
+
+  <script>
+    (function () {
+      var btn = document.getElementById("ex-ping");
+      if (!btn) return;
+      btn.addEventListener("click", async function () {
+        try {
+          var r = await fetch("/modules/example/ping");
+          document.getElementById("ex-out").textContent = JSON.stringify(await r.json(), null, 2);
+        } catch (e) {
+          document.getElementById("ex-out").textContent = "error: " + e;
+        }
+      });
+    })();
+  </script>
+{% endblock %}

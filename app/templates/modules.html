@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Modules — PiPineapple{% endblock %}
+{% block nav_modules %}active{% endblock %}
+
+{% block content %}
+  <div class="page-header">
+    <h1>Modules</h1>
+    <p class="muted">
+      Drop-in extensions to the UI, discovered under
+      <code>app/modules/</code>. Install or uninstall a module here, then
+      <strong>restart pipineapple</strong> for the change to take effect
+      (blueprints load at startup — install/uninstall just updates the
+      registry).
+    </p>
+  </div>
+
+  <div id="modules-status" class="settings-status" hidden></div>
+
+  <section class="card span-2">
+    <div class="card-head">
+      <h2>Available modules</h2>
+      <span class="muted" id="modules-count">{{ modules|length }}</span>
+    </div>
+    <table class="data" id="modules-table">
+      <thead>
+        <tr><th>Module</th><th>Version</th><th>Description</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody id="modules-tbody">
+        {% if not modules %}
+          <tr><td colspan="5" class="muted">No modules found under app/modules/.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+    <p class="muted" style="font-size:12px; margin-top:10px;">
+      Installed modules appear in the sidebar after a restart. To build your
+      own, copy <code>app/modules/example/</code> and edit its
+      <code>module.toml</code>.
+    </p>
+  </section>
+{% endblock %}

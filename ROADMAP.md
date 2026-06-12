@@ -149,6 +149,21 @@ Eight phases, nineteen sessions. Each session lands one Pineapple-section featur
 
 **Session 19.** **Production polish** — Authentication (login screen, simple session-based auth, configurable password from Settings), HTTPS via self-signed cert generated on first run, systemd unit (`pipineapple.service`) running the app via gunicorn behind nginx, real Web Terminal wiring (xterm.js front-end + a backend wrapping a constrained bash session). Deployment runbook. Console: nginx config, systemd unit, the security trade-offs of hosting a web shell.
 
+### Phase H — Host exploitation *(candidate, not committed)*
+
+**Beyond the WiFi-Pineapple analogue.** Phases A–G end at the wireless/MITM
+layer. A Metasploit/Meterpreter phase would push into *host* exploitation —
+delivering a payload and getting a session after a foothold (MITM creds or a
+cracked-PSK subnet) and an nmap sweep (S16). It'd be a drop-in **Module**
+(Phase F), `app/modules/msf/`, driving Metasploit over `msfrpcd` RPC via
+`pymetasploit3`, against Windows + Linux vulnerable VMs on the lab subnet,
+behind a **shared `services/target_guard.py` lab-CIDR fence** (promoted out of
+the module for reuse by all future offensive modules). Rough split: H-1 RPC
+daemon lifecycle + target guard · H-2 `msfvenom` payload gen · H-3 handlers +
+sessions (Meterpreter **and** shell) · H-4 exploit launcher + guards + audit.
+Full sketch (scope, safety gates, prereqs, settled decisions) in
+`docs/phase-H-metasploit-sketch.md`.
+
 ## Per-session shape
 
 Every session follows the same pattern:

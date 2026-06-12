@@ -1,0 +1,11 @@
+# Example module manifest — the reference for building your own.
+# Discovered by app.services.modules.ModuleLoader; install it from the
+# Modules page, then restart pipineapple to load it.
+[module]
+name        = "example"
+label       = "Example Module"
+version     = "0.1.0"
+description = "Reference module proving dynamic discovery, blueprint registration, and blueprint-local templates. Copy this directory to scaffold your own."
+blueprint   = "routes:bp"
+url_prefix  = "/modules/example"
+icon        = "package"

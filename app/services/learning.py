@@ -3383,6 +3383,77 @@ LEARNING_SECTIONS: list[dict[str, Any]] = [
             },
         ],
     },
+    # ------------------------------------------------------------------
+    # Session 15 — Modules system (plugin loader)
+    # ------------------------------------------------------------------
+    {
+        "id": "modules-loader",
+        "title": "Modules system (plugin loader)",
+        "added_in_session": 15,
+        "intro": (
+            "Drop-in UI extensions live under app/modules/<name>/ with a "
+            "module.toml manifest, a routes.py defining a Flask Blueprint, and "
+            "blueprint-local templates/. The loader discovers them, tracks an "
+            "installed registry in $DATA_DIR/modules.json, and registers the "
+            "installed blueprints once at startup — restart-on-change, not "
+            "hot-loading. nmap (S16), MITM (S17), and a future Metasploit "
+            "module all ride on this."
+        ),
+        "ui_reference": "Modules page (install/uninstall) + dynamic sidebar nav",
+        "wrapper_modules": ["app/services/modules.py", "app/routes/modules.py"],
+        "commands": [
+            {
+                "command": "cat app/modules/example/module.toml",
+                "description": (
+                    "The manifest. [module] table with name (must match the "
+                    "directory), label, version, description, blueprint "
+                    "('<submodule>:<attr>', e.g. routes:bp), optional url_prefix "
+                    "and icon. Parsed with tomllib (py3.11) / tomli, with a "
+                    "minimal flat-format fallback for older Pythons."
+                ),
+                "example_output": (
+                    "[module]\nname = \"example\"\nlabel = \"Example Module\"\n"
+                    "blueprint = \"routes:bp\"\nurl_prefix = \"/modules/example\""
+                ),
+            },
+            {
+                "command": "python3 -c \"from app import create_app; "
+                           "a=create_app('mac'); print(sorted(r.rule for r in "
+                           "a.url_map.iter_rules() if '/modules/' in r.rule))\"",
+                "description": (
+                    "Show which module routes registered at startup. Only "
+                    "modules listed as installed in modules.json get their "
+                    "blueprint imported + registered; a module with a manifest "
+                    "error is logged and skipped (never fatal)."
+                ),
+                "notes": (
+                    "Because registration happens in the app factory, "
+                    "install/uninstall take effect only after "
+                    "`sudo systemctl restart pipineapple`."
+                ),
+            },
+            {
+                "command": "cat $PIPINEAPPLE_DATA_DIR/modules.json",
+                "description": (
+                    "The installed registry — the single source of truth for "
+                    "which modules are active. Install/uninstall just edit this "
+                    "{\"installed\": [...]} list; the filesystem catalog under "
+                    "app/modules/ is never mutated."
+                ),
+                "example_output": "{\n  \"installed\": [\n    \"example\"\n  ]\n}",
+            },
+            {
+                "command": "cp -r app/modules/example app/modules/mymod",
+                "description": (
+                    "Scaffold a new module by copying the reference one, then "
+                    "edit module.toml (name must match the new dir) and "
+                    "routes.py. A Blueprint with template_folder='templates' "
+                    "gets its own page templates resolved first. Install it on "
+                    "the Modules page, restart, and it appears in the sidebar."
+                ),
+            },
+        ],
+    },
 ]
 
 

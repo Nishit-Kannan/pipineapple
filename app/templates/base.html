@@ -15,6 +15,7 @@
   <script src="{{ url_for('static', filename='handshakes.js') }}" defer></script>
   <script src="{{ url_for('static', filename='pineap.js') }}" defer></script>
   <script src="{{ url_for('static', filename='campaigns.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='modules.js') }}" defer></script>
 </head>
 <body>
   {# ---------- Title bar ---------- #}
@@ -186,8 +187,9 @@
           <span class="sidenav-label">Campaigns</span>
         </a>
 
-        <a href="#" class="sidenav-item disabled"
-           title="Modules — Phase F (Sessions 15–17)">
+        <a href="{{ url_for('modules.index') }}"
+           class="sidenav-item {% block nav_modules %}{% endblock %}"
+           title="Modules — install/uninstall drop-in UI extensions">
           <span class="sidenav-icon">
             {# package / box #}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -199,6 +201,21 @@
           </span>
           <span class="sidenav-label">Modules</span>
         </a>
+
+        {# Dynamically-registered installed modules (Phase F) #}
+        {% for mod in installed_modules or [] %}
+        <a href="{{ mod.url_prefix }}/" class="sidenav-item"
+           title="{{ mod.description or mod.label }}" style="padding-left:6px;">
+          <span class="sidenav-icon">
+            {# plug / extension #}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" class="sidenav-svg">
+              <path d="M9 2v6M15 2v6M7 8h10v3a5 5 0 0 1-10 0z"/><path d="M12 16v6"/>
+            </svg>
+          </span>
+          <span class="sidenav-label">{{ mod.label }}</span>
+        </a>
+        {% endfor %}
 
         <a href="{{ url_for('learning.index') }}"
            class="sidenav-item {% block nav_learning %}{% endblock %}"
