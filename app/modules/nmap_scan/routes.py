@@ -33,10 +33,13 @@ def _lab_cidr() -> str:
 
 @bp.route("/")
 def index():
+    avail_ok, avail_detail = tools.is_available()
     return render_template(
         "nmap.html",
         profiles=[{"id": k, "label": v["label"]} for k, v in tools.PROFILES.items()],
         lab_cidr=_lab_cidr(),
+        nmap_ok=avail_ok,
+        nmap_detail=avail_detail,
     )
 
 

@@ -30,6 +30,18 @@ PROFILES: dict[str, dict[str, Any]] = {
 DEFAULT_PROFILE = "quick"
 
 
+def is_available() -> tuple[bool, str]:
+    """Check whether the nmap binary is installed. Returns (ok, detail) —
+    detail is the version string when present, else an install hint."""
+    if stub_mode():
+        return True, "stub mode"
+    res = run(["nmap", "--version"], timeout=5, source="nmap")
+    if res.returncode == 127:
+        return False, "not installed — run 'sudo apt install nmap' on the Pi"
+    first = (res.stdout or "").splitlines()[0] if res.stdout else ""
+    return True, first or "installed"
+
+
 def build_argv(profile: str, target: str) -> list[str]:
     p = PROFILES.get(profile) or PROFILES[DEFAULT_PROFILE]
     # --host-timeout keeps a single unresponsive host from stalling the run.
@@ -49,7 +61,9 @@ def run_scan(profile: str, target: str, *, timeout: float = 900.0
     argv = build_argv(profile, target)
     res = run(argv, timeout=timeout, source="nmap")
     if res.returncode == 127:
-        return False, "nmap not installed on this host", []
+        return False, ("nmap not installed on this host — run "
+                       "'sudo apt install nmap' on the Pi, then re-run "
+                       "(no restart needed)"), []
     if res.returncode == 124:
         return False, f"nmap timed out after {timeout:.0f}s", []
     if not res.stdout.strip():

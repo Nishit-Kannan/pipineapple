@@ -5,6 +5,7 @@ from .nmap import (  # noqa: F401
     DEFAULT_PROFILE,
     PROFILES,
     build_argv,
+    is_available,
     parse_xml,
     run_scan,
 )

@@ -12,6 +12,15 @@
     </p>
   </div>
 
+  {% if nmap_ok %}
+    <p class="muted" style="font-size:12px;">nmap: <code>{{ nmap_detail }}</code></p>
+  {% else %}
+    <div class="settings-status fail">
+      nmap binary not found on the Pi — installing the module only adds the UI.
+      Run <code>sudo apt install nmap</code> on the Pi (no restart needed), then reload.
+    </div>
+  {% endif %}
+
   <div id="nm-status-msg" class="settings-status" hidden></div>
 
   <section class="card span-2">
