@@ -46,10 +46,24 @@
         <input id="nm-custom" type="text" placeholder="10.0.0.0/24 or 10.0.0.50">
       </label>
       <button id="nm-run" class="bigbtn" data-stateful="1" style="margin-top:0;">Run scan</button>
+      <button id="nm-stop" class="bigbtn bigbtn-danger" data-stateful="1" style="margin-top:0;" hidden>Stop</button>
+    </div>
+    <div class="form-row" style="margin-top:8px;">
+      <label style="display:block;">
+        <span class="auth-label">Extra nmap flags (optional)</span>
+        <input id="nm-flags" type="text" style="width:100%; font-family:'SF Mono',Menlo,monospace;"
+               placeholder="e.g.  -p 22,80,443 -A   or   --script smb-os-discovery">
+      </label>
+      <p class="muted" style="font-size:11px; margin:4px 0 0;">
+        Appended to the command. <code>-iL</code> / <code>-iR</code> are
+        blocked (they'd bypass the private-target fence); <code>-oX -</code> is
+        always kept so results still parse.
+      </p>
     </div>
     <dl style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:12px 0 0; font-size:13px;">
       <dt class="muted">State</dt><dd id="nm-state">—</dd>
       <dt class="muted">Target</dt><dd><code id="nm-target">—</code></dd>
+      <dt class="muted">Command</dt><dd><code id="nm-command" style="font-size:11px;">—</code></dd>
       <dt class="muted">Result</dt><dd id="nm-result">—</dd>
     </dl>
   </section>
@@ -133,10 +147,17 @@
         pill.className = "badge " + (s.running ? "" : s.ok === true ? "badge-good" : s.ok === false ? "badge-warn" : "");
         $("nm-state").textContent = s.running ? "scanning…" : (s.message || "—");
         $("nm-target").textContent = s.target || "—";
+        if ($("nm-command")) $("nm-command").textContent = s.command || "—";
         $("nm-result").textContent = s.ok === null ? "—" : (s.message || "—");
         const btn = $("nm-run");
         btn.classList.toggle("is-busy", !!s.running);
         btn.disabled = !!s.running;
+        const stopBtn = $("nm-stop");
+        if (stopBtn) {
+          stopBtn.hidden = !s.running;
+          stopBtn.disabled = false;
+          stopBtn.classList.remove("is-busy");
+        }
       }
 
       async function refresh() {
@@ -161,6 +182,7 @@
           profile: $("nm-profile").value,
           source: $("nm-source").value,
           custom: $("nm-custom").value,
+          flags: $("nm-flags").value,
         };
         $("nm-run").classList.add("is-busy");
         try {
@@ -175,6 +197,21 @@
         } catch (e) {
           status("scan request failed: " + e, "fail");
           $("nm-run").classList.remove("is-busy");
+        }
+      });
+
+      const stopBtn = $("nm-stop");
+      if (stopBtn) stopBtn.addEventListener("click", async () => {
+        stopBtn.classList.add("is-busy"); stopBtn.disabled = true;
+        try {
+          const r = await fetch("/modules/nmap/stop", { method: "POST" });
+          const data = await r.json();
+          status(data.msg || "stopping…", data.ok ? "ok" : "fail");
+          if (data.status) renderStatus(data.status);
+          if (!pollTimer) pollTimer = setInterval(refresh, 2000);
+        } catch (e) {
+          status("stop request failed: " + e, "fail");
+          stopBtn.classList.remove("is-busy"); stopBtn.disabled = false;
         }
       });
 

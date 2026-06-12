@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import shlex
 import threading
 import time
 from typing import Any
@@ -19,6 +20,26 @@ from typing import Any
 from . import tools
 
 log = logging.getLogger(__name__)
+
+# Flags refused even though the box is the operator's own: these bypass the
+# resolved/private-fenced target (file-list input, random-internet targets).
+_BLOCKED_FLAGS = ("-iL", "-iR")
+
+
+def parse_flags(raw: str | None) -> tuple[list[str] | None, str]:
+    """Split an operator flag string into argv tokens. Returns
+    ``(tokens, error)`` — tokens is None on error."""
+    if not raw or not raw.strip():
+        return [], ""
+    try:
+        toks = shlex.split(raw)
+    except ValueError as e:
+        return None, f"couldn't parse flags: {e}"
+    for t in toks:
+        if any(t == b or t.startswith(b) for b in _BLOCKED_FLAGS):
+            return None, (f"flag {t!r} is not allowed — it bypasses the "
+                          "private-target fence")
+    return toks, ""
 
 
 def _is_private_target(target: str) -> bool:
@@ -47,8 +68,10 @@ class NmapService:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._proc: Any = None              # live nmap subprocess (real mode)
+        self._stop_event = threading.Event()
         self._status: dict[str, Any] = {
-            "running": False, "profile": None, "target": None,
+            "running": False, "profile": None, "target": None, "command": None,
             "started_at": None, "finished_at": None, "ok": None,
             "message": "no scan run yet", "host_count": 0,
         }
@@ -123,17 +146,24 @@ class NmapService:
             return []
 
     # ---------- Scan lifecycle ----------
-    def start_scan(self, profile: str, target: str) -> tuple[bool, str]:
+    def start_scan(self, profile: str, target: str,
+                   extra: list[str] | None = None) -> tuple[bool, str]:
         if profile not in tools.PROFILES:
             return False, f"unknown profile {profile!r}"
         if not _is_private_target(target):
             return False, ("target refused — nmap is fenced to private/lab "
                            "ranges (RFC1918). Got: " + target)
+        extra = extra or []
+        argv = tools.build_argv(profile, target, extra)
+        command = " ".join(argv)
+        self._stop_event.clear()
         with self._lock:
             if self._status["running"]:
                 return False, "a scan is already running"
+            self._proc = None
             self._status.update({
                 "running": True, "profile": profile, "target": target,
+                "command": command,
                 "started_at": time.time(), "finished_at": None, "ok": None,
                 "message": "scanning…", "host_count": 0,
             })
@@ -148,16 +178,17 @@ class NmapService:
             ctx = app.app_context() if app is not None else None
             if ctx:
                 ctx.push()
-            ok = False
-            msg = "scan crashed"
-            hosts: list[dict[str, Any]] = []
+            ok, msg, hosts = False, "scan crashed", []
             try:
-                ok, msg, hosts = tools.run_scan(profile, target)
+                ok, msg, hosts = self._execute(argv)
             except Exception as e:
                 log.exception("nmap scan crashed")
                 msg = f"scan crashed: {e}"
             finally:
+                if self._stop_event.is_set():
+                    ok, msg, hosts = False, "scan stopped by operator", []
                 with self._lock:
+                    self._proc = None
                     self._hosts = hosts
                     self._status.update({
                         "running": False, "ok": ok, "message": msg,
@@ -173,6 +204,39 @@ class NmapService:
         t.start()
         return True, f"scan started ({tools.PROFILES[profile]['label']})"
 
+    def _execute(self, argv: list[str]) -> tuple[bool, str, list[dict[str, Any]]]:
+        """Run nmap as a killable subprocess (real mode) or a cancellable
+        wait (stub). Returns ``(ok, msg, hosts)``."""
+        import subprocess
+        from app.tools._common import stub_mode
+
+        if stub_mode():
+            # Simulate a short, cancellable scan so the UI/stop path is real.
+            stopped = self._stop_event.wait(timeout=2.0)
+            if stopped:
+                return False, "scan stopped by operator", []
+            return True, "stub scan", list(tools._STUB_HOSTS)
+
+        try:
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+        except FileNotFoundError:
+            return False, ("nmap not installed on this host — run "
+                           "'sudo apt install nmap' on the Pi, then re-run "
+                           "(no restart needed)"), []
+        with self._lock:
+            self._proc = proc
+        try:
+            out, err = proc.communicate(timeout=900)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            rc = 124
+        if self._stop_event.is_set():
+            return False, "scan stopped by operator", []
+        return tools.interpret(rc, out, err)
+
     def get_status(self) -> dict[str, Any]:
         with self._lock:
             return dict(self._status)
@@ -180,6 +244,21 @@ class NmapService:
     def get_results(self) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(h) for h in self._hosts]
+
+    def stop_scan(self) -> tuple[bool, str]:
+        """Terminate the running scan, if any. Sets the stop flag (so the
+        thread reports 'stopped') and kills the nmap subprocess."""
+        with self._lock:
+            if not self._status["running"]:
+                return False, "no scan is running"
+            proc = self._proc
+        self._stop_event.set()
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                log.exception("nmap: terminate failed")
+        return True, "stopping scan…"
 
     def _emit(self) -> None:
         try:

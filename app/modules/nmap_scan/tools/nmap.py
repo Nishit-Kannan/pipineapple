@@ -42,13 +42,18 @@ def is_available() -> tuple[bool, str]:
     return True, first or "installed"
 
 
-def build_argv(profile: str, target: str) -> list[str]:
+def build_argv(profile: str, target: str,
+               extra: list[str] | None = None) -> list[str]:
     p = PROFILES.get(profile) or PROFILES[DEFAULT_PROFILE]
     # --host-timeout keeps a single unresponsive host from stalling the run.
-    return ["nmap", *p["args"], "--host-timeout", "120s", "-oX", "-", target]
+    # Operator ``extra`` flags go after the profile args; we always keep
+    # ``-oX -`` last so the XML parse still works regardless of what they add.
+    return ["nmap", *p["args"], *(extra or []),
+            "--host-timeout", "120s", "-oX", "-", target]
 
 
-def run_scan(profile: str, target: str, *, timeout: float = 900.0
+def run_scan(profile: str, target: str, *, extra: list[str] | None = None,
+             timeout: float = 900.0
              ) -> tuple[bool, str, list[dict[str, Any]]]:
     """Run a scan and parse it. Returns ``(ok, message, hosts)``.
 
@@ -58,21 +63,28 @@ def run_scan(profile: str, target: str, *, timeout: float = 900.0
     if stub_mode():
         return True, "stub scan", _STUB_HOSTS
 
-    argv = build_argv(profile, target)
+    argv = build_argv(profile, target, extra)
     res = run(argv, timeout=timeout, source="nmap")
-    if res.returncode == 127:
+    return interpret(res.returncode, res.stdout, res.stderr)
+
+
+def interpret(rc: int, stdout: str | None, stderr: str | None
+              ) -> tuple[bool, str, list[dict[str, Any]]]:
+    """Turn an nmap process result into ``(ok, message, hosts)``. Shared by
+    the standalone ``run_scan`` and the service's killable Popen path."""
+    if rc == 127:
         return False, ("nmap not installed on this host — run "
                        "'sudo apt install nmap' on the Pi, then re-run "
                        "(no restart needed)"), []
-    if res.returncode == 124:
-        return False, f"nmap timed out after {timeout:.0f}s", []
-    if not res.stdout.strip():
+    if rc == 124:
+        return False, "nmap timed out", []
+    if not (stdout or "").strip():
         return (False,
-                f"nmap produced no output (rc={res.returncode}): "
-                f"{res.stderr.strip()[:200]}",
+                f"nmap produced no output (rc={rc}): "
+                f"{(stderr or '').strip()[:200]}",
                 [])
     try:
-        hosts = parse_xml(res.stdout)
+        hosts = parse_xml(stdout)
     except ET.ParseError as e:
         return False, f"could not parse nmap XML: {e}", []
     return True, f"scan complete — {len(hosts)} host(s)", hosts

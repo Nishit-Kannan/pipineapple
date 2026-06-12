@@ -54,11 +54,24 @@ def scan():
     target, tmsg = svc.resolve_target(source, custom, _lab_cidr())
     if not target:
         return jsonify({"ok": False, "msg": tmsg}), 400
-    ok, msg = svc.start_scan(profile, target)
+    from .service import parse_flags
+    extra, ferr = parse_flags(data.get("flags"))
+    if extra is None:
+        return jsonify({"ok": False, "msg": ferr}), 400
+    ok, msg = svc.start_scan(profile, target, extra)
     (notifications.info if ok else notifications.warning)(
         f"nmap: {msg} ({tmsg})", source="nmap")
     return jsonify({"ok": ok, "msg": msg, "target_desc": tmsg,
                     "status": svc.get_status()}), (200 if ok else 400)
+
+
+@bp.route("/stop", methods=["POST"])
+def stop():
+    ok, msg = get_service().stop_scan()
+    (notifications.info if ok else notifications.warning)(
+        f"nmap: {msg}", source="nmap")
+    return jsonify({"ok": ok, "msg": msg, "status": get_service().get_status()}), \
+        (200 if ok else 400)
 
 
 @bp.route("/status")
